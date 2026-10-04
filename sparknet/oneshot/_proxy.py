@@ -26,7 +26,7 @@ BLOB_STRUCT_ERR = "roce proxy blob size mismatch"
 
 def _traffic_class() -> int:
     """IP DSCP/ECN byte for every RoCE queue pair, resolved once at setup."""
-    for name in ("SPARKNET_ROCE_TRAFFIC_CLASS", "B12X_ROCE_TRAFFIC_CLASS", "NCCL_IB_TC"):
+    for name in ("SPARKNET_ROCE_TRAFFIC_CLASS", "NCCL_IB_TC"):
         raw = os.getenv(name)
         if raw is not None:
             try:
@@ -42,10 +42,9 @@ def _traffic_class() -> int:
 def _cache_dir() -> Path:
     """Directory for the compiled proxy library.
 
-    ``SPARKNET_ROCE_CACHE_DIR``, else the ``B12X_ROCE_CACHE_DIR`` that existing
-    deployments set, else ``<XDG cache>/sparknet/roce``.
+    ``SPARKNET_ROCE_CACHE_DIR``, else ``<XDG cache>/sparknet/roce``.
     """
-    override = os.getenv("SPARKNET_ROCE_CACHE_DIR") or os.getenv("B12X_ROCE_CACHE_DIR")
+    override = os.getenv("SPARKNET_ROCE_CACHE_DIR")
     if override:
         return Path(override)
     root = os.getenv("XDG_CACHE_HOME") or os.path.join(

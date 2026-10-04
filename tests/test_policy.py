@@ -29,15 +29,16 @@ class PolicyTest(unittest.TestCase):
 
     def test_environment_round_trip(self):
         env = TP4_POLICY.environment()
-        self.assertEqual(env["B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES"], "1048576")
+        self.assertEqual(env["SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES"], "1048576")
+        self.assertEqual(set(env), {"SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES",
+                                    "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES", "SPARKNET_ROCE_ALLGATHER_MAX_BYTES"})
         self.assertEqual(CollectivePolicy.from_environment(env), TP4_POLICY)
-        vllm = {"VLLM_ROCE_ALLREDUCE_MAX_SIZE": "2MB", "VLLM_ROCE_ALLGATHER_MAX_SIZE": "4MB"}
-        self.assertEqual(CollectivePolicy.from_environment(vllm), TP3_POLICY)
-        self.assertEqual(CollectivePolicy.from_environment({**vllm, "B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576"}).all_reduce_dispatch_bytes, 1048576)
+        limits = {"SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152", "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "4194304"}
+        self.assertEqual(CollectivePolicy.from_environment(limits), TP3_POLICY)
         with self.assertRaises(ValueError):
             CollectivePolicy.from_environment({})
         with self.assertRaises(ValueError):
-            CollectivePolicy.from_environment({**vllm, "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "4194304"})
+            CollectivePolicy.from_environment({**limits, "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "4194304"})
 
     def test_profiles_map_to_policies(self):
         self.assertEqual(policy_for_profile("tp4-ring"), TP4_POLICY)

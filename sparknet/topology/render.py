@@ -57,24 +57,19 @@ def node_environment(
     transport: str,
     base: dict[str, str] | None = None,
     mesh_paths: int = 2,
-    compat: bool = True,
 ) -> dict[str, str]:
     """The environment one rank needs for ``transport`` on top of ``base``.
 
-    Emits the ``SPARKNET_ROCE_*`` names and, with ``compat`` (the default), the
-    ``B12X_ROCE_*`` aliases so the same rendered environment drives either
-    implementation during the migration. Stale routing keys in ``base`` are
+    Emits the ``SPARKNET_ROCE_*`` settings. Stale routing keys in ``base`` are
     replaced, never merged.
     """
     env = {k: str(v) for k, v in (base or {}).items()}
     for key in list(env):
-        if any(key == f"{prefix}_ROCE_{name}" for prefix in ("SPARKNET", "B12X") for name in _ROCE_KEYS):
+        if any(key == f"SPARKNET_ROCE_{name}" for name in _ROCE_KEYS):
             env.pop(key)
 
     def put(name: str, value: str) -> None:
         env[f"SPARKNET_ROCE_{name}"] = value
-        if compat:
-            env[f"B12X_ROCE_{name}"] = value
 
     if uses_oneshot(transport):
         put("TOPOLOGY", roce_topology(transport))
@@ -115,15 +110,12 @@ def environment_problems(env: dict[str, str], transport: str, node_count: int) -
             if env.get(key):
                 errors.append(f"{transport} cannot override topology/algorithm through {key}")
     topology = roce_topology(transport)
-    for key in ("SPARKNET_ROCE_TOPOLOGY", "B12X_ROCE_TOPOLOGY"):
-        if key in env and env[key] != topology:
-            errors.append(f"{key} must be {topology} for {transport}")
+    if "SPARKNET_ROCE_TOPOLOGY" in env and env["SPARKNET_ROCE_TOPOLOGY"] != topology:
+        errors.append(f"SPARKNET_ROCE_TOPOLOGY must be {topology} for {transport}")
     if not uses_oneshot(transport):
-        for key in ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS", "SPARKNET_ROCE_HCA", "B12X_ROCE_HCA"):
+        for key in ("SPARKNET_ROCE_PEER_HCAS", "SPARKNET_ROCE_HCA"):
             if key in env:
                 errors.append(f"{transport} carries every collective on NCCL; {key} must not be set")
-        if env.get("VLLM_ENABLE_ROCE_ALLREDUCE") == "1":
-            errors.append(f"{transport} carries every collective on NCCL; VLLM_ENABLE_ROCE_ALLREDUCE must be 0")
     return errors
 
 

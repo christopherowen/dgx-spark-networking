@@ -40,9 +40,8 @@ from torch.distributed import ProcessGroup
 logger = logging.getLogger(__name__)
 
 REQUIRED_API_VERSION = 1
-ENV_ENABLE = ("SPARKNET_ENABLE_ROCE_ALLREDUCE", "VLLM_ENABLE_ROCE_ALLREDUCE")
-ENV_ALLREDUCE_LIMIT = ("SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES", "VLLM_ROCE_ALLREDUCE_MAX_SIZE")
-ENV_ALLGATHER_LIMIT = ("SPARKNET_ROCE_ALLGATHER_MAX_BYTES", "VLLM_ROCE_ALLGATHER_MAX_SIZE")
+ENV_ALLREDUCE_LIMIT = ("SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES",)
+ENV_ALLGATHER_LIMIT = ("SPARKNET_ROCE_ALLGATHER_MAX_BYTES",)
 
 
 def parse_byte_size(value: str) -> int:
@@ -60,10 +59,6 @@ def _env(names: Sequence[str], default: str | None = None) -> str | None:
         if value:
             return value
     return default
-
-
-def enabled() -> bool:
-    return _env(ENV_ENABLE, "0") == "1"
 
 
 class SparknetOneShotAllReduce:

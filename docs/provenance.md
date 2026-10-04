@@ -30,7 +30,8 @@ Local changes on top (not hardware changes): imports moved from
 the DSL's own cache, `functools.cache` in place of b12x's program cache, a
 freeze flag); the b12x preparation plan (`plan=` argument,
 `b12x.preparation`) replaced by in-process `prepare`; `SPARKNET_ROCE_*`
-names with `B12X_ROCE_*` aliases; a `transport` factory and `topology`
+environment names (the `B12X_ROCE_*` names are not read); a `transport`
+factory and `topology`
 keyword; `make_ptr` from `cutlass.cute.runtime`. The C proxy differs from
 the vendored file only in two comment lines and the `MESH_ROTATE`
 environment name lookup. Verify with `diff` against the tree named in

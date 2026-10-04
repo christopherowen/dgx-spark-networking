@@ -102,9 +102,8 @@ The output is the complete fabric-related environment of that rank: the
 profile's NCCL and one-shot settings, the ring policy for neighbour rings,
 `NCCL_IB_HCA` with exact device names, the peer map or the rail list, the GID
 index, the traffic class and the socket interfaces. Put it in the container's
-environment verbatim. By default it also carries the `B12X_ROCE_*` and
-`VLLM_*` aliases so the same environment drives the current spark3 images;
-`--no-compat` drops them.
+environment verbatim. Every setting has exactly one name, `SPARKNET_ROCE_*`
+(or NCCL's own `NCCL_*`).
 
 Rendering refuses a profile that does not fit the map's transport or node
 count, and an environment that contradicts the fabric policy (for example a
@@ -252,8 +251,8 @@ Serving arguments per transport:
 
 | Transport | Serve arguments |
 | --- | --- |
-| `oneshot-*` | custom all-reduce enabled (do not pass `--disable-custom-all-reduce`); `VLLM_ENABLE_ROCE_ALLREDUCE=1`, `VLLM_ROCE_ALLREDUCE_MAX_SIZE` and `VLLM_ROCE_ALLGATHER_MAX_SIZE` come from the rendered environment |
-| `nccl-*` | `--disable-custom-all-reduce`; `VLLM_ENABLE_ROCE_ALLREDUCE=0` |
+| `oneshot-*` | custom all-reduce enabled (do not pass `--disable-custom-all-reduce`); the engine constructs the one-shot adapter, which is always on, and reads its limits (`SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES`, `SPARKNET_ROCE_ALLGATHER_MAX_BYTES`) from the rendered environment |
+| `nccl-*` | `--disable-custom-all-reduce`; the engine constructs no one-shot adapter |
 | all | `--distributed-executor-backend mp --nnodes N --tensor-parallel-size N`; one TP group in cable order; no expert, pipeline, data or context parallel groups on a neighbour ring |
 
 Per node, the same command plus `--node-rank <rank> --master-addr <head
@@ -369,9 +368,7 @@ sparknet probe doctor|gpudirect|render-command|collectives
 **Profile-level environment** (from `sparknet nccl env`): `NCCL_*` as listed
 in `docs/nccl.md`; `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES`,
 `SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES`,
-`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`, `SPARKNET_ROCE_SPIN_LIMIT`; with
-`compat`, `VLLM_ENABLE_ROCE_ALLREDUCE`, `VLLM_ROCE_ALLREDUCE_MAX_SIZE`,
-`VLLM_ROCE_ALLGATHER_MAX_SIZE` and the `B12X_ROCE_*` aliases.
+`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`, `SPARKNET_ROCE_SPIN_LIMIT`.
 
 **Per-node environment** (from `sparknet topology render`):
 `SPARKNET_ROCE_TOPOLOGY`, `SPARKNET_ROCE_PEER_HCAS` (cabled) or

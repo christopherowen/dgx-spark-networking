@@ -27,7 +27,7 @@ SUPPORTED_DTYPES = ("float16", "bfloat16", "float32")
 _GATHER_REJECTED_DTYPES = ("bool", "complex64", "complex128")
 
 ENV_CAPACITY = ("SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES",)
-ENV_DISPATCH = ("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES", "B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES")
+ENV_DISPATCH = ("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES",)
 ENV_GATHER = ("SPARKNET_ROCE_ALLGATHER_MAX_BYTES",)
 
 
@@ -69,32 +69,28 @@ class CollectivePolicy:
     def reduce_scatter_backend() -> str:
         return "nccl"
 
-    def environment(self, *, compat: bool = True) -> dict[str, str]:
-        env = {
+    def environment(self) -> dict[str, str]:
+        return {
             "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": str(self.all_reduce_capacity_bytes),
             "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": str(self.all_reduce_dispatch_bytes),
             "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": str(self.all_gather_shard_bytes),
         }
-        if compat:
-            env["B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES"] = str(self.all_reduce_dispatch_bytes)
-        return env
 
     @classmethod
     def from_environment(cls, env: dict[str, str]) -> "CollectivePolicy":
-        """Read the limits as a recipe sets them, in bytes or vLLM's ``2MB`` syntax."""
-        from sparknet.nccl.profiles import size_bytes
+        """Read the limits, in bytes, as a recipe sets them."""
 
-        def first(names: tuple[str, ...], fallback: str | None) -> int | None:
+        def first(names: tuple[str, ...]) -> int | None:
             for name in names:
                 if env.get(name):
                     return int(env[name])
-            return size_bytes(env[fallback]) if fallback and env.get(fallback) else None
+            return None
 
-        capacity = first(ENV_CAPACITY, "VLLM_ROCE_ALLREDUCE_MAX_SIZE")
-        gather = first(ENV_GATHER, "VLLM_ROCE_ALLGATHER_MAX_SIZE")
+        capacity = first(ENV_CAPACITY)
+        gather = first(ENV_GATHER)
         if capacity is None or gather is None:
             raise ValueError("the environment names no one-shot all-reduce capacity or all-gather limit")
-        dispatch = first(ENV_DISPATCH, None)
+        dispatch = first(ENV_DISPATCH)
         policy = cls(dispatch if dispatch is not None else capacity, capacity, gather)
         errors = policy.problems()
         if errors:

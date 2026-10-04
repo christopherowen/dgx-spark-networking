@@ -29,14 +29,10 @@
     "NCCL_P2P_DISABLE": "1",
     "NCCL_PROTO": "^LL128",
     "NCCL_SHM_DISABLE": "1",
-    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
-    "VLLM_DISABLE_PYNCCL": "0",
-    "VLLM_ENABLE_PCIE_ALLREDUCE": "0",
-    "VLLM_ENABLE_ROCE_ALLREDUCE": "0"
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1"
   },
   "per_node_environment": {
     "dgx1": {
-      "B12X_ROCE_GID_INDEX": "3",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
@@ -44,7 +40,6 @@
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx2": {
-      "B12X_ROCE_GID_INDEX": "3",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
@@ -52,7 +47,6 @@
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx3": {
-      "B12X_ROCE_GID_INDEX": "3",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",

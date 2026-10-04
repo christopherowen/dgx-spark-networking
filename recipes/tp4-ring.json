@@ -12,8 +12,6 @@
     "0004-adaptive-small-ring-threads.patch"
   ],
   "common_environment": {
-    "B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
-    "B12X_ROCE_SPIN_LIMIT": "5000000",
     "NCCL_ALGO": "Ring",
     "NCCL_BUFFSIZE": "4194304",
     "NCCL_COLLNET_ENABLE": "0",
@@ -51,17 +49,10 @@
     "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152",
     "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
     "SPARKNET_ROCE_SPIN_LIMIT": "5000000",
-    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
-    "VLLM_ENABLE_PCIE_ALLREDUCE": "0",
-    "VLLM_ENABLE_ROCE_ALLREDUCE": "1",
-    "VLLM_ROCE_ALLGATHER_MAX_SIZE": "2MB",
-    "VLLM_ROCE_ALLREDUCE_MAX_SIZE": "2MB"
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1"
   },
   "per_node_environment": {
     "dgx1": {
-      "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"3\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
-      "B12X_ROCE_TOPOLOGY": "ring4",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
@@ -71,9 +62,6 @@
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx2": {
-      "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"2\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
-      "B12X_ROCE_TOPOLOGY": "ring4",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
@@ -83,9 +71,6 @@
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx3": {
-      "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"3\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
-      "B12X_ROCE_TOPOLOGY": "ring4",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
@@ -95,9 +80,6 @@
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx4": {
-      "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"2\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"0\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
-      "B12X_ROCE_TOPOLOGY": "ring4",
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",

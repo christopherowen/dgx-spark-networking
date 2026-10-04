@@ -84,7 +84,7 @@ def main(argv=None) -> int:
     from sparknet.topology.nodes import TRANSPORTS, roce_topology, uses_oneshot
 
     parser.add_argument("--transport", choices=TRANSPORTS, default=None,
-                        help="defaults to oneshot-<SPARKNET_ROCE_TOPOLOGY>, or nccl-direct when VLLM_ENABLE_ROCE_ALLREDUCE=0")
+                        help="defaults to oneshot-<SPARKNET_ROCE_TOPOLOGY>")
     parser.add_argument("--benchmark", action="store_true", help="after correctness, screen steady graph collective latency")
     parser.add_argument("--counter-samples", action="store_true", help="record RDMA error deltas around each benchmark case")
     parser.add_argument("--port-samples", action="store_true", help="sample physical NIC bytes and buffer drops around each timed case")
@@ -104,9 +104,8 @@ def main(argv=None) -> int:
 
     torch.cuda.set_device(0)
     device = torch.device("cuda:0")
-    roce_requested = os.environ.get("VLLM_ENABLE_ROCE_ALLREDUCE", "1") != "0"
-    topology = os.environ.get("SPARKNET_ROCE_TOPOLOGY") or os.environ.get("B12X_ROCE_TOPOLOGY") or "direct"
-    transport = args.transport or (f"oneshot-{topology}" if roce_requested else "nccl-direct")
+    topology = os.environ.get("SPARKNET_ROCE_TOPOLOGY") or "direct"
+    transport = args.transport or f"oneshot-{topology}"
     dist.init_process_group(
         backend="cpu:gloo,cuda:nccl", world_size=args.world_size, rank=args.rank,
         init_method=f"tcp://{args.master_addr}:{args.master_port}", timeout=timedelta(seconds=90),

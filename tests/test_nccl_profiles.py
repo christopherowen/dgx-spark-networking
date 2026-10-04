@@ -17,12 +17,11 @@ class ProfileTest(unittest.TestCase):
             "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152",
             "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
             "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "2097152", "SPARKNET_ROCE_SPIN_LIMIT": "5000000",
-            "B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576", "B12X_ROCE_SPIN_LIMIT": "5000000",
-            "VLLM_ROCE_ALLREDUCE_MAX_SIZE": "2MB", "VLLM_ROCE_ALLGATHER_MAX_SIZE": "2MB",
-            "VLLM_ENABLE_ROCE_ALLREDUCE": "1", "VLLM_ENABLE_PCIE_ALLREDUCE": "0",
         }
         for key, value in expected.items():
             self.assertEqual(env.get(key), value, key)
+        # One name per setting, and none of an engine's own switches.
+        self.assertFalse([k for k in env if k.startswith(("B12X_", "VLLM_"))])
         self.assertEqual(profiles.problems(env, node_count=4), [])
         self.assertEqual(profiles.required_patches(env), [
             "0001-ib-cts-nreqs-acquire-fence.patch", "0002-bidirectional-switchless-rings.patch",
@@ -36,17 +35,13 @@ class ProfileTest(unittest.TestCase):
         for absent in ("NCCL_MIN_NCHANNELS", "NCCL_SWITCHLESS_BIDIRECTIONAL", "NCCL_MIN_TRAFFIC_PER_CHANNEL",
                        "NCCL_THREAD_THRESHOLDS", "NCCL_ALGO", "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES"):
             self.assertNotIn(absent, env)
-        self.assertEqual(env["VLLM_ROCE_ALLGATHER_MAX_SIZE"], "4MB")
+        self.assertEqual(env["SPARKNET_ROCE_ALLGATHER_MAX_BYTES"], "4194304")
         self.assertEqual(profiles.problems(env, node_count=3), [])
         self.assertEqual(profiles.required_patches(env), ["0001-ib-cts-nreqs-acquire-fence.patch"])
-        bare = profiles.environment("tp3-triangle", compat=False)
-        self.assertNotIn("VLLM_ROCE_ALLREDUCE_MAX_SIZE", bare)
-        self.assertNotIn("B12X_ROCE_SPIN_LIMIT", bare)
 
-    def test_nccl_only_profile_disables_the_custom_collectives(self):
+    def test_nccl_only_profile_carries_no_oneshot_settings(self):
         env = profiles.environment("tp4-ring-nccl-only")
-        self.assertEqual(env["VLLM_ENABLE_ROCE_ALLREDUCE"], "0")
-        self.assertFalse(any(k.startswith("SPARKNET_ROCE") for k in env))
+        self.assertFalse(any(k.startswith("SPARKNET_") for k in env))
         self.assertEqual(profiles.problems(env, node_count=4), [])
 
     def test_validation_rejects_contradictions(self):
@@ -87,10 +82,10 @@ class ProfileTest(unittest.TestCase):
                 self.assertEqual(profiles.required_patches(env), ["0001-ib-cts-nreqs-acquire-fence.patch"])
                 self.assertNotIn("NCCL_ALGO", env)
                 if transport.startswith("oneshot"):
-                    self.assertEqual(env["VLLM_ROCE_ALLREDUCE_MAX_SIZE"], "2MB")
+                    self.assertEqual(env["SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES"], "2097152")
                     self.assertEqual(env["SPARKNET_ROCE_ALLGATHER_MAX_BYTES"], "4194304")
                 else:
-                    self.assertEqual(env["VLLM_ENABLE_ROCE_ALLREDUCE"], "0")
+                    self.assertFalse(any(k.startswith("SPARKNET_") for k in env))
         self.assertEqual(profiles.profiles_for("oneshot-switched", 12), ["switched"])
         self.assertEqual(profiles.profiles_for("nccl-direct", 3), ["direct-nccl-only"])
         self.assertEqual(profiles.profiles_for("oneshot-direct", 4), [])

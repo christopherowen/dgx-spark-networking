@@ -67,7 +67,8 @@ at build time and call `freeze_kernel_resolution()` after warm-up.
 
 ## Environment
 
-Every name is read as `SPARKNET_ROCE_*` first, then the `B12X_ROCE_*` alias.
+Each setting has one `SPARKNET_ROCE_*` name; the HCA list, GID index and
+traffic class fall back to NCCL's own settings.
 
 | Name | Meaning |
 | --- | --- |
@@ -78,11 +79,13 @@ Every name is read as `SPARKNET_ROCE_*` first, then the `B12X_ROCE_*` alias.
 | `SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES` | dispatch ceiling, at most the registered capacity |
 | `SPARKNET_ROCE_SPIN_LIMIT` | polls before a wait times out |
 | `SPARKNET_ROCE_TRAFFIC_CLASS` | DSCP/ECN byte for every QP (falls back to `NCCL_IB_TC`, default 0) |
-| `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (falls back to `B12X_ROCE_CACHE_DIR`) |
+| `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
-adapter reads `VLLM_ROCE_ALLREDUCE_MAX_SIZE` and `VLLM_ROCE_ALLGATHER_MAX_SIZE`.
+adapter reads `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES` and
+`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`. One-shot is always on where it is
+constructed; there is no switch.
 
 ## Evidence
 

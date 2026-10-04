@@ -74,6 +74,4 @@ prints the rank's complete environment: the profile's NCCL and one-shot
 settings, the ring policy (`NCCL_ALGO=Ring`, runtime connect with cuMem,
 trees, PAT, NVLS, CollNet and GIN off, subnet-aware routing over merged
 NICs), `NCCL_IB_HCA` with exact device names, the JSON peer map and the GID
-index. With `--no-compat` only the `SPARKNET_*` names are emitted; by
-default the `B12X_ROCE_*` and `VLLM_*` aliases are included so the same
-environment drives the current spark3 image.
+index, each under its one `SPARKNET_ROCE_*` or `NCCL_*` name.

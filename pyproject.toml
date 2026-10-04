@@ -1,6 +1,6 @@
 [project]
 name = "dgx-spark-networking"
-version = "0.1.0"
+version = "0.2.0"
 description = "Switchless RoCE collectives, NCCL profiles and fabric tooling for DGX Spark inference recipes"
 readme = "README.md"
 requires-python = ">=3.10"

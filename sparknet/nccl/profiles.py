@@ -190,7 +190,7 @@ def profile_problems(name: str, transport: str, node_count: int) -> list[str]:
     return errors
 
 
-def environment(name: str, *, compat: bool = True) -> dict[str, str]:
+def environment(name: str) -> dict[str, str]:
     """The rank-invariant environment of a profile (per-node routes come from ``sparknet.topology``)."""
     entry = profile(name)
     env = dict(COMMON_IB_ENV)
@@ -211,24 +211,7 @@ def environment(name: str, *, compat: bool = True) -> dict[str, str]:
             if value is None:
                 continue
             env[f"SPARKNET_ROCE_{names[key]}"] = value
-            if compat and key in ("ALLREDUCE_DISPATCH_MAX_BYTES", "SPIN_LIMIT"):
-                env[f"B12X_ROCE_{key}"] = value
-        if compat:
-            # The vLLM adapter reads its limits in its own size syntax.
-            env["VLLM_ROCE_ALLREDUCE_MAX_SIZE"] = _vllm_size(roce["ALLREDUCE_CAPACITY_BYTES"])
-            env["VLLM_ROCE_ALLGATHER_MAX_SIZE"] = _vllm_size(roce["ALLGATHER_MAX_BYTES"])
-            env["VLLM_ENABLE_ROCE_ALLREDUCE"] = "1"
-            env["VLLM_ENABLE_PCIE_ALLREDUCE"] = "0"
-    elif compat:
-        env["VLLM_ENABLE_ROCE_ALLREDUCE"] = "0"
-        env["VLLM_ENABLE_PCIE_ALLREDUCE"] = "0"
-        env["VLLM_DISABLE_PYNCCL"] = "0"
     return env
-
-
-def _vllm_size(value: str) -> str:
-    n = int(value)
-    return f"{n // (1024 ** 2)}MB" if n % (1024 ** 2) == 0 else f"{n}B"
 
 
 def required_patches(env: dict[str, str]) -> list[str]:
@@ -247,7 +230,7 @@ def problems(env: dict[str, str], *, node_count: int, patched_nccl: bool = True)
     errors: list[str] = []
     for key in ("NCCL_BUFFSIZE", "NCCL_LL128_BUFFSIZE", "NCCL_MIN_TRAFFIC_PER_CHANNEL",
                 "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS",
-                "SPARKNET_ROCE_SPIN_LIMIT", "B12X_ROCE_SPIN_LIMIT"):
+                "SPARKNET_ROCE_SPIN_LIMIT"):
         if key in env and (not str(env[key]).isdigit() or int(env[key]) <= 0):
             errors.append(f"{key} must be a positive integer")
     if "NCCL_MAX_NCHANNELS" in env and env["NCCL_MAX_NCHANNELS"].isdigit():
@@ -275,11 +258,9 @@ def problems(env: dict[str, str], *, node_count: int, patched_nccl: bool = True)
         for key in PATCH_CONTROLS:
             if env.get(key):
                 errors.append(f"{key} needs the patched NCCL ({', '.join(PATCH_CONTROLS[key])})")
-    capacity = env.get("SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES") or (
-        str(size_bytes(env["VLLM_ROCE_ALLREDUCE_MAX_SIZE"])) if env.get("VLLM_ROCE_ALLREDUCE_MAX_SIZE") else None)
-    dispatch = env.get("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES") or env.get("B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES")
-    gather = env.get("SPARKNET_ROCE_ALLGATHER_MAX_BYTES") or (
-        str(size_bytes(env["VLLM_ROCE_ALLGATHER_MAX_SIZE"])) if env.get("VLLM_ROCE_ALLGATHER_MAX_SIZE") else None)
+    capacity = env.get("SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES")
+    dispatch = env.get("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES")
+    gather = env.get("SPARKNET_ROCE_ALLGATHER_MAX_BYTES")
     for label, value in (("all-reduce capacity", capacity), ("all-gather limit", gather), ("all-reduce dispatch", dispatch)):
         if value is not None and (not str(value).isdigit() or int(value) <= 0 or int(value) % 16):
             errors.append(f"one-shot {label} must be a positive multiple of 16 bytes")

@@ -25,11 +25,11 @@ One vLLM patch, on top of the spark3 series:
 4. `sp_prefill.py` keeps reading `all_reduce_capacity_bytes` for the
    sequence-parallel floor; nothing else changes.
 
-The environment stays the same: `VLLM_ENABLE_ROCE_ALLREDUCE=1`,
-`VLLM_ROCE_ALLREDUCE_MAX_SIZE`, `VLLM_ROCE_ALLGATHER_MAX_SIZE` and the
-`B12X_ROCE_*` names the current profiles set are all read; the
-`SPARKNET_ROCE_*` names take precedence when both are present
-(`sparknet nccl env --profile tp4-ring` prints both).
+The adapter reads sparknet's names only: `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES`
+and `SPARKNET_ROCE_ALLGATHER_MAX_BYTES` for its limits, and the runtime's
+`SPARKNET_ROCE_*` routing (`sparknet topology render` prints a rank's
+complete environment). One-shot has no enable switch: an engine that serves a
+one-shot fabric constructs the adapter, and the adapter is on.
 
 Serving images must build the proxy and warm the CuTe kernels at image build
 time (one import plus `prepare` in a build step), then call

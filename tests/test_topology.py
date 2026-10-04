@@ -151,7 +151,7 @@ class RenderTest(unittest.TestCase):
         node = self.four["nodes"][3]
         env = render.node_environment(self.four, node, transport="oneshot-ring4")
         self.assertEqual(set(json.loads(env["SPARKNET_ROCE_PEER_HCAS"])), {"2", "0"})
-        self.assertEqual(env["SPARKNET_ROCE_PEER_HCAS"], env["B12X_ROCE_PEER_HCAS"])
+        self.assertFalse([k for k in env if k.startswith(("B12X_", "VLLM_"))])
         self.assertEqual(env["SPARKNET_ROCE_TOPOLOGY"], "ring4")
         self.assertTrue(env["NCCL_IB_HCA"].startswith("="))
         self.assertEqual(env["NCCL_ALGO"], "Ring")
@@ -161,15 +161,13 @@ class RenderTest(unittest.TestCase):
 
     def test_nccl_only_ring_drops_the_oneshot_routes(self):
         env = render.node_environment(self.four, self.four["nodes"][0], transport="nccl-ring",
-                                      base={"B12X_ROCE_PEER_HCAS": "stale", "B12X_ROCE_TOPOLOGY": "ring4"})
+                                      base={"SPARKNET_ROCE_PEER_HCAS": "stale", "SPARKNET_ROCE_TOPOLOGY": "ring4"})
         self.assertNotIn("SPARKNET_ROCE_PEER_HCAS", env)
-        self.assertNotIn("B12X_ROCE_PEER_HCAS", env)
-        self.assertNotIn("B12X_ROCE_TOPOLOGY", env)
+        self.assertNotIn("SPARKNET_ROCE_TOPOLOGY", env)
 
     def test_triangle_environment_keeps_every_peer_and_upstream_nccl_selection(self):
-        env = render.node_environment(self.three, self.three["nodes"][1], transport="oneshot-direct", compat=False)
+        env = render.node_environment(self.three, self.three["nodes"][1], transport="oneshot-direct")
         self.assertEqual(set(json.loads(env["SPARKNET_ROCE_PEER_HCAS"])), {"0", "2"})
-        self.assertNotIn("B12X_ROCE_PEER_HCAS", env)
         self.assertNotIn("NCCL_ALGO", env)
         self.assertEqual(env["SPARKNET_ROCE_TOPOLOGY"], "direct")
         self.assertEqual(env["NCCL_IB_HCA"], "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1")
@@ -183,11 +181,10 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("SPARKNET_ROCE_PEER_HCAS", env)
         self.assertNotIn("SPARKNET_ROCE_TOPOLOGY", env)
         self.assertEqual(render.environment_problems(env, "nccl-direct", 2), [])
-        self.assertTrue(render.environment_problems(dict(env, VLLM_ENABLE_ROCE_ALLREDUCE="1"), "nccl-direct", 2))
+        self.assertTrue(render.environment_problems(dict(env, SPARKNET_ROCE_PEER_HCAS="{}"), "nccl-direct", 2))
         switched = example("switched")
         env = render.node_environment(switched, switched["nodes"][3], transport="oneshot-switched")
         self.assertEqual(env["SPARKNET_ROCE_HCA"], "rocep1s0f0,roceP2p1s0f0")
-        self.assertEqual(env["B12X_ROCE_HCA"], env["SPARKNET_ROCE_HCA"])
         self.assertNotIn("SPARKNET_ROCE_PEER_HCAS", env)
         self.assertEqual(env["SPARKNET_ROCE_TOPOLOGY"], "direct")
         self.assertEqual(env["NCCL_IB_HCA"], "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1")
@@ -196,7 +193,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(render.environment_problems(env, "oneshot-switched", 4), [])
         env = render.node_environment(switched, switched["nodes"][0], transport="nccl-switched")
         self.assertNotIn("SPARKNET_ROCE_HCA", env)
-        self.assertTrue(render.environment_problems(dict(env, B12X_ROCE_HCA="x"), "nccl-switched", 4))
+        self.assertTrue(render.environment_problems(dict(env, SPARKNET_ROCE_HCA="x"), "nccl-switched", 4))
 
     def test_ring_policy_rejects_each_unsafe_override(self):
         env = render.node_environment(self.four, self.four["nodes"][0], transport="nccl-ring",

@@ -99,20 +99,20 @@ def _env_str(*names: str, default: str) -> str:
     return default
 
 
-# Every setting accepts the ``SPARKNET_ROCE_*`` name first and the ``B12X_ROCE_*``
-# name that existing deployment profiles set, so a recipe can move between the
-# two implementations without rewriting its environment.
-ENV_GID_INDEX = ("SPARKNET_ROCE_GID_INDEX", "B12X_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX")
-ENV_HCA = ("SPARKNET_ROCE_HCA", "B12X_ROCE_HCA", "NCCL_IB_HCA")
-ENV_PEER_HCAS = ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS")
-ENV_SPIN_LIMIT = ("SPARKNET_ROCE_SPIN_LIMIT", "B12X_ROCE_SPIN_LIMIT")
-ENV_TOPOLOGY = ("SPARKNET_ROCE_TOPOLOGY", "B12X_ROCE_TOPOLOGY")
-ENV_DISPATCH = ("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES", "B12X_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES")
+# Each setting has one ``SPARKNET_ROCE_*`` name. The GID index and HCAs fall
+# back to NCCL's own settings, so one fabric configuration serves both
+# libraries in the same process.
+ENV_GID_INDEX = ("SPARKNET_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX")
+ENV_HCA = ("SPARKNET_ROCE_HCA", "NCCL_IB_HCA")
+ENV_PEER_HCAS = ("SPARKNET_ROCE_PEER_HCAS",)
+ENV_SPIN_LIMIT = ("SPARKNET_ROCE_SPIN_LIMIT",)
+ENV_TOPOLOGY = ("SPARKNET_ROCE_TOPOLOGY",)
+ENV_DISPATCH = ("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES",)
 TOPOLOGIES = ("direct", "ring4", "mesh4")
 
 
 def default_gid_index() -> int:
-    """``SPARKNET_ROCE_GID_INDEX``, else ``B12X_ROCE_GID_INDEX``, else NCCL's ``NCCL_IB_GID_INDEX``, else 3."""
+    """``SPARKNET_ROCE_GID_INDEX``, else NCCL's ``NCCL_IB_GID_INDEX``, else 3."""
 
     return _env_int(*ENV_GID_INDEX, default=DEFAULT_GID_INDEX)
 
@@ -120,7 +120,7 @@ def default_gid_index() -> int:
 def discover_hcas(gid_index: Optional[int] = None) -> tuple[str, ...]:
     """Return the RDMA devices to use, at most two.
 
-    ``SPARKNET_ROCE_HCA`` (``B12X_ROCE_HCA``, or NCCL's ``NCCL_IB_HCA``) selects explicitly; otherwise
+    ``SPARKNET_ROCE_HCA`` (or NCCL's ``NCCL_IB_HCA``) selects explicitly; otherwise
     every active device with a populated GID at ``gid_index`` is used.
     """
 
@@ -147,7 +147,7 @@ def discover_hcas(gid_index: Optional[int] = None) -> tuple[str, ...]:
 def _peer_hca_names_from_env() -> Optional[dict[int, tuple[str, ...]]]:
     """Parse the optional rank-to-local-HCA map used by non-clique fabrics.
 
-    ``SPARKNET_ROCE_PEER_HCAS`` (or ``B12X_ROCE_PEER_HCAS``) is a JSON object whose keys are peer ranks and
+    ``SPARKNET_ROCE_PEER_HCAS`` is a JSON object whose keys are peer ranks and
     whose values are the local HCAs that reach that peer, in stripe-lane order.
     The local rank is omitted. JSON keeps interface names unambiguous and lets
     launchers pass the value through without inventing a delimiter syntax.

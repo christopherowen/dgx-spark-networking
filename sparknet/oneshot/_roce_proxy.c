@@ -324,7 +324,6 @@ roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n
         return NULL;
     }
     const char *rotate = getenv("SPARKNET_ROCE_MESH_ROTATE");
-    if (rotate == NULL) rotate = getenv("B12X_ROCE_MESH_ROTATE");
     if (rotate && strcmp(rotate, "0") && strcmp(rotate, "1")) {
         snprintf(err, err_len, "SPARKNET_ROCE_MESH_ROTATE must be 0 or 1");
         free(c); return NULL;

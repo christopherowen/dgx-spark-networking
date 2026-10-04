@@ -35,7 +35,7 @@
       "tree": "cd615bd69ed1a99d6b59217329a3ff429b5277fe",
       "proxy_abi": 10,
       "qualified_image": "vllm-ds41f-kkref:04c30fa98e79-r5o-roce-balanced-dispatch-v1 (sha256:6e03995e36aac90c578fe2d00796068a32ecb8316ed0bae201352d1486272d4d), label local.spark3.b12x.tree=cd615bd69ed1a99d6b59217329a3ff429b5277fe",
-      "local_changes": "imports moved off b12x._lib and b12x.preparation (sparknet.oneshot._compile); SPARKNET_ROCE_* environment names with B12X_ROCE_* aliases; prepare() compiles launchers in process; transport factory parameter. Protocol, kernels, proxy posting logic and wire ABI unchanged.",
+      "local_changes": "imports moved off b12x._lib and b12x.preparation (sparknet.oneshot._compile); SPARKNET_ROCE_* environment names only (the B12X_ROCE_* names are not read; the proxy's MESH_ROTATE lookup is the one C change); prepare() compiles launchers in process; transport factory parameter. Protocol, kernels, proxy posting logic and wire ABI unchanged.",
       "license": "Apache-2.0",
       "role": "one-shot all-reduce and all-gather over switchless RoCE (the RoCEnante module of b12x): direct, ring4 (bidirectional host relay) and mesh4 modes"
     },

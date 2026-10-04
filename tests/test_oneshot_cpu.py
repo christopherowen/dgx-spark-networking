@@ -53,13 +53,12 @@ class ProxySimulatorTest(unittest.TestCase):
 class TopologyResolverTest(unittest.TestCase):
     def setUp(self):
         namespace = dict(vars(typing), os=os, json=json, MAX_STRIPES=2, MAX_LOCAL_HCAS=4,
-                         ENV_PEER_HCAS=("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS"),
+                         ENV_PEER_HCAS=("SPARKNET_ROCE_PEER_HCAS",),
                          discover_hcas=lambda gid_index=None: ())
         _functions(ROCE / "runtime.py", {"_resolve_hca_topology", "_peer_hca_names_from_env"}, namespace)
         self.resolve = namespace["_resolve_hca_topology"]
         self.from_env = namespace["_peer_hca_names_from_env"]
-        for name in ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS"):
-            os.environ.pop(name, None)
+        os.environ.pop("SPARKNET_ROCE_PEER_HCAS", None)
 
     def test_ring4_routes_only_neighbours(self):
         for rank in range(4):
@@ -95,16 +94,14 @@ class TopologyResolverTest(unittest.TestCase):
             names, result, slots = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=four, gid_index=3, topology="mesh4")
             self.assertEqual((slots, len(names), len(result[(rank + 2) % 4])), (4, 4, 4))
 
-    def test_peer_map_environment_aliases(self):
-        os.environ["B12X_ROCE_PEER_HCAS"] = '{"0": ["mlx5_0", "mlx5_1"], "2": ["mlx5_2", "mlx5_3"]}'
+    def test_peer_map_environment(self):
+        self.assertIsNone(self.from_env())
+        os.environ["SPARKNET_ROCE_PEER_HCAS"] = '{"0": ["mlx5_0", "mlx5_1"], "2": ["mlx5_2", "mlx5_3"]}'
         self.assertEqual(self.from_env(), {0: ("mlx5_0", "mlx5_1"), 2: ("mlx5_2", "mlx5_3")})
-        os.environ["SPARKNET_ROCE_PEER_HCAS"] = '{"1": ["a"]}'
-        self.assertEqual(self.from_env(), {1: ("a",)})
         os.environ["SPARKNET_ROCE_PEER_HCAS"] = "not json"
         with self.assertRaisesRegex(ValueError, "SPARKNET_ROCE_PEER_HCAS"):
             self.from_env()
-        for name in ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS"):
-            os.environ.pop(name, None)
+        os.environ.pop("SPARKNET_ROCE_PEER_HCAS", None)
 
 
 class LauncherGeometryTest(unittest.TestCase):

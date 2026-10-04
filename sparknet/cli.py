@@ -40,9 +40,9 @@ def _report(errors: list[str], what: str) -> int:
     return 0
 
 
-def rendered_environment(nodes: dict, node: dict, *, transport: str, profile: str | None, compat: bool) -> dict[str, str]:
-    base = nccl_profiles.environment(profile, compat=compat) if profile else {}
-    return render.node_environment(nodes, node, transport=transport, base=base, compat=compat)
+def rendered_environment(nodes: dict, node: dict, *, transport: str, profile: str | None) -> dict[str, str]:
+    base = nccl_profiles.environment(profile) if profile else {}
+    return render.node_environment(nodes, node, transport=transport, base=base)
 
 
 def cmd_topology_validate(args) -> int:
@@ -66,7 +66,7 @@ def cmd_topology_render(args) -> int:
     if errors:
         return _report(errors, args.nodes)
     node = topology.node_by_name(nodes, args.node)
-    env = rendered_environment(nodes, node, transport=args.transport, profile=args.profile, compat=not args.no_compat)
+    env = rendered_environment(nodes, node, transport=args.transport, profile=args.profile)
     errors = render.environment_problems(env, args.transport, len(nodes["nodes"]))
     if args.profile:
         errors += nccl_profiles.problems(env, node_count=len(nodes["nodes"]))
@@ -144,7 +144,7 @@ def cmd_topology_inventory(args) -> int:
 
 
 def cmd_nccl_env(args) -> int:
-    env = nccl_profiles.environment(args.profile, compat=not args.no_compat)
+    env = nccl_profiles.environment(args.profile)
     _print_env(env, args.json)
     return 0
 
@@ -212,7 +212,7 @@ def cmd_probe_render_command(args) -> int:
     if errors:
         return _report(errors, args.nodes)
     node = topology.node_by_name(nodes, args.node)
-    env = rendered_environment(nodes, node, transport=args.transport, profile=args.profile, compat=True)
+    env = rendered_environment(nodes, node, transport=args.transport, profile=args.profile)
     source = args.probe_source or str(Path(__file__).parent / "probe" / "collectives.py")
     command = docker_probe_command(
         image=args.image, environment=env, rank=node["rank"], world_size=len(nodes["nodes"]),
@@ -242,7 +242,7 @@ def parser() -> argparse.ArgumentParser:
     r = t.add_parser("render", help="per-node environment for a transport and profile")
     r.add_argument("nodes"); r.add_argument("node"); r.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
     r.add_argument("--profile", choices=list(nccl_profiles.PROFILES)); r.add_argument("--mesh-paths", type=int, default=2)
-    r.add_argument("--json", action="store_true"); r.add_argument("--no-compat", action="store_true", help="omit the B12X_* and VLLM_* aliases")
+    r.add_argument("--json", action="store_true")
     r.set_defaults(func=cmd_topology_render)
     e = t.add_parser("example", help="print a documentation node map"); e.add_argument("name"); e.set_defaults(func=cmd_topology_example)
     d = t.add_parser("discover", help="read cabling over LLDP or rails from sysfs (ssh, read-only) and generate configs")
@@ -256,7 +256,7 @@ def parser() -> argparse.ArgumentParser:
 
     n = sub.add_parser("nccl", help="NCCL profiles and patches").add_subparsers(dest="subcommand", required=True)
     ne = n.add_parser("env", help="print a profile's environment"); ne.add_argument("--profile", required=True, choices=list(nccl_profiles.PROFILES))
-    ne.add_argument("--json", action="store_true"); ne.add_argument("--no-compat", action="store_true"); ne.set_defaults(func=cmd_nccl_env)
+    ne.add_argument("--json", action="store_true"); ne.set_defaults(func=cmd_nccl_env)
     nv = n.add_parser("validate", help="check a profile, optionally with overrides from an env file")
     nv.add_argument("--profile", required=True, choices=list(nccl_profiles.PROFILES)); nv.add_argument("--env-file")
     nv.add_argument("--nodes", type=int, help="node count to validate against (default: the profile's first)")
