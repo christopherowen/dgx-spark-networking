@@ -1,4 +1,4 @@
-"""``sparknet.rocenante``: RoCEnante one-shot collectives for multi-node tensor parallelism on DGX Spark.
+"""``sparknet.oneshot``: One-shot RDMA collectives for multi-node tensor parallelism on DGX Spark.
 
 Target: Spark nodes joined by their ConnectX-7 200 GbE ports without a switch,
 one GPU per node. The GB10's unified memory lets the NIC RDMA-write straight
@@ -10,7 +10,7 @@ host proxy later.
 ``AllReduce`` is the runtime (``from_exchange_group``, ``prepare``,
 ``should_allreduce``, ``all_reduce``, ``should_all_gather``, ``all_gather``,
 ``capture``, ``check_health``, ``poisoned``, ``stats``, ``close``).
-See ``runtime.py`` for the protocol and the contract, and ``docs/rocenante.md``.
+See ``runtime.py`` for the protocol and the contract, and ``docs/oneshot.md``.
 
 Importing this package imports torch and the CuTe DSL.
 """

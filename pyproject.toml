@@ -10,7 +10,7 @@ authors = [{ name = "Christopher Owen" }]
 dependencies = []
 
 [project.optional-dependencies]
-# The RoCEnante runtime and the collective probe. The CuTe DSL pin follows the
+# The one-shot runtime and the collective probe. The CuTe DSL pin follows the
 # vLLM nightly base image (nvidia-cutlass-dsl 4.7.1 on CUDA 13).
 runtime = [
   "torch>=2.12.0",
@@ -31,7 +31,7 @@ where = ["."]
 include = ["sparknet*"]
 
 [tool.setuptools.package-data]
-"sparknet.rocenante" = ["*.c"]
+"sparknet.oneshot" = ["*.c"]
 "sparknet.topology" = ["examples/*.json"]
 
 [tool.ruff]

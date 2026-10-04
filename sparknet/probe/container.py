@@ -21,7 +21,7 @@ def docker_probe_command(
 ) -> list[str]:
     """One rank's probe container: separate IPC namespace, bounded memory and lifetime.
 
-    The 12 GiB limit covers two NCCL communicators plus cold RoCEnante
+    The 12 GiB limit covers two NCCL communicators plus cold one-shot
     compilation. ``probe_source`` is the path of ``sparknet/probe/collectives.py``
     on the host (or an installed sparknet package directory) mounted read-only.
     """

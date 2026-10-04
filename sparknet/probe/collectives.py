@@ -3,8 +3,8 @@
 
 Run one rank per node (``sparknet probe render-command`` prints the bounded
 container command). The probe initializes torch.distributed, constructs the
-RoCEnante runtime from the environment the recipe will use, and checks the
-exact policy: eligible all-reduces and all-gathers through RoCEnante, the
+one-shot runtime from the environment the recipe will use, then checks the
+exact policy: eligible all-reduces and all-gathers through one-shot, the
 rest and every reduce-scatter through NCCL. It tests BF16/FP32, tiny,
 unaligned and large messages, both sides of every dispatch boundary, eager
 execution and CUDA graph replay with changing inputs, then optionally screens
@@ -31,7 +31,7 @@ def _policy_from_environment():
 
 
 class PolicyCommunicator:
-    """The explicit two-backend policy over torch.distributed and the RoCEnante runtime."""
+    """The explicit two-backend policy over torch.distributed and the one-shot runtime."""
 
     def __init__(self, runtime, policy, device, world_size):
         import torch
@@ -46,7 +46,7 @@ class PolicyCommunicator:
     def all_reduce(self, tensor):
         nbytes = tensor.numel() * tensor.element_size()
         if (self.runtime is not None
-                and self.policy.all_reduce_backend(nbytes, self._dtype_name(tensor), contiguous=tensor.is_contiguous()) == "rocenante"):
+                and self.policy.all_reduce_backend(nbytes, self._dtype_name(tensor), contiguous=tensor.is_contiguous()) == "oneshot"):
             if not self.runtime.should_allreduce(tensor):
                 raise RuntimeError("policy and runtime eligibility disagree for all-reduce")
             return self.runtime.all_reduce(tensor)
@@ -58,7 +58,7 @@ class PolicyCommunicator:
         nbytes = tensor.numel() * tensor.element_size()
         if (self.runtime is not None
                 and self.policy.all_gather_backend(nbytes, self._dtype_name(tensor), dim=dim, ndim=tensor.dim(),
-                                                   contiguous=tensor.is_contiguous()) == "rocenante"):
+                                                   contiguous=tensor.is_contiguous()) == "oneshot"):
             if not self.runtime.should_all_gather(tensor, dim):
                 raise RuntimeError("policy and runtime eligibility disagree for all-gather")
             return self.runtime.all_gather(tensor, dim=dim)
@@ -81,8 +81,10 @@ def main(argv=None) -> int:
     parser.add_argument("--world-size", type=int, choices=(2, 3, 4), required=True)
     parser.add_argument("--master-addr", required=True)
     parser.add_argument("--master-port", type=int, required=True)
-    parser.add_argument("--transport", choices=("rocenante-direct", "rocenante-ring4", "rocenante-mesh4", "nccl-ring"),
-                        default=None, help="defaults to SPARKNET_ROCE_TOPOLOGY, or nccl-ring when VLLM_ENABLE_ROCE_ALLREDUCE=0")
+    from sparknet.topology.nodes import TRANSPORTS, roce_topology, uses_oneshot
+
+    parser.add_argument("--transport", choices=TRANSPORTS, default=None,
+                        help="defaults to oneshot-<SPARKNET_ROCE_TOPOLOGY>, or nccl-direct when VLLM_ENABLE_ROCE_ALLREDUCE=0")
     parser.add_argument("--benchmark", action="store_true", help="after correctness, screen steady graph collective latency")
     parser.add_argument("--counter-samples", action="store_true", help="record RDMA error deltas around each benchmark case")
     parser.add_argument("--port-samples", action="store_true", help="sample physical NIC bytes and buffer drops around each timed case")
@@ -104,7 +106,7 @@ def main(argv=None) -> int:
     device = torch.device("cuda:0")
     roce_requested = os.environ.get("VLLM_ENABLE_ROCE_ALLREDUCE", "1") != "0"
     topology = os.environ.get("SPARKNET_ROCE_TOPOLOGY") or os.environ.get("B12X_ROCE_TOPOLOGY") or "direct"
-    transport = args.transport or (f"rocenante-{topology}" if roce_requested else "nccl-ring")
+    transport = args.transport or (f"oneshot-{topology}" if roce_requested else "nccl-direct")
     dist.init_process_group(
         backend="cpu:gloo,cuda:nccl", world_size=args.world_size, rank=args.rank,
         init_method=f"tcp://{args.master_addr}:{args.master_port}", timeout=timedelta(seconds=90),
@@ -112,16 +114,16 @@ def main(argv=None) -> int:
     cpu_group = dist.new_group(backend="gloo")
     runtime = None
     policy = None
-    if transport.startswith("rocenante"):
-        from sparknet import rocenante
+    if uses_oneshot(transport):
+        from sparknet import oneshot
 
         policy = _policy_from_environment()
-        runtime = rocenante.AllReduce.from_exchange_group(
+        runtime = oneshot.AllReduce.from_exchange_group(
             exchange_group=cpu_group, device=device,
             max_size=policy.all_reduce_capacity_bytes, max_gather_bytes=policy.all_gather_shard_bytes,
         )
-        if runtime.topology != transport.removeprefix("rocenante-"):
-            raise RuntimeError(f"runtime topology {runtime.topology} differs from requested {transport}")
+        if runtime.topology != roce_topology(transport):
+            raise RuntimeError(f"runtime topology {runtime.topology} differs from the {transport} routing mode")
         if runtime.dispatch_max_bytes != policy.all_reduce_dispatch_bytes:
             raise RuntimeError("runtime did not apply the requested dispatch limit")
         runtime.prepare((torch.bfloat16, torch.float32, torch.float16), padded_gather=True)
@@ -249,9 +251,9 @@ def main(argv=None) -> int:
                     if proxy_before is not None:
                         nbytes = local.numel() * local.element_size()
                         expected_custom = runtime is not None and (
-                            (name == "all_reduce" and policy.all_reduce_backend(nbytes, str(dtype).replace("torch.", "")) == "rocenante")
-                            or (name == "all_gather" and policy.all_gather_backend(nbytes, str(dtype).replace("torch.", ""), dim=0, ndim=1) == "rocenante"))
-                        row["expected_backend"] = "rocenante" if expected_custom else "nccl"
+                            (name == "all_reduce" and policy.all_reduce_backend(nbytes, str(dtype).replace("torch.", "")) == "oneshot")
+                            or (name == "all_gather" and policy.all_gather_backend(nbytes, str(dtype).replace("torch.", ""), dim=0, ndim=1) == "oneshot"))
+                        row["expected_backend"] = "oneshot" if expected_custom else "nccl"
                         proxy_after = runtime.stats()
                         row["proxy_payload_bytes"] = {h: after - before_ for h, after, before_ in zip(
                             proxy_after["hcas"], proxy_after["bytes_posted_per_hca"], proxy_before["bytes_posted_per_hca"])}
@@ -270,7 +272,7 @@ def main(argv=None) -> int:
     if runtime:
         runtime.check_health()
         if runtime.stats()["ops_posted"] <= before:
-            raise RuntimeError("no probe payload used the RoCEnante proxy")
+            raise RuntimeError("no probe payload used the one-shot proxy")
         proxy_stats = runtime.stats()
     result = {"rank": args.rank, "world_size": args.world_size, "transport": transport,
               "policy": policy.__dict__ if policy else None, "proxy": proxy_stats, "passed": True,

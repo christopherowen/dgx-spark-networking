@@ -7,6 +7,8 @@ from .profiles import (
     environment,
     problems,
     profile,
+    profile_problems,
+    profiles_for,
     required_patches,
     size_bytes,
 )
@@ -18,6 +20,8 @@ __all__ = [
     "environment",
     "problems",
     "profile",
+    "profile_problems",
+    "profiles_for",
     "required_patches",
     "size_bytes",
 ]

@@ -75,6 +75,28 @@ class ProfileTest(unittest.TestCase):
         self.assertTrue(any("NCCL_SWITCHLESS_BIDIRECTIONAL needs the patched NCCL" in e for e in errors))
         self.assertEqual(profiles.problems(profiles.environment("tp3-triangle"), node_count=3, patched_nccl=False), [])
 
+    def test_two_node_and_switched_profiles(self):
+        for name, transport, counts in (("tp2-direct", "oneshot-direct", (2,)), ("direct-nccl-only", "nccl-direct", (2, 3)),
+                                        ("switched", "oneshot-switched", tuple(range(2, 17))), ("switched-nccl-only", "nccl-switched", tuple(range(2, 17)))):
+            with self.subTest(name=name):
+                entry = profiles.profile(name)
+                self.assertEqual((entry["transport"], entry["node_counts"]), (transport, counts))
+                env = profiles.environment(name)
+                for count in counts[:3]:
+                    self.assertEqual(profiles.problems(env, node_count=count), [])
+                self.assertEqual(profiles.required_patches(env), ["0001-ib-cts-nreqs-acquire-fence.patch"])
+                self.assertNotIn("NCCL_ALGO", env)
+                if transport.startswith("oneshot"):
+                    self.assertEqual(env["VLLM_ROCE_ALLREDUCE_MAX_SIZE"], "2MB")
+                    self.assertEqual(env["SPARKNET_ROCE_ALLGATHER_MAX_BYTES"], "4194304")
+                else:
+                    self.assertEqual(env["VLLM_ENABLE_ROCE_ALLREDUCE"], "0")
+        self.assertEqual(profiles.profiles_for("oneshot-switched", 12), ["switched"])
+        self.assertEqual(profiles.profiles_for("nccl-direct", 3), ["direct-nccl-only"])
+        self.assertEqual(profiles.profiles_for("oneshot-direct", 4), [])
+        self.assertEqual(profiles.profile_problems("switched", "oneshot-switched", 16), [])
+        self.assertTrue(profiles.profile_problems("tp2-direct", "oneshot-direct", 3))
+
     def test_size_syntax(self):
         self.assertEqual(profiles.size_bytes("2MB"), 2 * 1024 ** 2)
         self.assertEqual(profiles.size_bytes("512"), 512)

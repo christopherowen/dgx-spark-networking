@@ -8,7 +8,7 @@ one GPU and one tensor-parallel rank per node, no switch. The library carries
 the parts of that fabric that were measured to work best and packages them so
 a serving recipe (vLLM, SGLang or a custom engine) can select them by name:
 
-- **RoCEnante** (`sparknet.rocenante`): the one-shot RDMA all-reduce and
+- **One-shot collectives** (`sparknet.oneshot`, RoCEnante in b12x): the one-shot RDMA all-reduce and
   all-gather for the small collectives on the next-token path. One kernel
   launch stages the input into pinned host memory, a proxy posts RDMA writes
   to every peer, the kernel waits on per-lane sequence flags and reduces in
@@ -35,9 +35,25 @@ a serving recipe (vLLM, SGLang or a custom engine) can select them by name:
   qualified on the fleet's links and its patches live in `native/gpunetio`;
   see [docs/gpudirect-roadmap.md](docs/gpudirect-roadmap.md).
 
+## Supported fabrics
+
+| Fabric | Nodes | Transports | Small collectives | Status |
+| --- | --- | --- | --- | --- |
+| 2x direct connect | 2 | `oneshot-direct`, `nccl-direct` | One-shot over one cable's two PCIe paths; a second cable goes to NCCL (`nccl_hcas`) | configuration path with the triangle's settings (`tp2-direct`); not measured on this fleet |
+| 3x switchless triangle | 3 | `oneshot-direct`, `nccl-direct` | One-shot direct, every pair cabled | promoted spark3 TP3 baseline (`tp3-triangle`) |
+| 4x switchless ring | 4 | `oneshot-ring4`, `nccl-ring`, `oneshot-mesh4` | One-shot bidirectional host relay; NCCL on neighbour edges only | measured balanced candidate (`tp4-ring`), NCCL-only control (`tp4-ring-nccl-only`); mesh4 carried, not recommended |
+| Switched | 2 to 16 | `oneshot-switched`, `nccl-switched` | One-shot clique over up to two rails; NCCL over every rail with its own topology selection | configuration path (`switched`, `switched-nccl-only`); the clique mode was measured upstream on four switched Sparks, not on this fleet |
+
+The node map says which fabric a site has (`roce_peer_hcas` per peer for
+cabled fabrics, `roce_hcas` and `nccl_hcas` rails for a switch), the
+transport says which backend carries the small collectives, and the profile
+supplies the measured settings. `sparknet topology validate` refuses a map
+that does not fit the transport, and `render` refuses a profile that does not
+fit the map.
+
 ## Status
 
-The RoCEnante sources are vendored verbatim from the hardware-qualified tree
+The one-shot sources are vendored verbatim from the hardware-qualified tree
 of spark3-vllm-ds41f (b12x `f8069b2c` plus its eleven switchless patches,
 tree `cd615bd6`, the `roce-balanced-dispatch-v1` serving image), with only
 imports, environment names and preparation decoupled from b12x; the protocol,
@@ -46,7 +62,7 @@ promoted spark3 baseline; the TP4 profile is the measured balanced candidate
 (every interface at 24.8 to 25.2 percent of RDMA bytes, 2 MiB all-reduce 320
 to 232 us, prefill +1.6 to +1.9 percent, decode within noise). Numbers and
 their experiments are in [docs/nccl.md](docs/nccl.md) and
-[docs/rocenante.md](docs/rocenante.md).
+[docs/oneshot.md](docs/oneshot.md).
 
 What has not happened yet: the vendored runtime has not been run on the
 Sparks through this package (the GPU test and the probe exist for that), the
@@ -57,27 +73,29 @@ and the GPU-initiated transport is staged, not implemented.
 ## Quick start
 
 ```sh
-sparknet topology example tp4-ring > nodes.json        # edit for the site
-sparknet topology validate nodes.json --transport rocenante-ring4
-sparknet topology render nodes.json dgx3 --transport rocenante-ring4 --profile tp4-ring
+sparknet topology example tp4-ring > nodes.json        # or tp2-direct, tp3-triangle, switched
+sparknet topology validate nodes.json --transport oneshot-ring4
+sparknet topology render nodes.json dgx3 --transport oneshot-ring4 --profile tp4-ring
 sparknet nccl validate --profile tp4-ring
-sparknet probe doctor nodes.json --node dgx3 --transport rocenante-ring4      # on the node
-sparknet probe render-command nodes.json dgx3 --transport rocenante-ring4 \
+sparknet probe doctor nodes.json --node dgx3 --transport oneshot-ring4      # on the node
+sparknet probe render-command nodes.json dgx3 --transport oneshot-ring4 \
   --profile tp4-ring --image <serving image> -- --benchmark --counter-samples
 sparknet probe gpudirect
 ```
 
 `sparknet topology discover dgx1 dgx2 dgx3 dgx4 --out site --management-ip dgx1=10.0.1.71 ...`
 reads the cabling over LLDP (read-only) and writes `nodes.json` and each
-node's `40-cx7.yaml` under the fleet's `10.<a><b>.<path>.<N>` addressing.
+node's `40-cx7.yaml` under the fleet's `10.<a><b>.<path>.<N>` addressing;
+`--fabric switched` reads each host's active rails from sysfs instead and
+derives the rail subnets from their live addresses.
 
 In an engine:
 
 ```python
-from sparknet import rocenante
+from sparknet import oneshot
 from sparknet.policy import TP4_POLICY
 
-runtime = rocenante.AllReduce.from_exchange_group(
+runtime = oneshot.AllReduce.from_exchange_group(
     exchange_group=cpu_group, device=device,
     max_size=TP4_POLICY.all_reduce_capacity_bytes,
     max_gather_bytes=TP4_POLICY.all_gather_shard_bytes)
@@ -95,9 +113,9 @@ sparknet/            the library (CPU-only subpackages never import torch)
 patches/nccl/        NCCL 2.30.7 patch series and README
 native/gpunetio/     DOCA GPUNetIO pin, Spark patches and build script
 recipes/             rendered environments for the named profiles
-docs/                design, topology, nccl, rocenante, policy, roadmap, provenance
+docs/                design, topology, nccl, oneshot, policy, roadmap, provenance
 tests/               unit tests, the C proxy simulator, tests/gpu (torchrun)
-benchmarks/          RoCEnante versus NCCL latency with a receipt
+benchmarks/          one-shot versus NCCL latency with a receipt
 upstreams.lock.json  pinned revisions, patch heads and tree hashes
 ```
 

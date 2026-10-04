@@ -1,4 +1,4 @@
-"""Correctness tests for the RoCEnante one-shot collectives (sparknet.rocenante).
+"""Correctness tests for the one-shot collectives (sparknet.oneshot).
 
 Run with torchrun on two or more nodes that share a RoCE fabric, for example
 from every node of a DGX Spark cluster::
@@ -6,7 +6,7 @@ from every node of a DGX Spark cluster::
     NCCL_IB_HCA=rocep1s0f0,roceP2p1s0f0 NCCL_IB_GID_INDEX=3 \\
     torchrun --nnodes=4 --nproc-per-node=1 --node-rank=$RANK \\
         --master-addr=$MASTER --master-port=29650 \\
-        -m pytest -x tests/gpu/test_rocenante_gpu.py
+        -m pytest -x tests/gpu/test_oneshot_gpu.py
 
 Without a torchrun environment the tests skip.
 """
@@ -29,8 +29,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def runtime():
-    """Module-scoped RoCEnante runtime over the torchrun world; skips without RDMA support."""
-    from sparknet import rocenante as roce
+    """Module-scoped one-shot runtime over the torchrun world; skips without RDMA support."""
+    from sparknet import oneshot as roce
 
     if not roce.is_supported():
         pytest.skip(
@@ -399,7 +399,7 @@ def test_adapter_path_graph_replay(runtime):
 
 def _fresh_runtime(spin_limit: int):
     """A runtime of its own with a short spin limit, for fault injection."""
-    from sparknet import rocenante as roce
+    from sparknet import oneshot as roce
 
     previous = os.environ.get("SPARKNET_ROCE_SPIN_LIMIT")
     os.environ["SPARKNET_ROCE_SPIN_LIMIT"] = str(spin_limit)
@@ -600,7 +600,7 @@ def test_all_gather_graph_replay_with_alternating_grid_sizes(runtime):
         8, 38720 * world, dtype=torch.bfloat16, device=runtime.device
     )
     reduced = torch.empty_like(h)
-    from sparknet.rocenante import runtime as roce_oneshot
+    from sparknet.oneshot import runtime as roce_oneshot
 
     small_grid = roce_oneshot._grid_blocks(
         topk.numel() * topk.element_size() // roce_oneshot.PACK_BYTES,

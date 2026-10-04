@@ -1,7 +1,7 @@
 """One policy in execution and reporting.
 
 A collective policy fixes, before any graph capture, which backend carries
-each operation: RoCEnante for the small all-reduces and all-gathers on the
+each operation: the one-shot collectives for the small all-reduces and all-gathers on the
 next-token path, NCCL for everything else (larger payloads, reduce-scatter,
 variable collectives). The decision depends only on operation, dtype, shape,
 contiguity and byte size, which tensor-parallel ranks share, never on pointer
@@ -10,7 +10,7 @@ failure, never a local switch to another backend.
 
 Three limits are deliberately distinct:
 
-- the all-reduce **dispatch** ceiling: the largest input RoCEnante carries in
+- the all-reduce **dispatch** ceiling: the largest input one-shot carries in
   serving (the measured crossover with NCCL Ring is near 1 MiB on four nodes);
 - the all-reduce **capacity**: the registered and primed slot size, which may
   exceed dispatch (vLLM's sequence-parallel prefill threshold reads it);
@@ -49,20 +49,20 @@ class CollectivePolicy:
         return errors
 
     def all_reduce_backend(self, nbytes: int, dtype: str, *, contiguous: bool = True) -> str:
-        """``rocenante`` for an eligible input, else ``nccl``."""
+        """``oneshot`` for an eligible input, else ``nccl``."""
         if (contiguous and dtype in SUPPORTED_DTYPES and 0 < nbytes <= self.all_reduce_dispatch_bytes
                 and nbytes % PACK_BYTES == 0):
-            return "rocenante"
+            return "oneshot"
         return "nccl"
 
     def all_gather_backend(self, shard_bytes: int, dtype: str, *, dim: int, ndim: int,
                            contiguous: bool = True) -> str:
-        """``rocenante`` for a contiguous shard concatenated along dim 0 or the last dim within the limit."""
+        """``oneshot`` for a contiguous shard concatenated along dim 0 or the last dim within the limit."""
         if dim < 0:
             dim += ndim
         if (contiguous and ndim > 0 and dtype not in _GATHER_REJECTED_DTYPES and dim in (0, ndim - 1)
                 and 0 < shard_bytes <= self.all_gather_shard_bytes):
-            return "rocenante"
+            return "oneshot"
         return "nccl"
 
     @staticmethod
@@ -93,7 +93,7 @@ class CollectivePolicy:
         capacity = first(ENV_CAPACITY, "VLLM_ROCE_ALLREDUCE_MAX_SIZE")
         gather = first(ENV_GATHER, "VLLM_ROCE_ALLGATHER_MAX_SIZE")
         if capacity is None or gather is None:
-            raise ValueError("the environment names no RoCEnante all-reduce capacity or all-gather limit")
+            raise ValueError("the environment names no one-shot all-reduce capacity or all-gather limit")
         dispatch = first(ENV_DISPATCH, None)
         policy = cls(dispatch if dispatch is not None else capacity, capacity, gather)
         errors = policy.problems()
@@ -110,7 +110,7 @@ def policy_for_profile(name: str) -> CollectivePolicy | None:
     """The policy a named transport profile measured; None for an NCCL-only profile."""
     from sparknet.nccl.profiles import profile
 
-    roce = profile(name)["rocenante"]
+    roce = profile(name)["oneshot"]
     if roce["ALLREDUCE_CAPACITY_BYTES"] is None:
         return None
     capacity = int(roce["ALLREDUCE_CAPACITY_BYTES"])

@@ -1,14 +1,23 @@
-"""Per-node environment for a transport: the RoCEnante routes and the NCCL fabric policy."""
+"""Per-node environment for a transport: the one-shot routes or rails, and the NCCL fabric policy."""
 
 from __future__ import annotations
 
 import json
 
-from .nodes import RING_TRANSPORTS, logical_peer_hcas, roce_topology
+from .nodes import (
+    RING_TRANSPORTS,
+    SWITCHED_TRANSPORTS,
+    logical_peer_hcas,
+    nccl_hcas,
+    node_hcas,
+    roce_topology,
+    uses_oneshot,
+)
 
-# NCCL policy for a neighbour ring (three or four nodes in cable order). These
-# are the settings the four-node qualification depends on; channel counts and
-# buffers come from the tuning profile (``sparknet.nccl.profiles``).
+# NCCL policy for a neighbour ring (four nodes in cable order). These are the
+# settings the four-node qualification depends on; channel counts and buffers
+# come from the tuning profile (``sparknet.nccl.profiles``). Direct and
+# switched fabrics keep NCCL's own topology and algorithm selection.
 RING_ENV = {
     "NCCL_ALGO": "Ring",
     # NCCL 2.30.7 init.cc gates runtimeConn on cuMemSupport. Without this,
@@ -38,6 +47,8 @@ RING_ENV = {
 # routes through ranks that have no cable.
 FORBIDDEN_RING_KEYS = ("NCCL_ALGO_PLUGIN", "NCCL_TUNER_PLUGIN", "NCCL_GRAPH_FILE", "NCCL_TOPO_FILE")
 
+_ROCE_KEYS = ("PEER_HCAS", "TOPOLOGY", "HCA", "GID_INDEX", "TRAFFIC_CLASS")
+
 
 def node_environment(
     nodes: dict,
@@ -52,32 +63,36 @@ def node_environment(
 
     Emits the ``SPARKNET_ROCE_*`` names and, with ``compat`` (the default), the
     ``B12X_ROCE_*`` aliases so the same rendered environment drives either
-    implementation during the migration.
+    implementation during the migration. Stale routing keys in ``base`` are
+    replaced, never merged.
     """
     env = {k: str(v) for k, v in (base or {}).items()}
+    for key in list(env):
+        if any(key == f"{prefix}_ROCE_{name}" for prefix in ("SPARKNET", "B12X") for name in _ROCE_KEYS):
+            env.pop(key)
 
     def put(name: str, value: str) -> None:
         env[f"SPARKNET_ROCE_{name}"] = value
         if compat:
             env[f"B12X_ROCE_{name}"] = value
 
-    routes = logical_peer_hcas(node, transport, mesh_paths)
-    topology = roce_topology(transport)
-    if transport == "nccl-ring":
-        for key in list(env):
-            if key.endswith("_ROCE_PEER_HCAS") or key.endswith("_ROCE_TOPOLOGY"):
-                env.pop(key)
-    else:
-        put("PEER_HCAS", json.dumps(routes, separators=(",", ":")))
-        put("TOPOLOGY", topology)
+    if uses_oneshot(transport):
+        put("TOPOLOGY", roce_topology(transport))
+        if transport in SWITCHED_TRANSPORTS:
+            # A clique over the switch: the same rails reach every peer.
+            put("HCA", ",".join(node_hcas(node, transport)))
+        else:
+            put("PEER_HCAS", json.dumps(logical_peer_hcas(node, transport, mesh_paths), separators=(",", ":")))
     if transport in RING_TRANSPORTS:
         env.update(RING_ENV)
-        hcas = sorted({h for route in node["roce_peer_hcas"].values() for h in route})
-        # '=' makes NCCL match device names exactly rather than by prefix.
-        env["NCCL_IB_HCA"] = "=" + ",".join(hcas)
+    # '=' makes NCCL match device names exactly rather than by prefix.
+    env["NCCL_IB_HCA"] = "=" + ",".join(nccl_hcas(node, transport))
     if "roce_gid_index" in node:
         env["NCCL_IB_GID_INDEX"] = str(node["roce_gid_index"])
         put("GID_INDEX", str(node["roce_gid_index"]))
+    if "roce_traffic_class" in node:
+        env["NCCL_IB_TC"] = str(node["roce_traffic_class"])
+        put("TRAFFIC_CLASS", str(node["roce_traffic_class"]))
     iface = node.get("management_interface")
     if iface:
         for key in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "TP_SOCKET_IFNAME"):
@@ -103,6 +118,12 @@ def environment_problems(env: dict[str, str], transport: str, node_count: int) -
     for key in ("SPARKNET_ROCE_TOPOLOGY", "B12X_ROCE_TOPOLOGY"):
         if key in env and env[key] != topology:
             errors.append(f"{key} must be {topology} for {transport}")
+    if not uses_oneshot(transport):
+        for key in ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS", "SPARKNET_ROCE_HCA", "B12X_ROCE_HCA"):
+            if key in env:
+                errors.append(f"{transport} carries every collective on NCCL; {key} must not be set")
+        if env.get("VLLM_ENABLE_ROCE_ALLREDUCE") == "1":
+            errors.append(f"{transport} carries every collective on NCCL; VLLM_ENABLE_ROCE_ALLREDUCE must be 0")
     return errors
 
 

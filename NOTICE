@@ -3,8 +3,8 @@ Copyright 2026 Christopher Owen
 
 This product includes software developed by third parties:
 
-- RoCEnante (sparknet/rocenante/, tests/rocenante_sim/, tests/gpu/, benchmarks/):
-  derived from b12x, Copyright Luke Alonso and Local Inference Lab contributors,
+- One-shot collectives (sparknet/oneshot/, tests/oneshot_sim/, tests/gpu/, benchmarks/):
+  derived from the RoCEnante module of b12x, Copyright Luke Alonso and Local Inference Lab contributors,
   licensed under the Apache License, Version 2.0
   (https://github.com/local-inference-lab/b12x). The switchless routing, ring
   relay, mesh and dispatch changes applied on top are by Christopher Owen.

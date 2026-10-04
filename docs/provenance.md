@@ -5,7 +5,7 @@ measured. The deployment repository is spark3-vllm-ds41f
 (`https://github.com/christopherowen/spark3-vllm-ds41f`); its experiments
 are referenced by directory name.
 
-## RoCEnante (`sparknet/rocenante`)
+## One-shot collectives (`sparknet/oneshot`, upstream name RoCEnante)
 
 Vendored from local-inference-lab/b12x `b12x/comm/roce/` at
 `f8069b2c0be1311df3b112591c6b8876a843f8be` (`integration/karmic-kraken-beta`)
@@ -15,18 +15,18 @@ with the eleven spark3 B12X patches applied in order (patch head
 
 | Patch | What it adds |
 | --- | --- |
-| 0001 switchless-rocenante | per-peer HCA routes for non-clique fabrics; flag layout by route lanes |
+| 0001 switchless-oneshot | per-peer HCA routes for non-clique fabrics; flag layout by route lanes |
 | 0002 cutlass-dsl-4.7.1 | (b12x pin; not relevant to the vendored files) |
 | 0003, 0004, 0005 | (kernel fixes outside `comm/roce`) |
-| 0006 rocenante-ring4 | neighbour-only QPs, host relay of the opposite rank, ABI 5, the fake-verbs simulator |
-| 0007 rocenante-mesh4 | NIC-forwarded opposite QPs with flow-label marking, ABI 6 |
+| 0006 oneshot-ring4 | neighbour-only QPs, host relay of the opposite rank, ABI 5, the fake-verbs simulator |
+| 0007 oneshot-mesh4 | NIC-forwarded opposite QPs with flow-label marking, ABI 6 |
 | 0008 four-path-mesh | four opposite paths, ABI 8 |
 | 0009 bidirectional-relay | disjoint halves relayed in both directions, independent per-direction progress, ABI 9 |
 | 0010 dispatch-capacity | `ALLREDUCE_DISPATCH_MAX_BYTES` distinct from registered capacity, ABI 10 |
 | 0011 loader-abi | Python loader pinned to ABI 10 |
 
 Local changes on top (not hardware changes): imports moved from
-`b12x._lib.*` to `sparknet.rocenante._compile` (CuTe DSL `cute.compile` with
+`b12x._lib.*` to `sparknet.oneshot._compile` (CuTe DSL `cute.compile` with
 the DSL's own cache, `functools.cache` in place of b12x's program cache, a
 freeze flag); the b12x preparation plan (`plan=` argument,
 `b12x.preparation`) replaced by in-process `prepare`; `SPARKNET_ROCE_*`

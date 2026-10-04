@@ -1,6 +1,7 @@
 {
   "profile": "tp4-ring",
-  "transport": "rocenante-ring4",
+  "transport": "oneshot-ring4",
+  "fabric": "ring4",
   "nodes_example": "sparknet/topology/examples/tp4-ring.json",
   "status": "measured balanced candidate: spark3 experiments/2026-10-03-balanced-policy selected.json (TP4, cable loop, bidirectional relay, four balanced NCCL channels)",
   "evidence": "spark3 experiments/2026-10-03-balanced-policy (decision.md), 2026-10-03-collective-serving, 2026-10-03-tp3-tp4-comparison",

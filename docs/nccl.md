@@ -7,20 +7,25 @@ with `patches/nccl` by `scripts/build-nccl.sh`.
 
 ## Profiles
 
-| Setting | `tp3-triangle` | `tp4-ring` | `tp4-ring-nccl-only` |
-| --- | --- | --- | --- |
-| Physical fabric | triangle, every pair cabled | four-node loop | four-node loop |
-| Small collectives | RoCEnante direct | RoCEnante ring4 relay | NCCL |
-| NCCL algorithm | upstream selection | Ring, neighbours only | Ring, neighbours only |
-| Channels (min/max) | upstream / 8 | 4 / 4 | 4 / 4 |
-| Buffer | 1 MiB | 4 MiB | 1 MiB |
-| LL128 | 256 KiB buffer, protocol excluded | same | same |
-| Direction policy | upstream | mode 2: both directions, both roots | upstream (clockwise) |
-| Allocation floor | upstream (32 KiB) | 512 bytes | upstream |
-| Thread thresholds | upstream | `-2 -2 -2 1 1 1` | upstream |
-| cuMem / runtime connect | off | on (required for neighbour-only connects) | on |
-| RoCEnante all-reduce dispatch / capacity | 2 MiB / 2 MiB | 1 MiB / 2 MiB | none |
-| RoCEnante all-gather shard | 4 MiB | 2 MiB | none |
+| Setting | `tp2-direct`, `tp3-triangle`, `switched` | `direct-nccl-only`, `switched-nccl-only` | `tp4-ring` | `tp4-ring-nccl-only` |
+| --- | --- | --- | --- | --- |
+| Physical fabric | one cable, triangle, or a switch | same | four-node loop | four-node loop |
+| Small collectives | One-shot direct (clique) | NCCL | One-shot ring4 relay | NCCL |
+| NCCL algorithm | upstream selection | upstream selection | Ring, neighbours only | Ring, neighbours only |
+| Channels (min/max) | upstream / 8 | upstream / 8 | 4 / 4 | 4 / 4 |
+| Buffer | 1 MiB | 1 MiB | 4 MiB | 1 MiB |
+| LL128 | 256 KiB buffer, protocol excluded | same | same | same |
+| Direction policy | upstream | upstream | mode 2: both directions, both roots | upstream (clockwise) |
+| Allocation floor | upstream (32 KiB) | upstream | 512 bytes | upstream |
+| Thread thresholds | upstream | upstream | `-2 -2 -2 1 1 1` | upstream |
+| cuMem / runtime connect | off | off | on (required for neighbour-only connects) | on |
+| One-shot all-reduce dispatch / capacity | 2 MiB / 2 MiB | none | 1 MiB / 2 MiB | none |
+| One-shot all-gather shard | 4 MiB | none | 2 MiB | none |
+
+Only `tp3-triangle` and `tp4-ring` were measured on this fleet. `tp2-direct`
+and the two switched profiles reuse the triangle's settings because the
+runtime's direct mode is the same clique protocol; their status fields say
+so, and a site adopting them owes itself the collective probe before serving.
 
 `sparknet nccl env --profile <name>` prints the environment,
 `sparknet nccl validate` checks it (patch controls on an unpatched library,

@@ -16,14 +16,14 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "sparknet" / "topology" / "exam
 class ContainerTest(unittest.TestCase):
     def test_probe_is_bounded_and_does_not_share_serving_ipc(self):
         command = docker_probe_command(image="img:tag", environment={"NCCL_DEBUG": "WARN", "A": "1"}, rank=3, world_size=4,
-                                       master_addr="192.0.2.1", master_port=29999, transport="rocenante-ring4",
+                                       master_addr="192.0.2.1", master_port=29999, transport="oneshot-ring4",
                                        probe_source="/opt/sparknet/probe/collectives.py", extra_args=("--benchmark",))
         self.assertIn("600s", command)
         self.assertIn("--memory=12g", command)
         self.assertNotIn("--ipc=host", command)
         self.assertIn("--entrypoint=/usr/bin/timeout", command)
         self.assertEqual(command[command.index("--world-size") + 1], "4")
-        self.assertEqual(command[command.index("--transport") + 1], "rocenante-ring4")
+        self.assertEqual(command[command.index("--transport") + 1], "oneshot-ring4")
         self.assertIn("--env", command)
         self.assertIn("NCCL_DEBUG=INFO", command)
         self.assertEqual(command[-1], "--benchmark")
@@ -39,11 +39,26 @@ class DoctorTest(unittest.TestCase):
             gid = "0000:0000:0000:0000:0000:ffff:" + "".join(f"{int(o):02x}" for o in address.split("."))
             gid = gid[:-8] + gid[-8:-4] + ":" + gid[-4:]
             self.inventory[hca] = {"state": "4: ACTIVE", "gid": gid, "mtu": 9000}
-        self.kwargs = dict(transport="rocenante-ring4", inventory=self.inventory, cmdline="BOOT_IMAGE=/boot/vmlinuz-7.0.0-1019-nvidia-64k kho=off",
+        self.kwargs = dict(transport="oneshot-ring4", inventory=self.inventory, cmdline="BOOT_IMAGE=/boot/vmlinuz-7.0.0-1019-nvidia-64k kho=off",
                            memlock_unlimited=True, compiler_present=True, verbs_header=True)
 
     def test_matching_host_passes(self):
         self.assertEqual(local_problems(self.nodes, "dgx4", **self.kwargs), [])
+
+    def test_switched_doctor_checks_every_rail(self):
+        nodes = json.loads((EXAMPLES / "switched.json").read_text())
+        node = topology.node_by_name(nodes, "dgx2")
+        inventory = {}
+        for hca, subnet in node["roce_subnets"].items():
+            address = subnet.replace(".0/24", ".2")
+            raw = "".join(f"{int(o):02x}" for o in address.split("."))
+            inventory[hca] = {"state": "4: ACTIVE", "gid": "0000:0000:0000:0000:0000:ffff:" + raw[:4] + ":" + raw[4:], "mtu": 9000}
+        kwargs = dict(self.kwargs, transport="oneshot-switched", inventory=inventory)
+        self.assertEqual(local_problems(nodes, "dgx2", **kwargs), [])
+        inventory["roceP2p1s0f1"]["state"] = "1: DOWN"
+        self.assertTrue(any("roceP2p1s0f1 port is" in e for e in local_problems(nodes, "dgx2", **kwargs)))
+        self.assertEqual(local_problems(nodes, "dgx2", **dict(kwargs, transport="nccl-switched", compiler_present=False)),
+                         [e for e in local_problems(nodes, "dgx2", **kwargs)])
 
     def test_each_mismatch_is_reported(self):
         inventory = {k: dict(v) for k, v in self.inventory.items()}

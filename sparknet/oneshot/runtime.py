@@ -1,8 +1,9 @@
-"""RoCEnante: one-shot RoCE all-reduce and all-gather runtime for multi-node tensor parallelism.
+"""One-shot RoCE all-reduce and all-gather runtime for multi-node tensor parallelism.
 
 Vendored from local-inference-lab/b12x ``b12x/comm/roce/roce_oneshot.py`` at the
 hardware-qualified switchless tree (see docs/provenance.md) and decoupled from
 the b12x preparation framework: ``prepare`` compiles the launchers in process.
+b12x calls this module RoCEnante; the mechanism is the one-shot collective.
 
 Designed for DGX Spark clusters, whose integrated GPU can read pinned host
 memory in place and whose ConnectX-7 can RDMA-write into the same memory.
@@ -247,7 +248,7 @@ def _resolve_hca_topology(
     names = tuple(hca_names) if hca_names else routed_names
     if len(set(names)) != len(names) or not 1 <= len(names) <= MAX_LOCAL_HCAS:
         raise ValueError(
-            f"RoCEnante requires 1..{MAX_LOCAL_HCAS} unique local HCA names"
+            f"the one-shot runtime requires 1..{MAX_LOCAL_HCAS} unique local HCA names"
         )
     unknown = sorted(set(routed_names) - set(names))
     if unknown:
@@ -328,7 +329,7 @@ def _exchange(local: object, group: ProcessGroup) -> list[object]:
 class RoceOneshotAllReduce:
     """One-shot RDMA all-reduce over the DGX Spark 200 GbE fabric."""
 
-    algorithm = "rocenante"
+    algorithm = "oneshot"
 
     def __init__(
         self,
@@ -543,7 +544,7 @@ class RoceOneshotAllReduce:
             raise RuntimeError("RoCE all-reduce connect failed: " + "; ".join(failures))
         if self.rank == 0:
             logger.info(
-                "RoCEnante ready: world=%d hcas=%s stripes=%d gid_index=%d max_size=%d traffic_class=%d",
+                "one-shot collectives ready: world=%d hcas=%s stripes=%d gid_index=%d max_size=%d traffic_class=%d",
                 self.world_size,
                 ",".join(self.hca_names),
                 self.stripe_count,

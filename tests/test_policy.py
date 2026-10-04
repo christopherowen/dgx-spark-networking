@@ -8,13 +8,13 @@ from sparknet.policy import TP3_POLICY, TP4_POLICY, CollectivePolicy, policy_for
 class PolicyTest(unittest.TestCase):
     def test_dispatch_boundaries(self):
         p = TP4_POLICY
-        self.assertEqual(p.all_reduce_backend(1048576, "bfloat16"), "rocenante")
+        self.assertEqual(p.all_reduce_backend(1048576, "bfloat16"), "oneshot")
         self.assertEqual(p.all_reduce_backend(1048576 + 16, "bfloat16"), "nccl")
         self.assertEqual(p.all_reduce_backend(1048576, "bfloat16", contiguous=False), "nccl")
         self.assertEqual(p.all_reduce_backend(24, "bfloat16"), "nccl")  # not a multiple of 16
         self.assertEqual(p.all_reduce_backend(16, "int32"), "nccl")
         self.assertEqual(p.all_reduce_backend(0, "float32"), "nccl")
-        self.assertEqual(p.all_gather_backend(2097152, "int64", dim=-1, ndim=2), "rocenante")
+        self.assertEqual(p.all_gather_backend(2097152, "int64", dim=-1, ndim=2), "oneshot")
         self.assertEqual(p.all_gather_backend(2097152 + 1, "int64", dim=-1, ndim=2), "nccl")
         self.assertEqual(p.all_gather_backend(1024, "bfloat16", dim=1, ndim=3), "nccl")
         self.assertEqual(p.all_gather_backend(1024, "bool", dim=0, ndim=1), "nccl")

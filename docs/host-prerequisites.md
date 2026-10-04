@@ -5,7 +5,7 @@ only by the owner's fleet tooling.
 
 - DGX Spark OS 26.09 or later, kernel `7.0.0-1019-nvidia` (4 KiB or 64 KiB
   pages) with `kho=off`: without it `ibv_reg_mr` fails with ENOMEM under
-  memory pressure, which breaks both NCCL and RoCEnante.
+  memory pressure, which breaks both NCCL and one-shot.
 - NVIDIA driver 580.178.04 (open kernel module); ConnectX-7 firmware
   28.45.4028; rdma-core 50 with `libibverbs-dev` and the mlx5 provider
   headers; a C compiler (the proxy is built at first use or at image build).

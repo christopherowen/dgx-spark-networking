@@ -1,4 +1,4 @@
-"""Named transport profiles: the NCCL and RoCEnante settings that were measured together.
+"""Named transport profiles: the NCCL and one-shot settings that were measured together.
 
 Native environment names are the tuning API; a value of ``None`` means "omit
 the variable, use the pinned implementation's default", never zero. Each
@@ -46,33 +46,60 @@ PATCH_CONTROLS = {
 ADAPTIVE_THREADS_PATCH = "0004-adaptive-small-ring-threads.patch"
 FENCE_PATCH = "0001-ib-cts-nreqs-acquire-fence.patch"
 
+# Settings of the direct (every pair cabled, or every rank behind a switch)
+# One-shot profiles: NCCL keeps its own topology and algorithm selection.
+_DIRECT_NCCL = {
+    "NCCL_CUMEM_ENABLE": "0",
+    "NCCL_MIN_NCHANNELS": None,
+    "NCCL_MAX_NCHANNELS": "8",
+    "NCCL_BUFFSIZE": "1048576",
+    "NCCL_LL128_BUFFSIZE": "262144",
+    "NCCL_PROTO": "^LL128",
+    "NCCL_SWITCHLESS_BIDIRECTIONAL": None,
+    "NCCL_MIN_TRAFFIC_PER_CHANNEL": None,
+    "NCCL_THREAD_THRESHOLDS": None,
+}
+_DIRECT_ONESHOT = {
+    "ALLREDUCE_CAPACITY_BYTES": "2097152",
+    "ALLREDUCE_DISPATCH_MAX_BYTES": None,
+    "ALLGATHER_MAX_BYTES": "4194304",
+    "SPIN_LIMIT": "5000000",
+}
+_NO_ONESHOT = {
+    "ALLREDUCE_CAPACITY_BYTES": None,
+    "ALLREDUCE_DISPATCH_MAX_BYTES": None,
+    "ALLGATHER_MAX_BYTES": None,
+    "SPIN_LIMIT": None,
+}
+
 PROFILES: dict[str, dict[str, Any]] = {
+    "tp2-direct": {
+        "transport": "oneshot-direct",
+        "node_counts": (2,),
+        "status": "configuration path: two Sparks on one cable (two PCIe-path stripes; a second cable goes to NCCL through nccl_hcas) with the promoted triangle settings; not measured on this fleet",
+        "nccl": dict(_DIRECT_NCCL),
+        "oneshot": dict(_DIRECT_ONESHOT),
+        "evidence": "settings from tp3-triangle; the one-cable direct mode is the runtime's clique mode (b12x docs/oneshot.md, measured by Local Inference Lab on four Sparks); two-Spark qualification is this fleet's own task",
+    },
     "tp3-triangle": {
-        "transport": "rocenante-direct",
-        "node_count": 3,
+        "transport": "oneshot-direct",
+        "node_counts": (3,),
         "status": "promoted: spark3-vllm-ds41f baseline 2026-10-02-karmic-kraken-r5o-64k (TP3, every pair cabled)",
-        "nccl": {
-            "NCCL_CUMEM_ENABLE": "0",
-            "NCCL_MIN_NCHANNELS": None,
-            "NCCL_MAX_NCHANNELS": "8",
-            "NCCL_BUFFSIZE": "1048576",
-            "NCCL_LL128_BUFFSIZE": "262144",
-            "NCCL_PROTO": "^LL128",
-            "NCCL_SWITCHLESS_BIDIRECTIONAL": None,
-            "NCCL_MIN_TRAFFIC_PER_CHANNEL": None,
-            "NCCL_THREAD_THRESHOLDS": None,
-        },
-        "rocenante": {
-            "ALLREDUCE_CAPACITY_BYTES": "2097152",
-            "ALLREDUCE_DISPATCH_MAX_BYTES": None,
-            "ALLGATHER_MAX_BYTES": "4194304",
-            "SPIN_LIMIT": "5000000",
-        },
+        "nccl": dict(_DIRECT_NCCL),
+        "oneshot": dict(_DIRECT_ONESHOT),
         "evidence": "spark3 manifests/baselines/2026-10-02-karmic-kraken-r5o-64k.json; experiments/2026-09-27-nccl-fence",
     },
+    "direct-nccl-only": {
+        "transport": "nccl-direct",
+        "node_counts": (2, 3),
+        "status": "control: two or three cabled Sparks with every collective on NCCL and its own topology selection; not measured on this fleet",
+        "nccl": dict(_DIRECT_NCCL),
+        "oneshot": dict(_NO_ONESHOT),
+        "evidence": "settings from tp3-triangle without the custom collectives",
+    },
     "tp4-ring": {
-        "transport": "rocenante-ring4",
-        "node_count": 4,
+        "transport": "oneshot-ring4",
+        "node_counts": (4,),
         "status": "measured balanced candidate: spark3 experiments/2026-10-03-balanced-policy selected.json (TP4, cable loop, bidirectional relay, four balanced NCCL channels)",
         "nccl": {
             **RING_ENV,
@@ -85,7 +112,7 @@ PROFILES: dict[str, dict[str, Any]] = {
             "NCCL_MIN_TRAFFIC_PER_CHANNEL": "512",
             "NCCL_THREAD_THRESHOLDS": "-2 -2 -2 1 1 1",
         },
-        "rocenante": {
+        "oneshot": {
             "ALLREDUCE_CAPACITY_BYTES": "2097152",
             "ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
             "ALLGATHER_MAX_BYTES": "2097152",
@@ -95,7 +122,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     },
     "tp4-ring-nccl-only": {
         "transport": "nccl-ring",
-        "node_count": 4,
+        "node_counts": (4,),
         "status": "control: four-node neighbour ring with every collective on NCCL (spark3 experiments/2026-10-03-collective-serving one-channel and four-channel arms)",
         "nccl": {
             **RING_ENV,
@@ -108,13 +135,24 @@ PROFILES: dict[str, dict[str, Any]] = {
             "NCCL_MIN_TRAFFIC_PER_CHANNEL": None,
             "NCCL_THREAD_THRESHOLDS": None,
         },
-        "rocenante": {
-            "ALLREDUCE_CAPACITY_BYTES": None,
-            "ALLREDUCE_DISPATCH_MAX_BYTES": None,
-            "ALLGATHER_MAX_BYTES": None,
-            "SPIN_LIMIT": None,
-        },
+        "oneshot": dict(_NO_ONESHOT),
         "evidence": "spark3 experiments/2026-10-03-collective-serving/decision.md",
+    },
+    "switched": {
+        "transport": "oneshot-switched",
+        "node_counts": tuple(range(2, 17)),
+        "status": "configuration path: every rank behind a switch, one-shot over up to two rails and NCCL over every rail with upstream topology selection; not measured on this fleet (no switch)",
+        "nccl": dict(_DIRECT_NCCL),
+        "oneshot": dict(_DIRECT_ONESHOT),
+        "evidence": "the runtime's clique mode as Local Inference Lab measured it on four Sparks over both ConnectX-7 functions (b12x docs/oneshot.md: all-reduce 8 KB 16.8 us graph-replayed versus NCCL 52.6 us); the NCCL settings are the triangle's",
+    },
+    "switched-nccl-only": {
+        "transport": "nccl-switched",
+        "node_counts": tuple(range(2, 17)),
+        "status": "control: every rank behind a switch with every collective on NCCL; not measured on this fleet",
+        "nccl": dict(_DIRECT_NCCL),
+        "oneshot": dict(_NO_ONESHOT),
+        "evidence": "settings from tp3-triangle without the custom collectives",
     },
 }
 
@@ -134,6 +172,24 @@ def profile(name: str) -> dict[str, Any]:
         raise ValueError(f"unknown transport profile {name!r}; choose {', '.join(PROFILES)}") from None
 
 
+def profiles_for(transport: str, node_count: int) -> list[str]:
+    """The profile names that apply to a transport and node count."""
+    return [name for name, entry in PROFILES.items()
+            if entry["transport"] == transport and node_count in entry["node_counts"]]
+
+
+def profile_problems(name: str, transport: str, node_count: int) -> list[str]:
+    """Why ``name`` does not apply to a transport and node count."""
+    entry = profile(name)
+    errors = []
+    if entry["transport"] != transport:
+        errors.append(f"profile {name} is for transport {entry['transport']}, not {transport}")
+    if node_count not in entry["node_counts"]:
+        counts = ", ".join(str(c) for c in entry["node_counts"][:4]) + (" ..." if len(entry["node_counts"]) > 4 else "")
+        errors.append(f"profile {name} applies to {counts} nodes, not {node_count}")
+    return errors
+
+
 def environment(name: str, *, compat: bool = True) -> dict[str, str]:
     """The rank-invariant environment of a profile (per-node routes come from ``sparknet.topology``)."""
     entry = profile(name)
@@ -143,7 +199,7 @@ def environment(name: str, *, compat: bool = True) -> dict[str, str]:
             env.pop(key, None)
         else:
             env[key] = value
-    roce = entry["rocenante"]
+    roce = entry["oneshot"]
     if roce["ALLREDUCE_CAPACITY_BYTES"] is not None:
         names = {
             "ALLREDUCE_CAPACITY_BYTES": "ALLREDUCE_CAPACITY_BYTES",
@@ -226,13 +282,13 @@ def problems(env: dict[str, str], *, node_count: int, patched_nccl: bool = True)
         str(size_bytes(env["VLLM_ROCE_ALLGATHER_MAX_SIZE"])) if env.get("VLLM_ROCE_ALLGATHER_MAX_SIZE") else None)
     for label, value in (("all-reduce capacity", capacity), ("all-gather limit", gather), ("all-reduce dispatch", dispatch)):
         if value is not None and (not str(value).isdigit() or int(value) <= 0 or int(value) % 16):
-            errors.append(f"RoCEnante {label} must be a positive multiple of 16 bytes")
+            errors.append(f"one-shot {label} must be a positive multiple of 16 bytes")
     if capacity and dispatch and str(capacity).isdigit() and str(dispatch).isdigit() and int(dispatch) > int(capacity):
-        errors.append("RoCEnante dispatch limit must not exceed registered capacity")
+        errors.append("one-shot dispatch limit must not exceed registered capacity")
     return errors
 
 
 __all__ = [
     "ADAPTIVE_THREADS_PATCH", "COMMON_IB_ENV", "FENCE_PATCH", "PATCH_CONTROLS", "PROFILES",
-    "environment", "problems", "profile", "required_patches", "size_bytes",
+    "environment", "problems", "profile", "profile_problems", "profiles_for", "required_patches", "size_bytes",
 ]

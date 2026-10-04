@@ -1,7 +1,7 @@
-"""RoCEnante adapter for vLLM's CUDA device communicator (multi-node DGX Spark TP).
+"""one-shot adapter for vLLM's CUDA device communicator (multi-node DGX Spark TP).
 
 A thin shim: capability voting, construction, preparation and size gating live
-here; the protocol lives in ``sparknet.rocenante``. It replaces the
+here; the protocol lives in ``sparknet.oneshot``. It replaces the
 ``B12xRoceAllReduce`` class of the Local Inference Lab vLLM fork one for one
 (same constructor keywords, same methods), and keeps the fail-stop policy of
 that fork's explicit-collective-policy patch:
@@ -66,10 +66,10 @@ def enabled() -> bool:
     return _env(ENV_ENABLE, "0") == "1"
 
 
-class SparknetRoceAllReduce:
-    """Route eligible tensor-parallel all-reduces and all-gathers to ``sparknet.rocenante``."""
+class SparknetOneShotAllReduce:
+    """Route eligible tensor-parallel all-reduces and all-gathers to ``sparknet.oneshot``."""
 
-    backend_name = "SPARKNET_ROCENANTE"
+    backend_name = "SPARKNET_ONESHOT"
 
     def __init__(
         self,
@@ -94,9 +94,9 @@ class SparknetRoceAllReduce:
         if len(self.global_ranks) != self.world_size:
             raise ValueError("RoCE global ranks must match the process group")
         if device_group is None:
-            raise RuntimeError("RoCEnante requires a CUDA process group.")
+            raise RuntimeError("the one-shot adapter requires a CUDA process group.")
         if in_the_same_node is not None and all(in_the_same_node):
-            logger.info("RoCEnante skipped: group is single-node.")
+            logger.info("one-shot collectives skipped: group is single-node.")
             return
 
         # Vote before the collective constructor so a rank that cannot take
@@ -104,28 +104,28 @@ class SparknetRoceAllReduce:
         # the runtime's setup exchange. The parsed limits travel with the vote.
         reason, limits = self._local_capability()
         if not nccl_available:
-            reason = "RoCEnante policy requires an available NCCL communicator"
+            reason = "one-shot policy requires an available NCCL communicator"
         verdict = self._exchange_vote(reason, limits)
         if verdict is not None:
-            raise RuntimeError(f"RoCEnante policy unavailable: {verdict}")
+            raise RuntimeError(f"one-shot policy unavailable: {verdict}")
         max_size, max_gather = limits
 
-        from sparknet import rocenante
+        from sparknet import oneshot
 
         try:
             # Exchange setup over the CPU (gloo) group: using the torch NCCL
             # group would create a torch NCCL communicator that vLLM otherwise
             # never needs, costing about 3.4 GB of unified memory per rank.
-            self._runtime = rocenante.AllReduce.from_exchange_group(
+            self._runtime = oneshot.AllReduce.from_exchange_group(
                 exchange_group=group, device=device, max_size=max_size, max_gather_bytes=max_gather,
             )
             self._runtime.prepare((torch.float16, torch.bfloat16, torch.float32), padded_gather=True)
         except Exception as exc:  # noqa: BLE001 - the runtime already coordinated ranks
-            raise RuntimeError("RoCEnante policy initialization failed") from exc
+            raise RuntimeError("one-shot policy initialization failed") from exc
         self.disabled = False
         if self.rank == 0:
             logger.info(
-                "Using RoCEnante (sparknet one-shot RoCE collectives): world=%d, topology=%s, hcas=%s, "
+                "Using one-shot RoCE collectives: world=%d, topology=%s, hcas=%s, "
                 "all-reduce dispatch <=%d bytes, registered all-reduce capacity=%d bytes, "
                 "all-gather input shard <=%d bytes. NCCL handles ineligible inputs and "
                 "reduce-scatter; backend failures are fatal.",
@@ -135,18 +135,18 @@ class SparknetRoceAllReduce:
 
     def _local_capability(self) -> tuple[str | None, tuple[int, int] | None]:
         try:
-            from sparknet import rocenante
+            from sparknet import oneshot
         except ImportError as exc:  # missing package or a broken native build
-            return f"sparknet.rocenante is not importable: {exc}", None
-        api = getattr(rocenante, "API_VERSION", None)
+            return f"sparknet.oneshot is not importable: {exc}", None
+        api = getattr(oneshot, "API_VERSION", None)
         if api != REQUIRED_API_VERSION:
-            return f"sparknet.rocenante API version {api}, adapter needs {REQUIRED_API_VERSION}", None
-        if not rocenante.is_supported(self.device):
+            return f"sparknet.oneshot API version {api}, adapter needs {REQUIRED_API_VERSION}", None
+        if not oneshot.is_supported(self.device):
             return "needs an integrated GPU with an active RDMA device", None
         try:
             limits = (parse_byte_size(_env(ENV_ALLREDUCE_LIMIT, "2MB")), parse_byte_size(_env(ENV_ALLGATHER_LIMIT, "4MB")))
         except Exception as exc:  # noqa: BLE001 - reported through the vote
-            return f"invalid RoCEnante size limit: {exc}", None
+            return f"invalid one-shot size limit: {exc}", None
         return None, limits
 
     def _exchange_vote(self, reason: str | None, limits: tuple[int, int] | None) -> str | None:
@@ -191,7 +191,7 @@ class SparknetRoceAllReduce:
         if not self._announced:
             self._announced = True
             log = logger.info if self.rank == 0 else logger.debug
-            log("RoCEnante all-reduce is live: first routed all-reduce is %d bytes (%s); dispatch limit=%d bytes, registered capacity=%d bytes.",
+            log("one-shot all-reduce is live: first routed all-reduce is %d bytes (%s); dispatch limit=%d bytes, registered capacity=%d bytes.",
                 inp.numel() * inp.element_size(), str(inp.dtype).replace("torch.", ""),
                 self.all_reduce_max_bytes, self.all_reduce_capacity_bytes)
         return self._runtime.all_reduce(inp)
@@ -203,7 +203,7 @@ class SparknetRoceAllReduce:
         if not self._announced_gather:
             self._announced_gather = True
             log = logger.info if self.rank == 0 else logger.debug
-            log("RoCEnante all-gather is live: first routed shard is %s %s along dim %d; input shard dispatch limit=%d bytes.",
+            log("one-shot all-gather is live: first routed shard is %s %s along dim %d; input shard dispatch limit=%d bytes.",
                 tuple(inp.shape), str(inp.dtype).replace("torch.", ""), dim, self.all_gather_max_bytes)
         return self._runtime.all_gather(inp, dim=dim)
 
@@ -225,4 +225,4 @@ class SparknetRoceAllReduce:
         self.disabled = True
 
 
-__all__ = ["REQUIRED_API_VERSION", "SparknetRoceAllReduce", "enabled", "parse_byte_size"]
+__all__ = ["REQUIRED_API_VERSION", "SparknetOneShotAllReduce", "enabled", "parse_byte_size"]

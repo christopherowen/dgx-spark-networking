@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "sources": {
-    "rocenante": {
+    "oneshot": {
       "kind": "vendored-git",
       "upstream": "https://github.com/local-inference-lab/b12x.git",
       "tracking_ref": "refs/heads/integration/karmic-kraken-beta",
@@ -19,13 +19,13 @@
         "benchmarks/benchmark_roce_oneshot.py"
       ],
       "applied_patches": [
-        "spark3-vllm-ds41f patches/b12x/0001-switchless-rocenante.patch",
+        "spark3-vllm-ds41f patches/b12x/0001-switchless-oneshot.patch",
         "spark3-vllm-ds41f patches/b12x/0002-cutlass-dsl-4.7.1.patch",
         "spark3-vllm-ds41f patches/b12x/0003-dsa-topk-position-ties.patch",
         "spark3-vllm-ds41f patches/b12x/0004-gemm-fence-stage-reads-before-tma-refill.patch",
         "spark3-vllm-ds41f patches/b12x/0005-fence-stage-reads-three-kernels.patch",
-        "spark3-vllm-ds41f experiments/2026-10-02-rocenante-ring4/b12x/0006-rocenante-ring4.patch",
-        "spark3-vllm-ds41f experiments/2026-10-02-rocenante-mesh4/b12x/0007-rocenante-mesh4.patch",
+        "spark3-vllm-ds41f experiments/2026-10-02-oneshot-ring4/b12x/0006-oneshot-ring4.patch",
+        "spark3-vllm-ds41f experiments/2026-10-02-oneshot-mesh4/b12x/0007-oneshot-mesh4.patch",
         "spark3-vllm-ds41f experiments/2026-10-02-mesh4-fourpaths/b12x/0008-four-path-mesh.patch",
         "spark3-vllm-ds41f experiments/2026-10-03-ring4-bidirectional/b12x/0009-bidirectional-relay.patch",
         "spark3-vllm-ds41f experiments/2026-10-03-balanced-policy/b12x/0010-dispatch-capacity.patch",
@@ -35,9 +35,9 @@
       "tree": "cd615bd69ed1a99d6b59217329a3ff429b5277fe",
       "proxy_abi": 10,
       "qualified_image": "vllm-ds41f-kkref:04c30fa98e79-r5o-roce-balanced-dispatch-v1 (sha256:6e03995e36aac90c578fe2d00796068a32ecb8316ed0bae201352d1486272d4d), label local.spark3.b12x.tree=cd615bd69ed1a99d6b59217329a3ff429b5277fe",
-      "local_changes": "imports moved off b12x._lib and b12x.preparation (sparknet.rocenante._compile); SPARKNET_ROCE_* environment names with B12X_ROCE_* aliases; prepare() compiles launchers in process; transport factory parameter. Protocol, kernels, proxy posting logic and wire ABI unchanged.",
+      "local_changes": "imports moved off b12x._lib and b12x.preparation (sparknet.oneshot._compile); SPARKNET_ROCE_* environment names with B12X_ROCE_* aliases; prepare() compiles launchers in process; transport factory parameter. Protocol, kernels, proxy posting logic and wire ABI unchanged.",
       "license": "Apache-2.0",
-      "role": "RoCEnante one-shot all-reduce and all-gather over switchless RoCE: direct, ring4 (bidirectional host relay) and mesh4 modes"
+      "role": "one-shot all-reduce and all-gather over switchless RoCE (the RoCEnante module of b12x): direct, ring4 (bidirectional host relay) and mesh4 modes"
     },
     "nccl": {
       "kind": "git",

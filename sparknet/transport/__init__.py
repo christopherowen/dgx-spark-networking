@@ -1,4 +1,4 @@
-"""The RDMA transport boundary of the RoCEnante protocol.
+"""The RDMA transport boundary of the one-shot protocol.
 
 The GPU side of the protocol (pinned slots, per-lane sequence flags, the
 doorbell, the device-resident epoch, fixed-rank reduction) does not depend on

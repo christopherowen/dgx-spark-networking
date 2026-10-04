@@ -1,6 +1,6 @@
 """The host-proxy transport: a C thread over libibverbs posts every RDMA write.
 
-This is the hardware-qualified path. ``sparknet.rocenante._proxy.Proxy`` is the
+This is the hardware-qualified path. ``sparknet.oneshot._proxy.Proxy`` is the
 implementation; this module names it at the transport boundary and reports
 its capability (a C compiler, the verbs headers and an active RDMA device).
 """
@@ -33,7 +33,7 @@ def host_proxy_capability() -> TransportCapability:
 
 def HostProxyTransport(**kwargs):  # noqa: N802 - factory with the class's name
     """Construct the host proxy; importing it pulls in ctypes only, not torch."""
-    from sparknet.rocenante._proxy import Proxy
+    from sparknet.oneshot._proxy import Proxy
 
     return Proxy(**kwargs)
 

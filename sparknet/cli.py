@@ -50,9 +50,19 @@ def cmd_topology_validate(args) -> int:
     return _report(topology.problems(nodes, args.transport, mesh_paths=args.mesh_paths), f"{args.nodes} ({args.transport})")
 
 
+def _profile_errors(args, nodes: dict) -> list[str]:
+    errors = topology.problems(nodes, args.transport, mesh_paths=getattr(args, "mesh_paths", 2))
+    if not errors and args.profile:
+        errors = nccl_profiles.profile_problems(args.profile, args.transport, len(nodes["nodes"]))
+        if errors:
+            fitting = nccl_profiles.profiles_for(args.transport, len(nodes["nodes"]))
+            errors.append("profiles for this map: " + (", ".join(fitting) if fitting else "none"))
+    return errors
+
+
 def cmd_topology_render(args) -> int:
     nodes = topology.load(args.nodes)
-    errors = topology.problems(nodes, args.transport, mesh_paths=args.mesh_paths)
+    errors = _profile_errors(args, nodes)
     if errors:
         return _report(errors, args.nodes)
     node = topology.node_by_name(nodes, args.node)
@@ -76,6 +86,8 @@ def cmd_topology_example(args) -> int:
 
 
 def cmd_topology_discover(args) -> int:
+    if args.fabric == "switched":
+        return _discover_switched(args)
     data = {host: discover.collect_lldp(host, ssh_user=args.ssh_user) for host in args.hosts}
     links, problems = discover.resolve_links(data)
     numbers = {h: discover.node_number(h) for h in args.hosts}
@@ -95,10 +107,34 @@ def cmd_topology_discover(args) -> int:
             document = discover.generate_nodes(links, args.hosts, management_ips=ips, ssh_user=args.ssh_user or "spark",
                                                management_interface=args.management_interface)
             discover.write_json(out / "nodes.json", document)
-            errors = topology.problems(document, "nccl-ring" if len(args.hosts) == 4 else "rocenante-direct")
+            errors = topology.problems(document, "nccl-ring" if len(args.hosts) == 4 else "oneshot-direct")
             if errors:
                 return _report(errors, "generated node map")
         print(f"wrote {out}/<host>/40-cx7.yaml" + (" and nodes.json" if args.management_ip else ""))
+    return 1 if problems else 0
+
+
+def _discover_switched(args) -> int:
+    rails = {host: discover.collect_rails(host, ssh_user=args.ssh_user, gid_index=args.gid_index) for host in args.hosts}
+    for host in args.hosts:
+        for hca, entry in sorted(rails[host].items()):
+            print(f"{host} {hca:<14} {entry['state']:<10} {discover.gid_ipv4(entry['gid']) or entry['gid']:<16} {entry['netdev']} mtu {entry['mtu']}")
+    if not args.management_ip:
+        print("pass --management-ip HOST=IP for every host to generate nodes.json", file=sys.stderr)
+        return 0
+    ips = dict(item.split("=", 1) for item in args.management_ip)
+    document, problems = discover.generate_switched_nodes(rails, args.hosts, management_ips=ips, ssh_user=args.ssh_user or "spark",
+                                                          management_interface=args.management_interface, gid_index=args.gid_index,
+                                                          traffic_class=args.traffic_class)
+    for problem in problems:
+        print("WARNING:", problem, file=sys.stderr)
+    errors = topology.problems(document, "oneshot-switched")
+    if errors:
+        return _report(errors, "generated switched node map")
+    out = Path(args.out or ".")
+    out.mkdir(parents=True, exist_ok=True)
+    discover.write_json(out / "nodes.json", document)
+    print(f"wrote {out}/nodes.json")
     return 1 if problems else 0
 
 
@@ -120,14 +156,18 @@ def cmd_nccl_validate(args) -> int:
             if "=" in line and not line.startswith("#"):
                 key, value = line.split("=", 1)
                 env[key.strip()] = value.strip()
-    count = nccl_profiles.profile(args.profile)["node_count"]
-    errors = nccl_profiles.problems(env, node_count=count, patched_nccl=not args.unpatched)
-    return _report(errors, f"profile {args.profile}")
+    counts = nccl_profiles.profile(args.profile)["node_counts"]
+    count = args.nodes if args.nodes else counts[0]
+    errors = nccl_profiles.profile_problems(args.profile, nccl_profiles.profile(args.profile)["transport"], count)
+    errors += nccl_profiles.problems(env, node_count=count, patched_nccl=not args.unpatched)
+    return _report(errors, f"profile {args.profile} ({count} nodes)")
 
 
 def cmd_nccl_profiles(args) -> int:
     for name, entry in nccl_profiles.PROFILES.items():
-        print(f"{name}: {entry['node_count']} nodes, {entry['transport']}; {entry['status']}")
+        counts = entry["node_counts"]
+        nodes = f"{counts[0]}-{counts[-1]}" if len(counts) > 2 else " or ".join(str(c) for c in counts)
+        print(f"{name}: {nodes} nodes, {entry['transport']}; {entry['status']}")
         print(f"  patches: {', '.join(nccl_profiles.required_patches(nccl_profiles.environment(name)))}")
     return 0
 
@@ -141,7 +181,7 @@ def cmd_nccl_patches(args) -> int:
 def cmd_policy_show(args) -> int:
     policy = policy_for_profile(args.profile) if args.profile else CollectivePolicy.from_environment(dict(__import__("os").environ))
     if policy is None:
-        print(f"{args.profile}: NCCL carries every collective (no RoCEnante runtime)")
+        print(f"{args.profile}: NCCL carries every collective (no one-shot runtime)")
         return 0
     print(json.dumps({**policy.__dict__, "reduce_scatter": policy.reduce_scatter_backend(),
                       "environment": policy.environment()}, indent=2))
@@ -168,7 +208,7 @@ def cmd_probe_gpudirect(args) -> int:
 
 def cmd_probe_render_command(args) -> int:
     nodes = topology.load(args.nodes)
-    errors = topology.problems(nodes, args.transport)
+    errors = _profile_errors(args, nodes)
     if errors:
         return _report(errors, args.nodes)
     node = topology.node_by_name(nodes, args.node)
@@ -205,9 +245,11 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--json", action="store_true"); r.add_argument("--no-compat", action="store_true", help="omit the B12X_* and VLLM_* aliases")
     r.set_defaults(func=cmd_topology_render)
     e = t.add_parser("example", help="print a documentation node map"); e.add_argument("name"); e.set_defaults(func=cmd_topology_example)
-    d = t.add_parser("discover", help="read cabling over LLDP (ssh, read-only) and generate configs")
+    d = t.add_parser("discover", help="read cabling over LLDP or rails from sysfs (ssh, read-only) and generate configs")
     d.add_argument("hosts", nargs="+"); d.add_argument("--ssh-user"); d.add_argument("--out")
+    d.add_argument("--fabric", choices=("cabled", "switched"), default="cabled")
     d.add_argument("--management-ip", action="append", metavar="HOST=IP"); d.add_argument("--management-interface")
+    d.add_argument("--gid-index", type=int, default=3); d.add_argument("--traffic-class", type=int)
     d.set_defaults(func=cmd_topology_discover)
     i = t.add_parser("inventory", help="this host's RDMA devices from sysfs"); i.add_argument("--gid-index", type=int, default=3)
     i.set_defaults(func=cmd_topology_inventory)
@@ -217,6 +259,7 @@ def parser() -> argparse.ArgumentParser:
     ne.add_argument("--json", action="store_true"); ne.add_argument("--no-compat", action="store_true"); ne.set_defaults(func=cmd_nccl_env)
     nv = n.add_parser("validate", help="check a profile, optionally with overrides from an env file")
     nv.add_argument("--profile", required=True, choices=list(nccl_profiles.PROFILES)); nv.add_argument("--env-file")
+    nv.add_argument("--nodes", type=int, help="node count to validate against (default: the profile's first)")
     nv.add_argument("--unpatched", action="store_true", help="the NCCL build lacks patches/nccl"); nv.set_defaults(func=cmd_nccl_validate)
     n.add_parser("profiles", help="list profiles").set_defaults(func=cmd_nccl_profiles)
     n.add_parser("patches", help="print the patch series").set_defaults(func=cmd_nccl_patches)

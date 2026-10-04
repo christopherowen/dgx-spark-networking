@@ -1,7 +1,8 @@
-# RoCEnante
+# One-shot collectives
 
-`sparknet.rocenante.AllReduce` is the one-shot RDMA all-reduce and
-all-gather runtime for tensor parallelism across DGX Spark nodes joined by
+`sparknet.oneshot.AllReduce` is the one-shot RDMA all-reduce and
+all-gather runtime (b12x calls the module RoCEnante, a pun on RoCE and
+Rocinante; the mechanism's name is the one-shot collective) for tensor parallelism across DGX Spark nodes joined by
 their ConnectX-7 ports. The protocol is described in `docs/design.md`; this
 page is the interface, the contract, the environment and the evidence.
 
@@ -112,13 +113,13 @@ not carried. NIC forwarding (`mesh4`) is carried but not recommended.
 
 ## Tests
 
-- `tests/test_rocenante_cpu.py`: the production C proxy under a fake verbs
+- `tests/test_oneshot_cpu.py`: the production C proxy under a fake verbs
   layer with sanitizers (26,000 collectives), the topology resolver, the
   kernels' flag selection.
-- `tests/gpu/test_rocenante_gpu.py` (torchrun, 2 or more nodes): NCCL
+- `tests/gpu/test_oneshot_gpu.py` (torchrun, 2 or more nodes): NCCL
   parity, bit-identical ranks, eligibility and unaligned staging, dim-0,
   last-dim and padded gathers, graph replay mixing both collectives, the
   adapter call pattern, alternating streams, a proxy that misses a doorbell,
   fault injection in eager and graph mode.
-- `benchmarks/benchmark_rocenante.py`: latency against NCCL with a receipt.
+- `benchmarks/benchmark_oneshot.py`: latency against NCCL with a receipt.
 - `sparknet probe collectives`: the policy on the actual fabric.

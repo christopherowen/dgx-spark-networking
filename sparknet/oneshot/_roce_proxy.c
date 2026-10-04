@@ -1,4 +1,4 @@
-// RDMA proxy for the RoCEnante one-shot collectives (sparknet.rocenante).
+// RDMA proxy for the one-shot collectives (sparknet.oneshot).
 //
 // Derived from local-inference-lab/b12x b12x/comm/roce/_roce_proxy.c at
 // f8069b2c plus the switchless, ring4 relay, mesh4 and dispatch patches
@@ -26,7 +26,7 @@
 // opposite GPU waits on twice as many flags; source slots and rank-order sums
 // are unchanged. Neighbour traffic always uses its direct QPs.
 //
-// This file is compiled by sparknet.rocenante._proxy at first use with the host
+// This file is compiled by sparknet.oneshot._proxy at first use with the host
 // gcc and libibverbs; it must stay plain C with no CUDA dependency.
 
 #define _GNU_SOURCE

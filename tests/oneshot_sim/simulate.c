@@ -2,7 +2,7 @@
  * Includes the real C proxy. Only verbs and the GPU endpoint are simulated.
  * Payload source bytes are read at delivery, not at post time, to expose reuse.
  */
-#include "../../sparknet/rocenante/_roce_proxy.c"
+#include "../../sparknet/oneshot/_roce_proxy.c"
 #include <assert.h>
 #include <unistd.h>
 

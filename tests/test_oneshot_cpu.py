@@ -1,6 +1,6 @@
 """CPU protocol stress of the production C proxy and the launcher geometry; does not qualify GPU/RDMA.
 
-The simulator in ``tests/rocenante_sim`` includes the real ``_roce_proxy.c``
+The simulator in ``tests/oneshot_sim`` includes the real ``_roce_proxy.c``
 and replaces only libibverbs and the GPU endpoint. The Python checks execute
 the production topology resolver and the kernels' flag-selection expressions
 in isolation, because importing the runtime needs torch and the CuTe DSL.
@@ -18,8 +18,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SIM = ROOT / "tests" / "rocenante_sim"
-ROCE = ROOT / "sparknet" / "rocenante"
+SIM = ROOT / "tests" / "oneshot_sim"
+ROCE = ROOT / "sparknet" / "oneshot"
 
 
 def _functions(path: Path, names: set[str], namespace: dict) -> dict:

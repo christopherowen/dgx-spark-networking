@@ -21,8 +21,8 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: CLI smoke
         run: |
-          python3 -m sparknet.cli topology validate sparknet/topology/examples/tp4-ring.json --transport rocenante-ring4
-          python3 -m sparknet.cli topology validate sparknet/topology/examples/tp3-triangle.json --transport rocenante-direct
+          python3 -m sparknet.cli topology validate sparknet/topology/examples/tp4-ring.json --transport oneshot-ring4
+          python3 -m sparknet.cli topology validate sparknet/topology/examples/tp3-triangle.json --transport oneshot-direct
           python3 -m sparknet.cli nccl validate --profile tp4-ring
           python3 -m sparknet.cli nccl validate --profile tp3-triangle
       - name: Validate JSON, patches and whitespace

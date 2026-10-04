@@ -11,6 +11,7 @@ one, ``N`` is the node number. Nothing here changes a host.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import subprocess
@@ -23,6 +24,10 @@ INTERFACES = {
     "enP2p1s0f0np0": (0, 2),
     "enp1s0f1np1": (1, 1),
     "enP2p1s0f1np1": (1, 2),
+}
+
+INTERFACES_BY_HCA = {
+    "rocep1s0f0": (0, 1), "roceP2p1s0f0": (0, 2), "rocep1s0f1": (1, 1), "roceP2p1s0f1": (1, 2),
 }
 
 COLLECT = r"""
@@ -124,8 +129,67 @@ def resolve_links(data: dict[str, list[dict]]) -> tuple[dict, list[str]]:
 
 
 def cable_subnet(a: int, b: int, path: int) -> str:
+    """``10.<a><b>.<path>.0/24``; a second cable between the same pair uses paths 3 and 4."""
     lo, hi = sorted((a, b))
     return f"10.{lo}{hi}.{path}.0/24"
+
+
+RAILS = r"""
+for d in /sys/class/infiniband/*; do
+  n=$(basename "$d"); p="$d/ports/1"
+  printf '%s %s %s %s %s\n' "$n" "$(tr -d ' ' < "$p/state")" "$(cat "$p/gids/GID_INDEX")" \
+    "$(ls "$d/device/net" | head -1)" "$(cat /sys/class/net/$(ls "$d/device/net" | head -1)/mtu)"
+done
+"""
+
+
+def collect_rails(host: str, *, ssh_user: str | None = None, gid_index: int = 3) -> dict[str, dict]:
+    """A host's RDMA devices with state, selected GID, netdev and MTU, over SSH (read-only)."""
+    target = f"{ssh_user}@{host}" if ssh_user else host
+    script = RAILS.replace("GID_INDEX", str(gid_index))
+    out = subprocess.run(["ssh", "-o", "BatchMode=yes", target, "bash", "-s"], input=script,
+                         capture_output=True, text=True, check=True, timeout=60).stdout
+    rails = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5:
+            rails[parts[0]] = {"state": parts[1], "gid": parts[2], "netdev": parts[3], "mtu": int(parts[4]) if parts[4].isdigit() else None}
+    return rails
+
+
+def generate_switched_nodes(
+    rails: dict[str, dict[str, dict]], hosts: list[str], *, management_ips: dict[str, str], ssh_user: str,
+    management_interface: str | None = None, gid_index: int = 3, traffic_class: int | None = None,
+) -> tuple[dict, list[str]]:
+    """A switched node map from each host's active rails; rail subnets come from the live addresses.
+
+    One-shot takes the first port's two functions (one QSFP port, two PCIe
+    paths); NCCL takes every active rail. Rank order is host order; rank 0 is the head.
+    """
+    problems: list[str] = []
+    nodes = []
+    for rank, host in enumerate(hosts):
+        active = {hca: entry for hca, entry in sorted(rails.get(host, {}).items()) if "ACTIVE" in (entry.get("state") or "")}
+        subnets = {}
+        for hca, entry in active.items():
+            address = gid_ipv4(entry.get("gid"))
+            if address is None:
+                problems.append(f"{host} {hca}: GID {gid_index} is not an IPv4 RoCE v2 address")
+                continue
+            subnets[hca] = str(ipaddress.ip_network(f"{address}/24", strict=False))
+        ordered = [h for h in INTERFACES_BY_HCA if h in subnets] + [h for h in subnets if h not in INTERFACES_BY_HCA]
+        roce = [h for h in ordered if INTERFACES_BY_HCA.get(h, (0, 0))[0] == 0][:2] or ordered[:2]
+        if not roce:
+            problems.append(f"{host}: no active rail with an IPv4 GID at index {gid_index}")
+            continue
+        node = {"name": host, "rank": rank, "management_ip": management_ips[host], "head": rank == 0,
+                "roce_gid_index": gid_index, "roce_hcas": roce, "nccl_hcas": ordered, "roce_subnets": subnets}
+        if traffic_class is not None:
+            node["roce_traffic_class"] = traffic_class
+        if management_interface:
+            node["management_interface"] = management_interface
+        nodes.append(node)
+    return {"schema_version": 1, "ssh_user": ssh_user, "nodes": nodes}, problems
 
 
 def generate_nodes(
@@ -134,25 +198,38 @@ def generate_nodes(
 ) -> dict:
     """A node map in cable order from resolved links; rank 0 is ``hosts[0]`` (the head)."""
     numbers = {h: node_number(h) for h in hosts}
-    adjacency: dict[str, dict[str, list[tuple[str, int]]]] = {h: {} for h in hosts}
-    for (host, iface), (peer, _) in links.items():
-        adjacency[host].setdefault(peer, []).append((iface, INTERFACES[iface][1]))
+    adjacency: dict[str, dict[str, list[tuple[str, int, str]]]] = {h: {} for h in hosts}
+    for (host, iface), (peer, peer_iface) in links.items():
+        adjacency[host].setdefault(peer, []).append((iface, INTERFACES[iface][1], peer_iface))
     order = _cable_order(adjacency, hosts)
     rank_of = {h: i for i, h in enumerate(order)}
     nodes = []
     for host in order:
-        routes, subnets = {}, {}
+        routes, subnets, extra = {}, {}, []
         for peer, ifaces in adjacency[host].items():
-            lanes = sorted(ifaces, key=lambda item: item[1])  # path 1 then path 2
-            routes[str(rank_of[peer])] = [hca_name(i) for i, _ in lanes]
-            for iface, path in lanes:
+            # Path 1 then path 2. With two cables to the same peer, both ends keep the cable on
+            # the lower-numbered node's port 0 for the one-shot stripes; the other cable is NCCL's.
+            def primary_cable(item):
+                iface, _path, peer_iface = item
+                port = INTERFACES[iface][0] if numbers[host] < numbers[peer] else INTERFACES[peer_iface][0]
+                return port != 0
+            lanes = sorted(ifaces, key=lambda item: (primary_cable(item), item[1]))
+            primary, second = lanes[:2], lanes[2:]
+            routes[str(rank_of[peer])] = [hca_name(i) for i, _, _ in primary]
+            for iface, path, _ in primary:
                 subnets[hca_name(iface)] = cable_subnet(numbers[host], numbers[peer], path)
+            for iface, path, _ in second:
+                # A second cable between the same pair: the one-shot stripes keep one cable, NCCL may use both.
+                subnets[hca_name(iface)] = cable_subnet(numbers[host], numbers[peer], path + 2)
+                extra.append(hca_name(iface))
         node = {
             "name": host, "rank": rank_of[host], "management_ip": management_ips[host],
             "head": rank_of[host] == 0, "roce_gid_index": gid_index,
             "roce_peer_hcas": dict(sorted(routes.items(), key=lambda kv: int(kv[0]))),
             "roce_subnets": subnets,
         }
+        if extra:
+            node["nccl_hcas"] = [h for route in node["roce_peer_hcas"].values() for h in route] + extra
         if management_interface:
             node["management_interface"] = management_interface
         nodes.append(node)
@@ -168,7 +245,7 @@ def _cable_order(adjacency: dict, hosts: list[str]) -> list[str]:
         current = order[-1]
         nxt = None
         for peer, ifaces in adjacency[current].items():
-            if peer not in order and any(INTERFACES[i][0] == 0 for i, _ in ifaces):
+            if peer not in order and any(INTERFACES[i][0] == 0 for i, _, _ in ifaces):
                 nxt = peer
         if nxt is None:
             candidates = [p for p in adjacency[current] if p not in order]
@@ -206,6 +283,7 @@ def write_json(path: str | Path, document: dict) -> None:
 
 
 __all__ = [
-    "COLLECT", "INTERFACES", "cable_subnet", "collect_lldp", "generate_nodes", "gid_ipv4",
-    "hca_name", "local_inventory", "netplan_yaml", "node_number", "resolve_links", "write_json",
+    "COLLECT", "INTERFACES", "INTERFACES_BY_HCA", "RAILS", "cable_subnet", "collect_lldp", "collect_rails",
+    "generate_nodes", "generate_switched_nodes", "gid_ipv4", "hca_name", "local_inventory", "netplan_yaml",
+    "node_number", "resolve_links", "write_json",
 ]

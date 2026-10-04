@@ -60,7 +60,7 @@ def _compiler() -> str:
         if candidate and shutil.which(candidate):
             return candidate
     raise RuntimeError(
-        "sparknet.rocenante needs a C compiler (gcc/cc/clang) and libibverbs headers "
+        "sparknet.oneshot needs a C compiler (gcc/cc/clang) and libibverbs headers "
         "to build its RDMA proxy"
     )
 
@@ -90,7 +90,7 @@ def _build() -> Path:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
-            "failed to build the RoCEnante proxy: " + " ".join(cmd) + "\n" + proc.stderr
+            "failed to build the one-shot proxy: " + " ".join(cmd) + "\n" + proc.stderr
         )
     os.replace(tmp, target)
     return target
@@ -148,7 +148,7 @@ def load() -> ctypes.CDLL:
         lib.roce_destroy.restype = None
         lib.roce_destroy.argtypes = [p]
         if lib.roce_abi_version() != 10:
-            raise RuntimeError("unexpected RoCEnante proxy ABI version")
+            raise RuntimeError("unexpected one-shot proxy ABI version")
         _LIB = lib
         return lib
 

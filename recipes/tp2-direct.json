@@ -1,10 +1,10 @@
 {
-  "profile": "tp3-triangle",
+  "profile": "tp2-direct",
   "transport": "oneshot-direct",
-  "fabric": "triangle3",
-  "nodes_example": "sparknet/topology/examples/tp3-triangle.json",
-  "status": "promoted: spark3-vllm-ds41f baseline 2026-10-02-karmic-kraken-r5o-64k (TP3, every pair cabled)",
-  "evidence": "spark3 manifests/baselines/2026-10-02-karmic-kraken-r5o-64k.json; experiments/2026-09-27-nccl-fence",
+  "fabric": "direct2",
+  "nodes_example": "sparknet/topology/examples/tp2-direct.json",
+  "status": "configuration path: two Sparks on one cable (two PCIe-path stripes; a second cable goes to NCCL through nccl_hcas) with the promoted triangle settings; not measured on this fleet",
+  "evidence": "settings from tp3-triangle; the one-cable direct mode is the runtime's clique mode (b12x docs/oneshot.md, measured by Local Inference Lab on four Sparks); two-Spark qualification is this fleet's own task",
   "required_nccl_patches": [
     "0001-ib-cts-nreqs-acquire-fence.patch"
   ],
@@ -42,37 +42,25 @@
   "per_node_environment": {
     "dgx1": {
       "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"2\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
+      "B12X_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
       "B12X_ROCE_TOPOLOGY": "direct",
       "GLOO_SOCKET_IFNAME": "enP7s7",
-      "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
+      "NCCL_IB_HCA": "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"2\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
+      "SPARKNET_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
       "SPARKNET_ROCE_TOPOLOGY": "direct",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx2": {
       "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"2\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
+      "B12X_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
       "B12X_ROCE_TOPOLOGY": "direct",
       "GLOO_SOCKET_IFNAME": "enP7s7",
-      "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
+      "NCCL_IB_HCA": "=rocep1s0f1,roceP2p1s0f1,rocep1s0f0,roceP2p1s0f0",
       "NCCL_SOCKET_IFNAME": "enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"2\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
-      "SPARKNET_ROCE_TOPOLOGY": "direct",
-      "TP_SOCKET_IFNAME": "enP7s7"
-    },
-    "dgx3": {
-      "B12X_ROCE_GID_INDEX": "3",
-      "B12X_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"1\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
-      "B12X_ROCE_TOPOLOGY": "direct",
-      "GLOO_SOCKET_IFNAME": "enP7s7",
-      "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"1\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
+      "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
       "SPARKNET_ROCE_TOPOLOGY": "direct",
       "TP_SOCKET_IFNAME": "enP7s7"
     }

@@ -18,7 +18,7 @@ Read `README.md`, `docs/design.md`, `docs/provenance.md` and
 
 ## Change discipline
 
-- Protocol and kernel changes (`sparknet/rocenante`, `patches/nccl`) are
+- Protocol and kernel changes (`sparknet/oneshot`, `patches/nccl`) are
   hardware changes. They need the C simulator, the GPU test under torchrun
   and the collective probe on the actual fabric before any profile uses them.
   Bump the proxy ABI whenever the wire layout or the geometry handshake

@@ -1,4 +1,4 @@
-"""Kernel compilation for the RoCEnante CuTe DSL launchers.
+"""Kernel compilation for the one-shot CuTe DSL launchers.
 
 A thin layer over ``cutlass.cute.compile``: the DSL keeps its own on-disk JIT
 cache (``CUTE_DSL_CACHE_DIR``), so serving images warm it at build time and

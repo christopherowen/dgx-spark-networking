@@ -1,19 +1,19 @@
-"""Latency of the RoCEnante collectives versus torch.distributed (NCCL), with a receipt.
+"""Latency of the one-shot collectives versus torch.distributed (NCCL), with a receipt.
 
 Launch with torchrun on every node (one GPU per node)::
 
     torchrun --nnodes=4 --nproc-per-node=1 --node-rank=$RANK \\
         --master-addr=$MASTER --master-port=29651 \\
-        benchmarks/benchmark_rocenante.py --output evidence/<receipt>.json
+        benchmarks/benchmark_oneshot.py --output evidence/<receipt>.json
 
-Correctness gates run before any timing: the RoCEnante all-reduce must match
+Correctness gates run before any timing: the one-shot all-reduce must match
 NCCL within the dtype tolerance and the all-gather must be bit-exact, or the
 benchmark raises.  Both are checked again after timing.  Timing alternates the
-NCCL eager/graph and RoCEnante eager/graph arms in blocks so clock or thermal
+NCCL eager/graph and one-shot eager/graph arms in blocks so clock or thermal
 drift cannot bias one direction, and the executed order is recorded.
 
 Rank 0 prints a table and writes one JSON receipt (schema
-``sparknet.rocenante.benchmark`` version 3) with the command, source
+``sparknet.oneshot.benchmark`` version 3) with the command, source
 revision and worktree state, per-rank hostname and GPU identity, correctness
 results, unrounded raw samples from rank 0, per-rank medians, the cross-rank
 median-of-slowest summary, and ratios labelled with their direction.
@@ -296,7 +296,7 @@ def main() -> None:
     dtype = getattr(torch, args.dtype)
     rtol, atol = _tolerance(dtype, world)
 
-    from sparknet import rocenante as roce
+    from sparknet import oneshot as roce
 
     runtime = roce.AllReduce(
         exchange_group=dist.group.WORLD,
@@ -346,7 +346,7 @@ def main() -> None:
         )
         arms: dict[str, Arm] = {
             # NCCL reduces in place; reset the input untimed before every call
-            # so the operands stay finite and equal to the RoCEnante operands.
+            # so the operands stay finite and equal to the one-shot operands.
             "nccl": (lambda: dist.all_reduce(nccl_in), lambda: nccl_in.copy_(inp), 1),
             # The zero input remains zero across graph replays, avoiding
             # overflow from graph_ops repeated in-place reductions.
@@ -474,7 +474,7 @@ def main() -> None:
     stats = runtime.stats()
     if rank == 0:
         doc = {
-            "schema": "sparknet.rocenante.benchmark",
+            "schema": "sparknet.oneshot.benchmark",
             "version": 3,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "command": " ".join([sys.executable, *sys.argv]),
@@ -507,7 +507,7 @@ def main() -> None:
                 "runtime_blocks": args.runtime_blocks,
                 "timing": "CUDA events around one call on the caller's stream; the graph arm replays graph_ops collectives per call and reports per-collective time",
                 "summary": "*_us is the median of paired per-sample maxima across ranks",
-                "ratio_direction": "ratio_nccl_over_roce_* = nccl_us / roce_*_us and ratio_nccl_graph_over_roce_graph = nccl_graph_us / roce_graph_us; above 1 means RoCEnante is faster",
+                "ratio_direction": "ratio_nccl_over_roce_* = nccl_us / roce_*_us and ratio_nccl_graph_over_roce_graph = nccl_graph_us / roce_graph_us; above 1 means one-shot is faster",
                 "ordering": "arms run in interleaved blocks, order reversed on odd blocks; the executed order is recorded per row",
                 "target_path": "RoceOneshotAllReduce.all_reduce / all_gather, the entry points the vLLM adapter dispatches to; graph replay is the decode path",
             },

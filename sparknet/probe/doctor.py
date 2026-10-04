@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from sparknet.topology.discover import gid_ipv4, local_inventory
-from sparknet.topology.nodes import node_by_name, problems as map_problems
+from sparknet.topology.nodes import nccl_hcas, node_by_name, node_hcas, problems as map_problems, uses_oneshot
 
 
 def local_problems(
@@ -32,7 +32,7 @@ def local_problems(
         return errors + [str(exc)]
     gid_index = node.get("roce_gid_index", 3)
     inventory = local_inventory(gid_index=gid_index) if inventory is None else inventory
-    routed = sorted({h for route in node["roce_peer_hcas"].values() for h in route})
+    routed = sorted(set(node_hcas(node, transport)) | set(nccl_hcas(node, transport)))
     for hca in routed:
         entry = inventory.get(hca)
         if entry is None:
@@ -66,9 +66,9 @@ def local_problems(
         compiler_present = any(shutil.which(c) for c in ("gcc", "cc", "clang"))
     if verbs_header is None:
         verbs_header = Path("/usr/include/infiniband/verbs.h").exists()
-    if transport.startswith("rocenante"):
+    if uses_oneshot(transport):
         if not compiler_present:
-            errors.append("no C compiler for the RoCEnante proxy (gcc, cc or clang)")
+            errors.append("no C compiler for the one-shot proxy (gcc, cc or clang)")
         if not verbs_header:
             errors.append("libibverbs development headers missing (/usr/include/infiniband/verbs.h)")
     return errors

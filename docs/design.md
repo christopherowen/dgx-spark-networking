@@ -5,9 +5,11 @@
 Each DGX Spark exposes its single cabled QSFP port as two PCIe Gen5 x4
 functions (`rocep1s0f0` and `roceP2p1s0f0` on port 0, `rocep1s0f1` and
 `roceP2p1s0f1` on port 1), 200 Gb/s per port, RoCE v2 over IPv4 with GID
-index 3. Port 0 cables to the next node, port 1 to the previous one. Three
-nodes form a triangle (every pair cabled); four form a loop, where the
-opposite rank has no cable. The GB10 is an integrated GPU with unified
+index 3. Port 0 cables to the next node, port 1 to the previous one. Two nodes
+share one cable (a second cable on the other port is extra NCCL bandwidth);
+three nodes form a triangle (every pair cabled); four form a loop, where the
+opposite rank has no cable; behind a switch every rank reaches every other
+over the same rails, up to sixteen in the proxy's geometry. The GB10 is an integrated GPU with unified
 memory: the NIC registers pinned host memory with a plain `ibv_reg_mr` and
 the GPU reads it in place at full bandwidth, so no GPUDirect RDMA is needed
 for the protocol to run.
@@ -16,13 +18,13 @@ for the protocol to run.
 
 Decode is latency-bound: the per-step all-reduces are tens of KiB and the
 MTP logits gathers a few hundred KiB. NCCL's ring costs 75 to 90 us at 10 KiB
-on this fabric; RoCEnante's one-shot kernel costs 16 to 19 us. Prefill and
+on this fabric; the one-shot kernel costs 16 to 19 us. Prefill and
 the sequence-parallel reduce-scatters are bandwidth-bound and NCCL's ring
 moves 1.5 payloads per rank where the one-shot moves three; NCCL wins above
 about 1 MiB. So the policy is two backends with a fixed, measured crossover
 and a fail-stop contract (`docs/policy.md`).
 
-## RoCEnante protocol
+## One-shot protocol
 
 One pinned region per rank: `recv[src][slot]`, `flag[src][slot][lane]`,
 `send[slot]` and a control record. One kernel launch per collective:

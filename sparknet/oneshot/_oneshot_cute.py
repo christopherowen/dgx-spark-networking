@@ -418,7 +418,7 @@ def get_launcher(
         1,
         1,
         current_cuda_stream(),
-        name="rocenante.oneshot", cache_key=cache_key,
+        name="oneshot.allreduce", cache_key=cache_key,
     )
 
     def run(
