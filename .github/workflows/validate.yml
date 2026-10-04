@@ -1,0 +1,53 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile every module
+        run: python3 -m compileall -q sparknet tests benchmarks
+      - name: Unit tests and the proxy simulator
+        run: python3 -m unittest discover -s tests -v
+      - name: CLI smoke
+        run: |
+          python3 -m sparknet.cli topology validate sparknet/topology/examples/tp4-ring.json --transport rocenante-ring4
+          python3 -m sparknet.cli topology validate sparknet/topology/examples/tp3-triangle.json --transport rocenante-direct
+          python3 -m sparknet.cli nccl validate --profile tp4-ring
+          python3 -m sparknet.cli nccl validate --profile tp3-triangle
+      - name: Validate JSON, patches and whitespace
+        run: |
+          git diff --check
+          find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool >/dev/null
+          for series in patches/nccl/series native/gpunetio/series; do
+            dir=$(dirname "$series")
+            grep -v '^#' "$series" | grep -v '^$' | while read -r patch; do test -f "$dir/$patch" || { echo "missing $dir/$patch"; exit 1; }; done
+          done
+          bash -n scripts/build-nccl.sh native/gpunetio/build.sh
+
+  nccl-patches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Apply the NCCL series to the pinned release
+        run: |
+          rev=$(python3 -c 'import json; print(json.load(open("upstreams.lock.json"))["sources"]["nccl"]["revision"])')
+          git clone --quiet --filter=blob:none https://github.com/NVIDIA/nccl.git .work/nccl
+          git -C .work/nccl checkout --quiet --detach "$rev"
+          grep -v '^#' patches/nccl/series | grep -v '^$' | while read -r patch; do
+            git -C .work/nccl -c user.name=ci -c user.email=ci@localhost am --quiet --committer-date-is-author-date "$GITHUB_WORKSPACE/patches/nccl/$patch"
+          done
+          tree=$(git -C .work/nccl rev-parse 'HEAD^{tree}')
+          expected=$(python3 -c 'import json; print(json.load(open("upstreams.lock.json"))["sources"]["nccl"]["tree"])')
+          echo "tree $tree expected $expected"
+          test "$tree" = "$expected"

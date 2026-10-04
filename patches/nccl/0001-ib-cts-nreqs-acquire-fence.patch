@@ -1,0 +1,46 @@
+From bfd8ab9f691561e1f2e75e6537bc4f58cec9a910 Mon Sep 17 00:00:00 2001
+From: Stanislav Bardyuk <6258615+kodlan@users.noreply.github.com>
+Date: Sun, 6 Sep 2026 19:07:24 +0000
+Subject: [PATCH] net_ib: Order CTS nreqs load after the idx check
+
+Problem: ncclIbIsend checks slots[0].idx and then loads slots[0].nreqs
+from the CTS fifo element written by the peer's NIC. Nothing orders the
+second load after the first; the existing seq_cst fence comes after both.
+On weakly ordered CPUs (AArch64, POWER) the nreqs load can be satisfied
+before the idx load and return the slot's previous-round value. Slots are
+never cleared, so a stale larger value makes the per-slot idx wait loop
+spin forever and hangs the proxy thread; a stale smaller value posts too
+few RDMA writes.
+
+Solution: add an acquire fence between the idx check and the nreqs load.
+It compiles to nothing on x86 and to one dmb ishld on AArch64, only on
+the path where the CTS has arrived. The existing fence stays to order the
+per-slot idx waits against the field loads that follow.
+
+Limitations: verified by build, clang-format, nccl-tests on x86, and by
+inspecting the aarch64 code of an extract of the loop; the hang itself
+was not reproduced (no Arm host with an RDMA NIC available).
+
+Fixes #1983
+
+Signed-off-by: Stanislav Bardyuk <6258615+kodlan@users.noreply.github.com>
+---
+ src/transport/net_ib/p2p.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/transport/net_ib/p2p.cc b/src/transport/net_ib/p2p.cc
+index fadf363..5ee5455 100644
+--- a/src/transport/net_ib/p2p.cc
++++ b/src/transport/net_ib/p2p.cc
+@@ -283,6 +283,8 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, size_t size, int tag, void*
+     *request = NULL;
+     return ncclSuccess;
+   }
++  // Order the nreqs load after the idx load above; on weakly ordered CPUs it could otherwise return a stale value.
++  std::atomic_thread_fence(std::memory_order_acquire);
+   nreqs = slots[0].nreqs;
+   // Wait until all data has arrived
+   for (int r = 1; r < nreqs; r++) {
+-- 
+2.43.0
+

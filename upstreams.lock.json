@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "rocenante": {
+      "kind": "vendored-git",
+      "upstream": "https://github.com/local-inference-lab/b12x.git",
+      "tracking_ref": "refs/heads/integration/karmic-kraken-beta",
+      "revision": "f8069b2c0be1311df3b112591c6b8876a843f8be",
+      "revision_url": "https://github.com/local-inference-lab/b12x/commit/f8069b2c0be1311df3b112591c6b8876a843f8be",
+      "paths": [
+        "b12x/comm/roce/_roce_proxy.c",
+        "b12x/comm/roce/_proxy.py",
+        "b12x/comm/roce/roce_oneshot.py",
+        "b12x/comm/roce/_oneshot_cute.py",
+        "b12x/comm/roce/_allgather_cute.py",
+        "b12x/comm/roce/_cute_intrinsics.py",
+        "tests/comm/roce_proxy_fake/",
+        "tests/comm/test_roce_oneshot_gpu.py",
+        "benchmarks/benchmark_roce_oneshot.py"
+      ],
+      "applied_patches": [
+        "spark3-vllm-ds41f patches/b12x/0001-switchless-rocenante.patch",
+        "spark3-vllm-ds41f patches/b12x/0002-cutlass-dsl-4.7.1.patch",
+        "spark3-vllm-ds41f patches/b12x/0003-dsa-topk-position-ties.patch",
+        "spark3-vllm-ds41f patches/b12x/0004-gemm-fence-stage-reads-before-tma-refill.patch",
+        "spark3-vllm-ds41f patches/b12x/0005-fence-stage-reads-three-kernels.patch",
+        "spark3-vllm-ds41f experiments/2026-10-02-rocenante-ring4/b12x/0006-rocenante-ring4.patch",
+        "spark3-vllm-ds41f experiments/2026-10-02-rocenante-mesh4/b12x/0007-rocenante-mesh4.patch",
+        "spark3-vllm-ds41f experiments/2026-10-02-mesh4-fourpaths/b12x/0008-four-path-mesh.patch",
+        "spark3-vllm-ds41f experiments/2026-10-03-ring4-bidirectional/b12x/0009-bidirectional-relay.patch",
+        "spark3-vllm-ds41f experiments/2026-10-03-balanced-policy/b12x/0010-dispatch-capacity.patch",
+        "spark3-vllm-ds41f experiments/2026-10-03-balanced-policy/b12x/0011-loader-abi.patch"
+      ],
+      "patch_head": "abe4b2afd7b60e2699bf4a62ac8543ed63d1d937",
+      "tree": "cd615bd69ed1a99d6b59217329a3ff429b5277fe",
+      "proxy_abi": 10,
+      "qualified_image": "vllm-ds41f-kkref:04c30fa98e79-r5o-roce-balanced-dispatch-v1 (sha256:6e03995e36aac90c578fe2d00796068a32ecb8316ed0bae201352d1486272d4d), label local.spark3.b12x.tree=cd615bd69ed1a99d6b59217329a3ff429b5277fe",
+      "local_changes": "imports moved off b12x._lib and b12x.preparation (sparknet.rocenante._compile); SPARKNET_ROCE_* environment names with B12X_ROCE_* aliases; prepare() compiles launchers in process; transport factory parameter. Protocol, kernels, proxy posting logic and wire ABI unchanged.",
+      "license": "Apache-2.0",
+      "role": "RoCEnante one-shot all-reduce and all-gather over switchless RoCE: direct, ring4 (bidirectional host relay) and mesh4 modes"
+    },
+    "nccl": {
+      "kind": "git",
+      "upstream": "https://github.com/NVIDIA/nccl.git",
+      "tracking_ref": "refs/tags/v2.30.7-1",
+      "revision": "73cf112295c33aee2b895f329f592f2a9b4b0f97",
+      "revision_url": "https://github.com/NVIDIA/nccl/commit/73cf112295c33aee2b895f329f592f2a9b4b0f97",
+      "patch_series": "patches/nccl/series",
+      "patch_head": "eeacf1c6343f0499e4e7ab20ec7eecfb6f62eda6",
+      "tree": "6af10aa730a64fcee8781d62340a9c9184e79469",
+      "license": "BSD-3-Clause",
+      "role": "NCCL 2.30.7 rebuilt for SM121 with the AArch64 IB send-path fence and the switchless ring channel policy; replaces the nvidia-nccl-cu13 wheel's libnccl.so.2"
+    },
+    "gpunetio": {
+      "kind": "git",
+      "upstream": "https://github.com/NVIDIA-DOCA/gpunetio.git",
+      "revision": "586453728bcab2d4c50574924dc6cf43543c9ed4",
+      "revision_url": "https://github.com/NVIDIA-DOCA/gpunetio/commit/586453728bcab2d4c50574924dc6cf43543c9ed4",
+      "patch_series": "native/gpunetio/series",
+      "patch_head": "47131ba7c944c76375c7ecffc81ce210627143d0",
+      "license": "BSD-3-Clause",
+      "role": "DOCA GPUNetIO open source (library build 4.0.1): the GPU-initiated transport of the pivot; CPU-proxy mode qualified on every neighbour link of four Sparks"
+    }
+  },
+  "references": {
+    "spark3_vllm_ds41f": {
+      "kind": "git-watch",
+      "url": "https://github.com/christopherowen/spark3-vllm-ds41f",
+      "role": "the deployment repository whose experiments measured every profile here; its B12X RoCE patch series is what this library vendors"
+    },
+    "sparkring": {
+      "kind": "git-watch",
+      "url": "https://github.com/FujitsuPolycom/sparkring",
+      "observed_revision": "4efccc83ef53887f31a053e295f78bb8be8ac749",
+      "role": "ConnectX-7 hardware forwarding for the opposite peers of a four-node ring; the mesh4 mode's flow-label marking follows its mechanism. Not recommended for serving (measured retransmissions and poorer large-payload latency than the host relay)"
+    },
+    "nccl_fence_upstream": {
+      "kind": "pull-request",
+      "url": "https://github.com/NVIDIA/nccl/pull/2393",
+      "role": "patches/nccl/0001 upstream submission (fixes NVIDIA/nccl#1983)"
+    },
+    "spark_gpunetio_guidance": {
+      "kind": "documentation",
+      "url": "https://networking-docs.nvidia.com/doca/archive/3-5-0/doca-gpunetio#general-performance-and-best-practices",
+      "role": "NVIDIA's Spark guidance: CPU/GPU shared memory and CPU-proxy transmissions"
+    }
+  }
+}

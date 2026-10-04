@@ -1,0 +1,129 @@
+From 4c42b8c2ece37fd69463874570395b2995489c8c Mon Sep 17 00:00:00 2001
+From: Christopher Owen <3221756+christopherowen@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 09:53:11 +0000
+Subject: [PATCH] Run the latency sample with explicit Spark shared host memory
+
+Base: 586453728bcab2d4c50574924dc6cf43543c9ed4.
+Allocate queues and data in CPU/GPU shared pinned memory and register
+host buffers directly; reject unexpected differing aliases. Preserve
+upstream kernel, transport and timing. No GPU performance qualification yet.
+Local experiment, not submitted upstream.
+---
+ .../gpunetio_verbs_write_lat_sample.cpp       | 51 +++++++++----------
+ 1 file changed, 23 insertions(+), 28 deletions(-)
+
+diff --git a/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_sample.cpp b/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_sample.cpp
+index 489249b..02e2e71 100644
+--- a/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_sample.cpp
++++ b/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_sample.cpp
+@@ -75,7 +75,7 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
+     doca_error_t status = DOCA_SUCCESS;
+     size_t host_page_size = get_page_size();
+     size_t size_data;
+-    int dmabuf_fd;
++    void *host_buffer = nullptr;
+ 
+     for (int idx = 0; idx < NUM_MSG_SIZE_LAT; idx++) {
+         resources->data_mr[idx] = NULL;
+@@ -83,8 +83,8 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
+         ALIGN_SIZE(size_data, host_page_size);
+ 
+         status =
+-            doca_gpu_mem_alloc(resources->gpu_dev, size_data, host_page_size, DOCA_GPU_MEM_TYPE_GPU,
+-                               (void **)&(resources->local_poll_buf[idx]), NULL);
++            doca_gpu_mem_alloc(resources->gpu_dev, size_data, host_page_size, DOCA_GPU_MEM_TYPE_CPU_GPU,
++                               (void **)&(resources->local_poll_buf[idx]), &host_buffer);
+         if (status != DOCA_SUCCESS) {
+             DOCA_LOG(LOG_ERR, "Failed to allocate GPU memory buffer %d of size = %zd (%d x %d)",
+                      idx, size_data, message_size[idx], resources->cuda_threads);
+@@ -93,30 +93,26 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
+ 
+         cudaMemset(resources->local_poll_buf[idx], 0, size_data);
+ 
+-        /* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem
+-         * method. */
+-        status = doca_gpu_get_dmabuf_fd(resources->gpu_dev, resources->local_poll_buf[idx],
+-                                        size_data, &dmabuf_fd);
+-        if (status == DOCA_SUCCESS) {
+-            resources->local_poll_mr[idx] = ibv_reg_dmabuf_mr(
+-                resources->verbs_pd, 0, size_data, (uint64_t)resources->local_poll_buf[idx],
+-                dmabuf_fd,
+-                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING);
++        // Spark uses registered host memory. Fail rather than silently assume
++        // identical CPU/GPU addresses on a platform with different aliases.
++        if (host_buffer != resources->local_poll_buf[idx]) {
++            status = DOCA_ERROR_NOT_SUPPORTED;
++            goto exit_error;
+         }
+-
+         if (resources->local_poll_mr[idx] == NULL) {
+             resources->local_poll_mr[idx] = ibv_reg_mr(
+-                resources->verbs_pd, resources->local_poll_buf[idx], size_data,
++                resources->verbs_pd, host_buffer, size_data,
+                 IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+             if (resources->local_poll_mr[idx] == NULL) {
+-                DOCA_LOG(LOG_ERR, "Failed to create data mr: %d", status);
++                status = DOCA_ERROR_DRIVER;
++                DOCA_LOG(LOG_ERR, "Failed to create host data mr: errno=%d", errno);
+                 goto exit_error;
+             }
+         }
+ 
+         status =
+-            doca_gpu_mem_alloc(resources->gpu_dev, size_data, host_page_size, DOCA_GPU_MEM_TYPE_GPU,
+-                               (void **)&(resources->local_post_buf[idx]), NULL);
++            doca_gpu_mem_alloc(resources->gpu_dev, size_data, host_page_size, DOCA_GPU_MEM_TYPE_CPU_GPU,
++                               (void **)&(resources->local_post_buf[idx]), &host_buffer);
+         if (status != DOCA_SUCCESS) {
+             DOCA_LOG(LOG_ERR, "Failed to allocate GPU memory buffer %d of size = %zd (%d x %d)",
+                      idx, size_data, message_size[idx], resources->cuda_threads);
+@@ -125,22 +121,19 @@ static doca_error_t create_local_memory_object(struct verbs_resources *resources
+ 
+         cudaMemset(resources->local_post_buf[idx], 0, size_data);
+ 
+-        /* Try with dmabuf mapping first. If it doesn't work, fallback to legacy nvidia-peermem
+-         * method. */
+-        status = doca_gpu_get_dmabuf_fd(resources->gpu_dev, resources->local_post_buf[idx],
+-                                        size_data, &dmabuf_fd);
+-        if (status == DOCA_SUCCESS) {
+-            resources->local_post_mr[idx] = ibv_reg_dmabuf_mr(
+-                resources->verbs_pd, 0, size_data, (uint64_t)resources->local_post_buf[idx],
+-                dmabuf_fd, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
++        // Spark uses registered host memory. Fail rather than silently assume
++        // identical CPU/GPU addresses on a platform with different aliases.
++        if (host_buffer != resources->local_post_buf[idx]) {
++            status = DOCA_ERROR_NOT_SUPPORTED;
++            goto exit_error;
+         }
+-
+         if (resources->local_post_mr[idx] == NULL) {
+             resources->local_post_mr[idx] =
+-                ibv_reg_mr(resources->verbs_pd, resources->local_post_buf[idx], size_data,
++                ibv_reg_mr(resources->verbs_pd, host_buffer, size_data,
+                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_RELAXED_ORDERING);
+             if (resources->local_post_mr[idx] == NULL) {
+-                DOCA_LOG(LOG_ERR, "Failed to create data mr: %d", status);
++                status = DOCA_ERROR_DRIVER;
++                DOCA_LOG(LOG_ERR, "Failed to create host data mr: errno=%d", errno);
+                 goto exit_error;
+             }
+         }
+@@ -267,6 +260,7 @@ doca_error_t verbs_server(struct verbs_config *cfg) {
+     resources.cuda_threads = cfg->cuda_threads;
+     resources.nic_handler = cfg->nic_handler;
+     resources.qp_group = false;
++    resources.enable_umem_cpu = true;
+     resources.send_dbr_mode_ext = cfg->send_dbr_mode_ext;
+     // Not mandatory, just for testing purpose
+     resources.cq_collapsed = 1;
+@@ -458,6 +452,7 @@ doca_error_t verbs_client(struct verbs_config *cfg) {
+     resources.cuda_threads = cfg->cuda_threads;
+     resources.nic_handler = cfg->nic_handler;
+     resources.qp_group = false;
++    resources.enable_umem_cpu = true;
+     resources.send_dbr_mode_ext = cfg->send_dbr_mode_ext;
+     // Not mandatory, just for testing purpose
+     resources.cq_collapsed = 1;
+-- 
+2.54.0 (Apple Git-157)
+

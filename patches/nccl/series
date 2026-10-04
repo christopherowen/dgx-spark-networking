@@ -1,0 +1,5 @@
+# Applied after NVIDIA/nccl release tag v2.30.7-1 (73cf112295c33aee2b895f329f592f2a9b4b0f97).
+0001-ib-cts-nreqs-acquire-fence.patch
+0002-bidirectional-switchless-rings.patch
+0003-balanced-channel-allocation.patch
+0004-adaptive-small-ring-threads.patch

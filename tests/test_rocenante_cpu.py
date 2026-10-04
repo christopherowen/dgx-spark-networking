@@ -1,0 +1,159 @@
+"""CPU protocol stress of the production C proxy and the launcher geometry; does not qualify GPU/RDMA.
+
+The simulator in ``tests/rocenante_sim`` includes the real ``_roce_proxy.c``
+and replaces only libibverbs and the GPU endpoint. The Python checks execute
+the production topology resolver and the kernels' flag-selection expressions
+in isolation, because importing the runtime needs torch and the CuTe DSL.
+"""
+
+import ast
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import types
+import typing
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SIM = ROOT / "tests" / "rocenante_sim"
+ROCE = ROOT / "sparknet" / "rocenante"
+
+
+def _functions(path: Path, names: set[str], namespace: dict) -> dict:
+    tree = ast.parse(path.read_text())
+    body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(path), "exec"), namespace)
+    return namespace
+
+
+class ProxySimulatorTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which(os.environ.get("CC", "cc")), "needs a C compiler")
+    def test_simulated_collectives_pass_under_sanitizers(self):
+        with tempfile.TemporaryDirectory(prefix="roce-proxy-") as tmp:
+            binary = str(Path(tmp) / "simulate")
+            build = subprocess.run([os.environ.get("CC", "cc"), "-O1", "-g", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
+                                    "-fsanitize=address,undefined", "-pthread", "-I" + str(SIM), str(SIM / "simulate.c"),
+                                    "-o", binary], capture_output=True, text=True, timeout=120)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([binary], capture_output=True, text=True, timeout=300)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("PASS: direct3/ring4/mesh4", run.stdout)
+
+    def test_proxy_abi_is_the_qualified_one(self):
+        source = (ROCE / "_roce_proxy.c").read_text()
+        self.assertIn("#define ROCE_ABI_VERSION 10", source)
+        self.assertIn("lib.roce_abi_version() != 10", (ROCE / "_proxy.py").read_text())
+        self.assertIn('getenv("SPARKNET_ROCE_MESH_ROTATE")', source)
+        self.assertNotIn("b12x.", (ROCE / "runtime.py").read_text())
+
+
+class TopologyResolverTest(unittest.TestCase):
+    def setUp(self):
+        namespace = dict(vars(typing), os=os, json=json, MAX_STRIPES=2, MAX_LOCAL_HCAS=4,
+                         ENV_PEER_HCAS=("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS"),
+                         discover_hcas=lambda gid_index=None: ())
+        _functions(ROCE / "runtime.py", {"_resolve_hca_topology", "_peer_hca_names_from_env"}, namespace)
+        self.resolve = namespace["_resolve_hca_topology"]
+        self.from_env = namespace["_peer_hca_names_from_env"]
+        for name in ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS"):
+            os.environ.pop(name, None)
+
+    def test_ring4_routes_only_neighbours(self):
+        for rank in range(4):
+            for width in (1, 2):
+                peers = ((rank - 1) % 4, (rank + 1) % 4)
+                routes = {p: tuple(f"hca{p}_{i}" for i in range(width)) for p in peers}
+                names, result, stripes = self.resolve(world_size=4, rank=rank, hca_names=None,
+                                                      peer_hca_names=routes, gid_index=3, topology="ring4")
+                self.assertEqual((len(names), stripes), (2 * width, width))
+                self.assertEqual(result[rank], ())
+                self.assertEqual(result[(rank + 2) % 4], ())
+                self.assertEqual({p: result[p] for p in peers}, routes)
+
+    def test_invalid_geometry_rejected(self):
+        for world, routes in ((3, {1: ("a",), 2: ("b",)}), (4, None), (4, {1: ("a",), 2: ("b",), 3: ("c",)})):
+            with self.assertRaises(ValueError):
+                self.resolve(world_size=world, rank=0, hca_names=("a", "b"), peer_hca_names=routes, gid_index=3, topology="ring4")
+        with self.assertRaises(ValueError):
+            self.resolve(world_size=3, rank=0, hca_names=None, peer_hca_names={1: ("a",), 2: ("b", "c")}, gid_index=3)
+        with self.assertRaises(ValueError):
+            self.resolve(world_size=3, rank=0, hca_names=("a", "b"), peer_hca_names={1: ("a",), 2: ("c",)}, gid_index=3)
+
+    def test_direct_clique_and_mesh_routes(self):
+        names, routes, stripes = self.resolve(world_size=3, rank=1, hca_names=("mlx5_0", "mlx5_1"), peer_hca_names=None, gid_index=3)
+        self.assertEqual((names, stripes), (("mlx5_0", "mlx5_1"), 2))
+        self.assertEqual(routes, (("mlx5_0", "mlx5_1"), (), ("mlx5_0", "mlx5_1")))
+        for rank in range(4):
+            full = {p: (f"h{p % 2}a", f"h{p % 2}b") for p in range(4) if p != rank}
+            names, result, stripes = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=full, gid_index=3, topology="mesh4")
+            self.assertEqual(stripes, 2)
+            self.assertTrue(all(result[p] == full[p] for p in full))
+            four = {(rank + 1) % 4: ("a", "b"), (rank - 1) % 4: ("c", "d"), (rank + 2) % 4: ("a", "c", "b", "d")}
+            names, result, slots = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=four, gid_index=3, topology="mesh4")
+            self.assertEqual((slots, len(names), len(result[(rank + 2) % 4])), (4, 4, 4))
+
+    def test_peer_map_environment_aliases(self):
+        os.environ["B12X_ROCE_PEER_HCAS"] = '{"0": ["mlx5_0", "mlx5_1"], "2": ["mlx5_2", "mlx5_3"]}'
+        self.assertEqual(self.from_env(), {0: ("mlx5_0", "mlx5_1"), 2: ("mlx5_2", "mlx5_3")})
+        os.environ["SPARKNET_ROCE_PEER_HCAS"] = '{"1": ["a"]}'
+        self.assertEqual(self.from_env(), {1: ("a",)})
+        os.environ["SPARKNET_ROCE_PEER_HCAS"] = "not json"
+        with self.assertRaisesRegex(ValueError, "SPARKNET_ROCE_PEER_HCAS"):
+            self.from_env()
+        for name in ("SPARKNET_ROCE_PEER_HCAS", "B12X_ROCE_PEER_HCAS"):
+            os.environ.pop(name, None)
+
+
+class LauncherGeometryTest(unittest.TestCase):
+    """Execute the kernels' actual flag-selection expressions against the simulator's geometry."""
+
+    def test_launchers_wait_on_the_relay_flags(self):
+        for module, class_name in (("_oneshot_cute.py", "_RoceOneshotLaunch"), ("_allgather_cute.py", "_RoceAllGatherLaunch")):
+            source = ROCE / module
+            tree = ast.parse(source.read_text())
+            cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
+            kernel = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "kernel")
+            cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"]
+            key = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_process_key")
+            namespace = {"_DTYPE_PACK_ELEMS": {"bfloat16": 8}}
+            exec(compile(ast.Module(body=[cls, key], type_ignores=[]), str(source), "exec"), namespace)
+            prefix = ("bfloat16",) if module == "_oneshot_cute.py" else ()
+            wait = next(n for n in ast.walk(kernel) if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                        and "self._world_size * self._hca_count" in ast.unparse(n.test))
+            select = ast.Module(body=wait.body[:4], type_ignores=[])
+            for width in (1, 2):
+                for rank in range(4):
+                    args = prefix + (4, rank, 128, 2, 64, width)
+                    launch = namespace[class_name](*args, True)
+                    self.assertEqual((launch._hca_count, launch._neighbor_lanes), (2 * width, width))
+                    self.assertNotEqual(namespace["_process_key"](*args, 0, True), namespace["_process_key"](*args, 0, False))
+                    selected = []
+                    for tid in range(4 * 2 * width):
+                        env = dict(self=launch, tidx=tid, Int32=int, cutlass=types.SimpleNamespace(const_expr=lambda x: x))
+                        exec(compile(select, str(source), "exec"), env)
+                        if env["active"]:
+                            selected.append((env["peer"], env["hca"]))
+                    expected = [(p, lane) for p in range(4) if p != rank for lane in range(2 * width if p == (rank + 2) % 4 else width)]
+                    self.assertEqual(selected, expected)
+            for width in (1, 2, 4):
+                launch = namespace[class_name](*(prefix + (4, 0, 128, 2, 64, width)))
+                self.assertEqual(launch._hca_count, width)
+                self.assertEqual(launch._neighbor_lanes, 2 if width == 4 else width)
+
+    def test_runtime_launcher_keys_carry_the_relay_mode(self):
+        source = (ROCE / "runtime.py").read_text()
+        tree = ast.parse(source)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RoceOneshotAllReduce")
+        for name in ("_launcher_key", "_gather_launcher_key"):
+            fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
+            self.assertIn("self.topology == 'ring4'", ast.unparse(fn))
+        prepare = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "prepare")
+        self.assertIn("is_current_stream_capturing", ast.unparse(prepare))
+        self.assertFalse(any(isinstance(n, ast.FunctionDef) and n.name.startswith("_run_prepared") for n in cls.body))
+
+
+if __name__ == "__main__":
+    unittest.main()

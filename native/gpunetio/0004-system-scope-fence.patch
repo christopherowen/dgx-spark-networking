@@ -1,0 +1,28 @@
+From c25e2e51bf85da674c9174317594c986d31a3bf2 Mon Sep 17 00:00:00 2001
+From: Christopher Owen <root@your.mom>
+Date: Sat, 3 Oct 2026 12:09:27 +0200
+Subject: [PATCH] Publish shared host WQEs to the CPU proxy at system scope
+
+---
+ .../gpunetio_verbs_write_lat_kernel.cu                       | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_kernel.cu b/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_kernel.cu
+index 82d91da..12f7ce9 100644
+--- a/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_kernel.cu
++++ b/examples/gpunetio_verbs_write_lat/gpunetio_verbs_write_lat_kernel.cu
+@@ -122,7 +122,10 @@ __global__ void write_lat(struct doca_gpu_dev_verbs_qp *qp, uint32_t num_iters,
+ #endif
+             } else {
+                 doca_gpu_dev_verbs_submit<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+-                                          DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU, nic_handler>(
++                                          nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY
++                                              ? DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS
++                                              : DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
++                                          nic_handler>(
+                     qp, (wqe_idx + 1),
+                     DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_CPU_PROXY_UPDATE_PI);  // Useful only in case
+                                                                             // of CPU proxy
+-- 
+2.54.0 (Apple Git-157)
+

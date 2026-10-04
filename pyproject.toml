@@ -1,0 +1,42 @@
+[project]
+name = "dgx-spark-networking"
+version = "0.1.0"
+description = "Switchless RoCE collectives, NCCL profiles and fabric tooling for DGX Spark inference recipes"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Christopher Owen" }]
+dependencies = []
+
+[project.optional-dependencies]
+# The RoCEnante runtime and the collective probe. The CuTe DSL pin follows the
+# vLLM nightly base image (nvidia-cutlass-dsl 4.7.1 on CUDA 13).
+runtime = [
+  "torch>=2.12.0",
+  "cuda-python",
+  "nvidia-cutlass-dsl==4.7.1",
+]
+dev = ["pytest"]
+
+[project.scripts]
+sparknet = "sparknet.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sparknet*"]
+
+[tool.setuptools.package-data]
+"sparknet.rocenante" = ["*.c"]
+"sparknet.topology" = ["examples/*.json"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "SIM"]
+ignore = ["E501", "SIM102", "SIM108", "B023"]

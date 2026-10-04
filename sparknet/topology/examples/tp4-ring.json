@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "ssh_user": "spark",
+  "nodes": [
+    {
+      "name": "dgx1",
+      "rank": 0,
+      "management_ip": "192.0.2.1",
+      "head": true,
+      "roce_gid_index": 3,
+      "management_interface": "enP7s7",
+      "roce_peer_hcas": {
+        "3": ["rocep1s0f1", "roceP2p1s0f1"],
+        "1": ["rocep1s0f0", "roceP2p1s0f0"]
+      },
+      "roce_subnets": {
+        "rocep1s0f0": "10.12.1.0/24",
+        "roceP2p1s0f0": "10.12.2.0/24",
+        "rocep1s0f1": "10.14.1.0/24",
+        "roceP2p1s0f1": "10.14.2.0/24"
+      }
+    },
+    {
+      "name": "dgx2",
+      "rank": 1,
+      "management_ip": "192.0.2.2",
+      "head": false,
+      "roce_gid_index": 3,
+      "management_interface": "enP7s7",
+      "roce_peer_hcas": {
+        "0": ["rocep1s0f1", "roceP2p1s0f1"],
+        "2": ["rocep1s0f0", "roceP2p1s0f0"]
+      },
+      "roce_subnets": {
+        "rocep1s0f0": "10.23.1.0/24",
+        "roceP2p1s0f0": "10.23.2.0/24",
+        "rocep1s0f1": "10.12.1.0/24",
+        "roceP2p1s0f1": "10.12.2.0/24"
+      }
+    },
+    {
+      "name": "dgx3",
+      "rank": 2,
+      "management_ip": "192.0.2.3",
+      "head": false,
+      "roce_gid_index": 3,
+      "management_interface": "enP7s7",
+      "roce_peer_hcas": {
+        "1": ["rocep1s0f1", "roceP2p1s0f1"],
+        "3": ["rocep1s0f0", "roceP2p1s0f0"]
+      },
+      "roce_subnets": {
+        "rocep1s0f0": "10.34.1.0/24",
+        "roceP2p1s0f0": "10.34.2.0/24",
+        "rocep1s0f1": "10.23.1.0/24",
+        "roceP2p1s0f1": "10.23.2.0/24"
+      }
+    },
+    {
+      "name": "dgx4",
+      "rank": 3,
+      "management_ip": "192.0.2.4",
+      "head": false,
+      "roce_gid_index": 3,
+      "management_interface": "enP7s7",
+      "roce_peer_hcas": {
+        "2": ["rocep1s0f1", "roceP2p1s0f1"],
+        "0": ["rocep1s0f0", "roceP2p1s0f0"]
+      },
+      "roce_subnets": {
+        "rocep1s0f0": "10.14.1.0/24",
+        "roceP2p1s0f0": "10.14.2.0/24",
+        "rocep1s0f1": "10.34.1.0/24",
+        "roceP2p1s0f1": "10.34.2.0/24"
+      }
+    }
+  ]
+}

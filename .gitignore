@@ -1,0 +1,16 @@
+.work/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+.env.*
+*.local.json
+*.local.env
+nodes.json
+evidence/private/
+*.log
+.DS_Store

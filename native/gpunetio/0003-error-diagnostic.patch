@@ -1,0 +1,31 @@
+From 047e5efce0d2835352229c02c7a3c3aee40e5bf1 Mon Sep 17 00:00:00 2001
+From: Christopher Owen <root@your.mom>
+Date: Sat, 3 Oct 2026 12:09:26 +0200
+Subject: [PATCH] Include NIC error syndrome in setup diagnostics
+
+---
+ src/doca_gpunetio.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/doca_gpunetio.cpp b/src/doca_gpunetio.cpp
+index 0906f46..44032a8 100644
+--- a/src/doca_gpunetio.cpp
++++ b/src/doca_gpunetio.cpp
+@@ -1340,10 +1340,12 @@ doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp, boo
+     static thread_local uint64_t trace_polls = 0;
+     if (trace_progress && ((trace_polls++ & ((1U << 22) - 1)) == 0)) {
+         auto *cqe = reinterpret_cast<struct doca_gpunetio_ib_mlx5_cqe64 *>(qp->qp_cpu->cq_sq.cqe_daddr);
+-        fprintf(stderr, "GPU_PROGRESS pi=%llu last=%llu cq=%08x\n",
++        fprintf(stderr, "GPU_PROGRESS pi=%llu last=%llu cq=%08x syndrome=%02x vendor=%02x\n",
+                 (unsigned long long)*reinterpret_cast<volatile uint64_t *>(qp->cpu_db),
+                 (unsigned long long)qp->sq_wqe_pi_last,
+-                be32toh(*reinterpret_cast<volatile uint32_t *>(&cqe->wqe_counter_sig_op_own_raw)));
++                be32toh(*reinterpret_cast<volatile uint32_t *>(&cqe->wqe_counter_sig_op_own_raw)),
++                reinterpret_cast<doca_gpunetio_ib_mlx5_err_cqe_ex *>(cqe)->syndrome,
++                reinterpret_cast<doca_gpunetio_ib_mlx5_err_cqe_ex *>(cqe)->vendor_err_synd);
+     }
+ 
+     if (qp->cq_type == DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST) {
+-- 
+2.54.0 (Apple Git-157)
+

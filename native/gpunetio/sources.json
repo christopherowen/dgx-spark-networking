@@ -1,0 +1,10 @@
+{
+  "upstream": "586453728bcab2d4c50574924dc6cf43543c9ed4",
+  "heads": {
+    "spark": "4c42b8c2ece37fd69463874570395b2995489c8c",
+    "debug": "93b92a45c4362e25c3c03d422cbf8452d7be11bd",
+    "syndrome": "fe2bdf3195b7d51e0bb1222ec8ea862c2c8a852f",
+    "system": "47131ba7c944c76375c7ecffc81ce210627143d0"
+  },
+  "note": "heads after applying the series up to each patch; 'system' is the qualified CPU-proxy configuration"
+}

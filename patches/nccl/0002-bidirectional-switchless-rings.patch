@@ -1,0 +1,85 @@
+From 16a0a375919dc07523f7d50b1388cdaaa03a3a4c Mon Sep 17 00:00:00 2001
+From: Christopher Owen <3221756+christopherowen@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 06:34:38 +0000
+Subject: [PATCH] Balance final switchless ring channels across both directions
+
+Upstream-base: 73cf112295c33aee2b895f329f592f2a9b4b0f97
+Patch-base: 7522cb27e30c4370ebc62b20f45826c7f0962588
+
+Opt in with NCCL_SWITCHLESS_BIDIRECTIONAL=1. Reverse the second half of
+final ring channels after duplication, keeping both NIC roots in each
+direction for the four-channel/two-root deployment. Reject unsupported
+geometry before modifying rings: three/four nodes, one rank per node,
+even channel count, unshared resources, existing rings in cable/rank order.
+The ordinary unset policy is unchanged.
+
+Quality: no dtype/weight changes. Reversing ring reductions can change
+floating-point summation order; this is not a bitwise-equivalence claim.
+Tests: sanitizer-backed tests execute this policy for every rank at TP3
+and TP4 with 2/4/8/16 channels, checking adjacency, reciprocity, full rings
+and fail-closed geometry. GPU/RDMA correctness and latency need screening.
+Upstream-status: local experiment, not submitted.
+---
+ src/graph/connect.cc | 39 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+
+diff --git a/src/graph/connect.cc b/src/graph/connect.cc
+index 11c52eb..58b881f 100644
+--- a/src/graph/connect.cc
++++ b/src/graph/connect.cc
+@@ -377,6 +377,43 @@ void exchangeValues(int* v0, int* v1) {
+ 
+ NCCL_PARAM(UnpackDoubleNChannels, "UNPACK_DOUBLE_NCHANNELS", 1);
+ 
++// Explicit switchless policy for one GPU per node in rank/cable order.
++// Apply after channel duplication: half the final channels use each direction,
++// even when topology search found just one channel. With two NIC roots and
++// four channels this keeps both roots in each direction, unlike odd/even flips.
++NCCL_PARAM(SwitchlessBidirectional, "SWITCHLESS_BIDIRECTIONAL", 0);
++
++static ncclResult_t balanceSwitchlessRings(struct ncclComm* comm, int* ringPrev, int* ringNext) {
++  int nranks = comm->nRanks, channels = comm->nChannels;
++  if ((nranks != 3 && nranks != 4) || comm->nNodes != nranks ||
++      channels < 2 || (channels & 1) || comm->sharedRes->owner != comm) {
++    WARN("SWITCHLESS_BIDIRECTIONAL needs 3 or 4 nodes, one rank per node, an even channel count >=2 and unshared resources");
++    return ncclInvalidUsage;
++  }
++  // Validate all channels before changing any. The deployment maps rank order
++  // to cable order; do not silently invent routes for another topology.
++  for (int c = 0; c < channels; c++) {
++    for (int r = 0; r < nranks; r++) {
++      if (ringPrev[c * nranks + r] != (r + nranks - 1) % nranks ||
++          ringNext[c * nranks + r] != (r + 1) % nranks) {
++        WARN("SWITCHLESS_BIDIRECTIONAL requires channels in rank/cable order");
++        return ncclInvalidUsage;
++      }
++    }
++  }
++  for (int c = channels / 2; c < channels; c++) {
++    for (int r = 0; r < nranks; r++) {
++      int i = c * nranks + r;
++      int previous = ringPrev[i];
++      ringPrev[i] = ringNext[i];
++      ringNext[i] = previous;
++    }
++    comm->channels[c].ring.prev = ringPrev[c * nranks + comm->rank];
++    comm->channels[c].ring.next = ringNext[c * nranks + comm->rank];
++  }
++  return ncclSuccess;
++}
++
+ ncclResult_t ncclTopoPostset(struct ncclComm* comm, int* firstRanks, int* treePatterns,
+                              struct ncclTopoRanks** allTopoRanks, int* rings, struct ncclTopoGraph** graphs,
+                              struct ncclComm* parent) {
+@@ -519,6 +556,8 @@ ncclResult_t ncclTopoPostset(struct ncclComm* comm, int* firstRanks, int* treePa
+   }
+ 
+   // Create rings array and check all is fine
++  if (ncclParamSwitchlessBidirectional())
++    NCCLCHECKGOTO(balanceSwitchlessRings(comm, ringPrev, ringNext), ret, fail);
+   NCCLCHECKGOTO(ncclBuildRings(nChannels, rings, comm->rank, comm->nRanks, ringPrev, ringNext), ret, fail);
+ 
+ exit:
+-- 
+2.54.0 (Apple Git-157)
+

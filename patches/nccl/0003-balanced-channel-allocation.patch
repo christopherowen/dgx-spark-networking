@@ -1,0 +1,97 @@
+From b0c1b1cb7263881ec57020ce3ba62befcdc51058 Mon Sep 17 00:00:00 2001
+From: Christopher Owen <3221756+christopherowen@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 07:30:00 +0000
+Subject: [PATCH] Expose fine channel allocation and balance partial switchless
+ rings
+
+Upstream-base: 73cf112295c33aee2b895f329f592f2a9b4b0f97
+Patch-base: 16a0a375919dc07523f7d50b1388cdaaa03a3a4c
+
+Mode 2 reverses channels 1 and 2 in each four-channel group, so the first
+pair spans both directions while a full group uses both NIC roots both ways.
+NCCL_MIN_TRAFFIC_PER_CHANNEL exposes the existing allocation cell floor,
+with the upstream 32 KiB default and validation before planning. TUNING
+logs include actual channel element counts for per-interface accounting.
+
+Quality: changing chunk boundaries or ring direction can change reduction
+rounding. No precision change, no bitwise baseline-equivalence claim.
+Tests: extracted-source sanitizer tests and four-node GPU correctness,
+partition/counter validation and latency screens required before selection.
+Upstream-status: local experiment, not submitted.
+---
+ src/enqueue.cc       | 13 ++++++++++++-
+ src/graph/connect.cc | 13 ++++++++++++-
+ 2 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/src/enqueue.cc b/src/enqueue.cc
+index 9f59b21..2eadbdf 100644
+--- a/src/enqueue.cc
++++ b/src/enqueue.cc
+@@ -26,6 +26,9 @@
+ #include <cassert>
+ #include <cfloat> // FLT_MAX
+ 
++// Optional finer channel allocation; the default preserves upstream planning.
++NCCL_PARAM(MinTrafficPerChannel, "MIN_TRAFFIC_PER_CHANNEL", 32 << 10);
++
+ NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
+ NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
+ NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8 * 1024 * 1024);
+@@ -582,7 +585,12 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
+   int nChannels[2 * 2] = {0, 0, 0, 0}; // [collnet][nvls]
+   int const nMaxChannels[2 * 2] = {comm->nChannels, comm->nvlsChannels, // [collnet][nvls]
+                                    comm->nChannels, std::min(comm->nChannels, comm->nvlsChannels)};
+-  constexpr size_t MinTrafficPerChannel = 32 << 10; // 32K traffic as minimal
++  int64_t minTraffic = ncclParamMinTrafficPerChannel();
++  if (minTraffic < 16 || minTraffic > (32 << 10) || minTraffic % 16 != 0) {
++    WARN("MIN_TRAFFIC_PER_CHANNEL must be a multiple of 16 in [16,32768]");
++    return ncclInvalidUsage;
++  }
++  const size_t MinTrafficPerChannel = (size_t)minTraffic;
+   do {
+     size_t workBytes = 0;
+     struct ncclTaskColl* task = ncclIntruQueueHead(&planner->collTaskQueue);
+@@ -819,6 +827,9 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
+     plan->groupApiEventHandle = task->groupApiEventHandle;
+ 
+     if (comm->rank == 0) {
++      if (!task->isCollnet && !task->isNvls)
++        INFO(NCCL_TUNING, "Channel partition: elementBytes=%zu countLo=%zu countMid=%zu countHi=%zu",
++             elementSize, (size_t)devWork->cbd.countLo, (size_t)devWork->cbd.countMid, (size_t)devWork->cbd.countHi);
+       INFO(NCCL_TUNING, "%s: %ld Bytes -> Algo %s proto %s channel{Lo..Hi}={%d..%d}", ncclFuncToString(task->func),
+            task->count * ncclTypeSize(task->datatype), ncclAlgoToString(task->algorithm),
+            ncclProtoToString(task->protocol), devWork->channelLo, devWork->channelHi);
+diff --git a/src/graph/connect.cc b/src/graph/connect.cc
+index 58b881f..c33e878 100644
+--- a/src/graph/connect.cc
++++ b/src/graph/connect.cc
+@@ -385,6 +385,11 @@ NCCL_PARAM(SwitchlessBidirectional, "SWITCHLESS_BIDIRECTIONAL", 0);
+ 
+ static ncclResult_t balanceSwitchlessRings(struct ncclComm* comm, int* ringPrev, int* ringNext) {
+   int nranks = comm->nRanks, channels = comm->nChannels;
++  int mode = ncclParamSwitchlessBidirectional();
++  if (mode < 1 || mode > 2 || (mode == 2 && channels != 2 && channels % 4 != 0)) {
++    WARN("SWITCHLESS_BIDIRECTIONAL mode 2 needs two or a multiple of four channels");
++    return ncclInvalidUsage;
++  }
+   if ((nranks != 3 && nranks != 4) || comm->nNodes != nranks ||
+       channels < 2 || (channels & 1) || comm->sharedRes->owner != comm) {
+     WARN("SWITCHLESS_BIDIRECTIONAL needs 3 or 4 nodes, one rank per node, an even channel count >=2 and unshared resources");
+@@ -401,7 +406,13 @@ static ncclResult_t balanceSwitchlessRings(struct ncclComm* comm, int* ringPrev,
+       }
+     }
+   }
+-  for (int c = channels / 2; c < channels; c++) {
++  for (int c = 0; c < channels; c++) {
++    // Mode 2 balances each four-channel block across direction and NIC root.
++    // Its first two channels already use opposite directions; half-reversal
++    // leaves reduced-channel calls on only the clockwise rings.
++    bool reverse = mode == 1 ? c >= channels / 2 :
++        (channels == 2 ? c == 1 : (c % 4 == 1 || c % 4 == 2));
++    if (!reverse) continue;
+     for (int r = 0; r < nranks; r++) {
+       int i = c * nranks + r;
+       int previous = ringPrev[i];
+-- 
+2.54.0 (Apple Git-157)
+

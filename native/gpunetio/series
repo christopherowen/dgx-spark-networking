@@ -1,0 +1,5 @@
+# Applied after NVIDIA-DOCA/gpunetio 586453728bcab2d4c50574924dc6cf43543c9ed4.
+0001-spark-shared-host-memory.patch
+0002-progress-diagnostic.patch
+0003-error-diagnostic.patch
+0004-system-scope-fence.patch

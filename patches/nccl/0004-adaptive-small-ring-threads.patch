@@ -1,0 +1,54 @@
+From eeacf1c6343f0499e4e7ab20ec7eecfb6f62eda6 Mon Sep 17 00:00:00 2001
+From: Christopher Owen <3221756+christopherowen@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 07:46:00 +0000
+Subject: [PATCH] Retain balanced lanes by sizing tiny ring thread blocks first
+
+Upstream-base: 73cf112295c33aee2b895f329f592f2a9b4b0f97
+Patch-base: b0c1b1cb7263881ec57020ce3ba62befcdc51058
+
+In bidirectional mode 2, try fewer threads down to 128 before dropping
+channels for tiny Ring calls. Large calls and other modes keep upstream
+thread selection. This avoids the measured penalty from globally forcing
+128 threads while allowing four active direction/root lanes at 128 bytes
+per rank with the fine-allocation policy.
+
+Quality: no new arithmetic implementation; channel partitioning may alter
+reduction rounding. Tests extract the helper from the prepared source;
+full GPU and serving validation remains required.
+Upstream-status: local experiment, not submitted.
+---
+ src/enqueue.cc | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/enqueue.cc b/src/enqueue.cc
+index 2eadbdf..c086dcf 100644
+--- a/src/enqueue.cc
++++ b/src/enqueue.cc
+@@ -29,6 +29,15 @@
+ // Optional finer channel allocation; the default preserves upstream planning.
+ NCCL_PARAM(MinTrafficPerChannel, "MIN_TRAFFIC_PER_CHANNEL", 32 << 10);
+ 
++int64_t ncclParamSwitchlessBidirectional();
++
++// Preserve the four direction/root lanes by shrinking a tiny Ring's blocks
++// before shrinking its channel count. Larger messages keep upstream threads.
++static void balanceSwitchlessThreads(int64_t mode, size_t nBytes, int nc, int threshold, int* nt) {
++  if (mode != 2 || nc < 4) return;
++  while (*nt > 128 && nBytes < (size_t)nc * (size_t)*nt * (size_t)threshold) *nt /= 2;
++}
++
+ NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
+ NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
+ NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8 * 1024 * 1024);
+@@ -2101,6 +2110,8 @@ static ncclResult_t topoGetAlgoInfo(struct ncclComm* comm, struct ncclTaskColl*
+     }
+   } else {
+     // Ring/Tree channel tuning
++    if (info->algorithm == NCCL_ALGO_RING)
++      balanceSwitchlessThreads(ncclParamSwitchlessBidirectional(), nBytes, nc, threadThreshold, &nt);
+     while (nBytes < nc * nt * threadThreshold) {
+       if (nc >= 2) nc--;
+       else break;
+-- 
+2.54.0 (Apple Git-157)
+

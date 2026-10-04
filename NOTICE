@@ -1,0 +1,22 @@
+dgx-spark-networking
+Copyright 2026 Christopher Owen
+
+This product includes software developed by third parties:
+
+- RoCEnante (sparknet/rocenante/, tests/rocenante_sim/, tests/gpu/, benchmarks/):
+  derived from b12x, Copyright Luke Alonso and Local Inference Lab contributors,
+  licensed under the Apache License, Version 2.0
+  (https://github.com/local-inference-lab/b12x). The switchless routing, ring
+  relay, mesh and dispatch changes applied on top are by Christopher Owen.
+- patches/nccl/0001-ib-cts-nreqs-acquire-fence.patch: by Stanislav Bardyuk
+  (NVIDIA/nccl#2393), for NCCL, Copyright NVIDIA Corporation, BSD-3-Clause.
+  The remaining NCCL patches are by Christopher Owen and apply to NCCL
+  under the same license.
+- native/gpunetio/: patches to DOCA GPUNetIO Open Source, Copyright NVIDIA
+  Corporation, BSD-3-Clause (https://github.com/NVIDIA-DOCA/gpunetio).
+- The mesh4 flow-label marking mechanism follows SparkRing
+  (https://github.com/FujitsuPolycom/sparkring), Apache License 2.0. Its
+  host-side marker and forwarding tools are not included here.
+
+The DGX Spark, ConnectX, DOCA, NCCL and CUDA names are trademarks of NVIDIA
+Corporation. This project is not affiliated with NVIDIA.
