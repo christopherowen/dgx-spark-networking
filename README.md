@@ -35,6 +35,9 @@ a serving recipe (vLLM, SGLang or a custom engine) can select them by name:
   qualified on the fleet's links and its patches live in `native/gpunetio`;
   see [docs/gpudirect-roadmap.md](docs/gpudirect-roadmap.md).
 
+Recipe builders start with [docs/integration.md](docs/integration.md): fabric
+description, image build, probe, engine wiring, checklist and troubleshooting.
+
 ## Supported fabrics
 
 | Fabric | Nodes | Transports | Small collectives | Status |
@@ -113,6 +116,7 @@ sparknet/            the library (CPU-only subpackages never import torch)
 patches/nccl/        NCCL 2.30.7 patch series and README
 native/gpunetio/     DOCA GPUNetIO pin, Spark patches and build script
 recipes/             rendered environments for the named profiles
+examples/            a minimal engine that uses the runtime the intended way
 docs/                design, topology, nccl, oneshot, policy, roadmap, provenance
 tests/               unit tests, the C proxy simulator, tests/gpu (torchrun)
 benchmarks/          one-shot versus NCCL latency with a receipt

@@ -8,7 +8,7 @@ simulate:
 	  -Itests/oneshot_sim tests/oneshot_sim/simulate.c -o build/simulate && build/simulate
 
 compile:
-	python3 -m compileall -q sparknet tests benchmarks
+	python3 -m compileall -q sparknet tests benchmarks examples
 
 nccl:
 	scripts/build-nccl.sh build/nccl

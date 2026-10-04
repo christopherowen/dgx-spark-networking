@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile every module
-        run: python3 -m compileall -q sparknet tests benchmarks
+        run: python3 -m compileall -q sparknet tests benchmarks examples
       - name: Unit tests and the proxy simulator
         run: python3 -m unittest discover -s tests -v
       - name: CLI smoke
