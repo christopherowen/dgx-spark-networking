@@ -73,6 +73,35 @@ vLLM fork still imports `b12x.comm.roce` (the one-file switch is described in
 [sparknet/integration/vllm/README.md](sparknet/integration/vllm/README.md)),
 and the GPU-initiated transport is staged, not implemented.
 
+## Direction: GPU-initiated networking
+
+The host proxy is the measured path today, and the library is built so that
+the posting side can move into the GPU without touching the protocol:
+`sparknet.transport` is the seam, `Geometry` is what a transport needs, and
+the kernels, flags, two-slot lifetime, fixed-rank reduction and fail-stop
+contract stay as they are.
+
+1. **GPUNetIO with the CPU-proxy handler** (next): the collective kernel
+   builds the RDMA write and flag WQEs itself right after staging and
+   publishes them with a system-scope release; a host thread only rings the
+   doorbell. DOCA GPUNetIO open source builds for SM121 on the stock Spark
+   stack and, with the two patches in `native/gpunetio` (shared host memory,
+   system-scope fence), its write-latency sample ran on every link of four
+   Sparks at 4.1 to 7 us half round trip. `sparknet probe gpudirect` reports
+   whether a host is ready for it.
+2. **GPU doorbell**: the kernel rings the NIC's UAR directly. The one attempt
+   on the fleet ended in a host failure (one node rebooted, another's GPU
+   needed a reboot) with nothing classified in the logs, so this stage waits
+   for a host-level investigation on an idle node.
+3. **Device-memory registration**: rdma-core 50 on the fleet exports
+   `ibv_reg_dmabuf_mr`; whether the GB10 driver exports a dma-buf for device
+   allocations, and whether `nvidia-peermem` (present, not loaded) is the
+   better route, is what the probe checks. On unified memory this is about
+   placement, not necessity.
+
+The full plan with acceptance criteria is
+[docs/gpudirect-roadmap.md](docs/gpudirect-roadmap.md).
+
 ## Quick start
 
 ```sh
@@ -86,7 +115,7 @@ sparknet probe render-command nodes.json dgx3 --transport oneshot-ring4 \
 sparknet probe gpudirect
 ```
 
-`sparknet topology discover dgx1 dgx2 dgx3 dgx4 --out site --management-ip dgx1=10.0.1.71 ...`
+`sparknet topology discover dgx1 dgx2 dgx3 dgx4 --out site --management-ip dgx1=192.0.2.1 ...`
 reads the cabling over LLDP (read-only) and writes `nodes.json` and each
 node's `40-cx7.yaml` under the fleet's `10.<a><b>.<path>.<N>` addressing;
 `--fabric switched` reads each host's active rails from sysfs instead and

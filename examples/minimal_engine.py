@@ -5,7 +5,7 @@ One process per Spark, launched with the environment that
 ``sparknet topology render <nodes.json> <node> --transport ... --profile ...``
 prints for that node::
 
-    python3 examples/minimal_engine.py --rank 0 --world-size 4 --master-addr 10.0.1.71 --master-port 29650
+    python3 examples/minimal_engine.py --rank 0 --world-size 4 --master-addr 192.0.2.1 --master-port 29650
 
 It initializes torch.distributed with NCCL for CUDA tensors and gloo for the
 setup exchange, builds the one-shot runtime from the policy in the

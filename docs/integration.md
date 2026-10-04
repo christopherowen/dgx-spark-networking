@@ -53,10 +53,10 @@ rails from sysfs and derives the rail subnets from their live addresses:
 
 ```sh
 sparknet topology discover dgx1 dgx2 dgx3 dgx4 --ssh-user spark --out site \
-  --management-ip dgx1=10.0.1.71 --management-ip dgx2=10.0.1.72 \
-  --management-ip dgx3=10.0.1.73 --management-ip dgx4=10.0.1.74 --management-interface enP7s7
+  --management-ip dgx1=192.0.2.1 --management-ip dgx2=192.0.2.2 \
+  --management-ip dgx3=192.0.2.3 --management-ip dgx4=192.0.2.4 --management-interface enP7s7
 sparknet topology discover dgx1 dgx2 dgx3 --fabric switched --ssh-user spark --out site \
-  --management-ip dgx1=10.0.1.71 --management-ip dgx2=10.0.1.72 --management-ip dgx3=10.0.1.73 --traffic-class 106
+  --management-ip dgx1=192.0.2.1 --management-ip dgx2=192.0.2.2 --management-ip dgx3=192.0.2.3 --traffic-class 106
 ```
 
 Keep the site map out of git (`nodes.json` and `*.local.json` are ignored);
