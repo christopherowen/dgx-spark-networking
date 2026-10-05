@@ -37,7 +37,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 
-from ._kernels import PACK_BYTES, family as _kernel_family, gather_launcher, reduce_launcher
+from ._kernels import PACK_BYTES, Launch, family as _kernel_family, gather_launcher, reduce_launcher
 from ._proxy import Layout, Proxy, load as _load_proxy_library
 
 logger = logging.getLogger(__name__)
@@ -680,12 +680,31 @@ class RoceOneshotAllReduce:
             self.topology == "ring4",
         )
 
-    def _counter_addresses(self, blocks: int) -> tuple[int, int]:
-        """Stage and tail counter addresses for one power-of-two grid size."""
+    def _counter_indices(self, blocks: int) -> tuple[int, int]:
+        """Stage and tail counter indices (words of ``_counters``) for one power-of-two grid size."""
         counter_class = int(blocks).bit_length() - 1
-        stage = self._epoch_address + 4 * (1 + counter_class)
-        tail = self._epoch_address + 4 * (1 + self._counter_classes + counter_class)
-        return stage, tail
+        return 1 + counter_class, 1 + self._counter_classes + counter_class
+
+    @property
+    def _poison_index(self) -> int:
+        return 1 + 2 * self._counter_classes
+
+    @staticmethod
+    def _words(tensor: torch.Tensor) -> torch.Tensor:
+        """A flat ``int32`` view of a contiguous, 16-byte-aligned tensor's bytes."""
+        return tensor.reshape(-1).view(torch.int32)
+
+    def _launch(self, src: torch.Tensor, dst: torch.Tensor, nbytes: int, *, row_packs: int = 0) -> Launch:
+        """The family-neutral description of one collective launch."""
+        grid_blocks = _grid_blocks(nbytes // PACK_BYTES, self._threads, self._blocks)
+        stage_index, tail_index = self._counter_indices(grid_blocks)
+        return Launch(
+            input=self._words(src), output=self._words(dst), size_packs=nbytes // PACK_BYTES, nbytes=nbytes,
+            region=self._region, recv_off=self._layout.recv_off, flag_off=self._layout.flag_off,
+            send_off=self._layout.send_off, ctrl_off=self._layout.ctrl_off, slot_bytes=self._slot_bytes,
+            counters=self._counters, stage_index=stage_index, tail_index=tail_index, poison_index=self._poison_index,
+            spin_limit=self.spin_limit, grid_x=grid_blocks, row_packs=row_packs,
+        )
 
     def prepare(
         self,
@@ -794,29 +813,8 @@ class RoceOneshotAllReduce:
                     if out.data_ptr() % PACK_BYTES == 0
                     else self._aligned_scratch(1, out)
                 )
-                grid_blocks = _grid_blocks(
-                    nbytes // PACK_BYTES, self._threads, self._blocks
-                )
-                stage_counter, tail_counter = self._counter_addresses(grid_blocks)
                 self._order_stream(capturing)
-                launcher(
-                    src.data_ptr(),
-                    dst.data_ptr(),
-                    nbytes // PACK_BYTES,
-                    nbytes,
-                    self._recv_base,
-                    self._flag_base,
-                    self._send_base,
-                    self._ctrl_base,
-                    self._slot_bytes,
-                    self._epoch_address,
-                    stage_counter,
-                    tail_counter,
-                    self._poison_address,
-                    self.spin_limit,
-                    grid_blocks,
-                    anchor=self._counters,
-                )
+                launcher(self._launch(src, dst, nbytes))
                 if dst is not out:
                     out.copy_(dst)
                 self._mark_stream(capturing)
@@ -995,8 +993,7 @@ class RoceOneshotAllReduce:
                     )
                     self._order_stream(capturing)
                     self._launch_gather(
-                        self._resolve_gather_launcher(capturing), inp.data_ptr(),
-                        out.data_ptr(), nbytes, row_packs,
+                        self._resolve_gather_launcher(capturing), inp, out, nbytes, row_packs,
                     )
                     self._mark_stream(capturing)
                     return out
@@ -1009,8 +1006,7 @@ class RoceOneshotAllReduce:
                 staged[:nbytes].copy_(inp.reshape(-1).view(torch.uint8))
                 self._order_stream(capturing)
                 self._launch_gather(
-                    self._resolve_gather_launcher(capturing), staged.data_ptr(),
-                    gathered.data_ptr(), padded, padded // PACK_BYTES,
+                    self._resolve_gather_launcher(capturing), staged, gathered, padded, padded // PACK_BYTES,
                 )
                 self._mark_stream(capturing)
                 stacked = (
@@ -1050,7 +1046,7 @@ class RoceOneshotAllReduce:
         return staged[:padded], gathered[: self.world_size * padded]
 
     def _launch_gather(
-        self, launcher, input_address: int, output_address: int, nbytes: int,
+        self, launcher, source: torch.Tensor, destination: torch.Tensor, nbytes: int,
         row_packs: int,
     ) -> None:
         """Launch an already prepared all-gather kernel."""
@@ -1058,27 +1054,7 @@ class RoceOneshotAllReduce:
         # values and ids, MTP logits) launches a few blocks instead of the
         # full grid, and each power-of-two grid has its own arrival counters
         # so gathers and reductions of any size may interleave in one graph.
-        grid_blocks = _grid_blocks(nbytes // PACK_BYTES, self._threads, self._blocks)
-        stage_counter, tail_counter = self._counter_addresses(grid_blocks)
-        launcher(
-            input_address,
-            output_address,
-            nbytes // PACK_BYTES,
-            nbytes,
-            row_packs,
-            self._recv_base,
-            self._flag_base,
-            self._send_base,
-            self._ctrl_base,
-            self._slot_bytes,
-            self._epoch_address,
-            stage_counter,
-            tail_counter,
-            self._poison_address,
-            self.spin_limit,
-            grid_blocks,
-            anchor=self._counters,
-        )
+        launcher(self._launch(source, destination, nbytes, row_packs=row_packs))
         if not torch.cuda.is_current_stream_capturing():
             self.check_health()
 

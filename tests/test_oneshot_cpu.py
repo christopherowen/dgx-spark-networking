@@ -58,8 +58,11 @@ def _module(path: Path):
     """Import one module file directly (the package __init__ needs torch)."""
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location(path.stem, path)
+    import sys
+
+    spec = importlib.util.spec_from_file_location(f"sparknet_cpu_test.{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve postponed annotations through sys.modules
     spec.loader.exec_module(module)
     return module
 
@@ -81,7 +84,7 @@ class KernelFamilyTest(unittest.TestCase):
         device = _module(ROCE / "_device.py")
         source = device.render_source(world_size=4, rank=1, slots=2, flag_stride=128, hca_count=4, neighbor_lanes=2)
         for name in device.FUNCTIONS:
-            self.assertIn(f" {name}(", source, name)
+            self.assertRegex(source, rf"[ *]{name}\(", name)
         for define in ("#define ROCE_WORLD 4", "#define ROCE_RANK 1", "#define ROCE_SLOTS 2",
                        "#define ROCE_FLAG_STRIDE 128", "#define ROCE_HCA_COUNT 4", "#define ROCE_NEIGHBOR_LANES 2"):
             self.assertIn(define, source)

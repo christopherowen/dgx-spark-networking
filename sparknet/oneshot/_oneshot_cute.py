@@ -39,6 +39,7 @@ from cutlass import Int32, Int64, Uint32
 
 from cutlass.cute.runtime import make_ptr
 
+from ._kernels import Launch
 from ._compile import (
     compile_kernel,
     current_cuda_stream,
@@ -421,47 +422,26 @@ def get_launcher(
         name="oneshot.allreduce", cache_key=cache_key,
     )
 
-    def run(
-        input_address: int,
-        output_address: int,
-        size_packs: int,
-        nbytes: int,
-        recv_base: int,
-        flag_base: int,
-        send_base: int,
-        ctrl_base: int,
-        slot_bytes: int,
-        epoch_address: int,
-        stage_counter_address: int,
-        tail_counter_address: int,
-        poison_address: int,
-        spin_limit: int,
-        grid_x: int,
-        *,
-        anchor=None,
-    ) -> None:
-        """Launch the compiled kernel with runtime scalar arguments (``anchor`` is for the TileLang family)."""
-        del anchor
+    def run(launch: Launch) -> None:
+        """Launch the compiled kernel from a ``Launch`` (addresses taken from its tensors)."""
+        region = launch.region.data_ptr()
+        counters = launch.counters.data_ptr()
         raw(
-            make_ptr(
-                cutlass.Uint32, input_address, cute.AddressSpace.gmem, assumed_align=16
-            ),
-            make_ptr(
-                cutlass.Uint32, output_address, cute.AddressSpace.gmem, assumed_align=16
-            ),
-            int(size_packs),
-            int(nbytes),
-            int(recv_base),
-            int(flag_base),
-            int(send_base),
-            int(ctrl_base),
-            int(slot_bytes),
-            int(epoch_address),
-            int(stage_counter_address),
-            int(tail_counter_address),
-            int(poison_address),
-            int(spin_limit),
-            int(grid_x),
+            make_ptr(cutlass.Uint32, launch.input.data_ptr(), cute.AddressSpace.gmem, assumed_align=16),
+            make_ptr(cutlass.Uint32, launch.output.data_ptr(), cute.AddressSpace.gmem, assumed_align=16),
+            int(launch.size_packs),
+            int(launch.nbytes),
+            region + launch.recv_off,
+            region + launch.flag_off,
+            region + launch.send_off,
+            region + launch.ctrl_off,
+            int(launch.slot_bytes),
+            counters,
+            counters + 4 * launch.stage_index,
+            counters + 4 * launch.tail_index,
+            counters + 4 * launch.poison_index,
+            int(launch.spin_limit),
+            int(launch.grid_x),
             current_cuda_stream(),
         )
 

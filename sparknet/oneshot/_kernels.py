@@ -12,12 +12,45 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Callable
+from dataclasses import dataclass
+from typing import Any, Callable
 
 ENV_KERNELS = "SPARKNET_ROCE_KERNELS"
 FAMILIES = ("cute", "tilelang")
 DEFAULT_FAMILY = "cute"
 PACK_BYTES = 16
+
+
+@dataclass(frozen=True)
+class Launch:
+    """One collective launch, in the terms both kernel families take.
+
+    ``input`` and ``output`` are flat ``int32`` views of the 16-byte-aligned
+    input and output bytes; ``region`` is the pinned host region (``uint8``)
+    and the offsets locate its receive slots, flags, send slots and control
+    record; ``counters`` is the device-resident epoch, staging and tail
+    counters and the poison word, addressed by index. A TileLang kernel takes
+    the tensors as buffers (which also binds its device and stream); the CuTe
+    launcher reads their addresses.
+    """
+
+    input: Any
+    output: Any
+    size_packs: int
+    nbytes: int
+    region: Any
+    recv_off: int
+    flag_off: int
+    send_off: int
+    ctrl_off: int
+    slot_bytes: int
+    counters: Any
+    stage_index: int
+    tail_index: int
+    poison_index: int
+    spin_limit: int
+    grid_x: int
+    row_packs: int = 0  # all-gather only: packs per row of the shard (dim-0 gathers: the shard's packs)
 
 
 def family(explicit: str | None = None) -> str:
@@ -38,4 +71,4 @@ def gather_launcher(kernels: str, *key) -> Callable[..., None]:
     return importlib.import_module(f"sparknet.oneshot._allgather_{kernels}").get_launcher(*key)
 
 
-__all__ = ["DEFAULT_FAMILY", "ENV_KERNELS", "FAMILIES", "PACK_BYTES", "family", "gather_launcher", "reduce_launcher"]
+__all__ = ["DEFAULT_FAMILY", "ENV_KERNELS", "FAMILIES", "Launch", "PACK_BYTES", "family", "gather_launcher", "reduce_launcher"]

@@ -8,6 +8,10 @@
   fabric; the two-Spark pair measured for the first time; receipts under
   `evidence/2026-10-05-tilelang-port`. `scripts/gpu-test-fleet.sh` runs the
   GPU suite on every node of a map.
+- Both kernel families launch from one `Launch` description; the TileLang
+  kernels take the input, output, pinned region and counters as buffer
+  arguments with their real shapes (which binds the launch to the current
+  device and stream), and the device header takes pointers.
 - The integration guide names the kernel caches (`CUTE_DSL_CACHE_DIR`,
   `TILELANG_CACHE_DIR`) as the toolchains' own, placed by the recipe with its
   other JIT caches; the reference Dockerfile sets neither.
