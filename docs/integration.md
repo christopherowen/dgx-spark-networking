@@ -13,7 +13,7 @@ or judge model quality.
 | --- | --- | --- |
 | A description of the fabric | `sparknet.topology` | `nodes.json`, validated against the chosen transport |
 | The per-node settings | `sparknet.topology.render`, `sparknet.nccl.profiles` | environment variables, rendered once per node |
-| The bulk collective library | `patches/nccl`, `scripts/build-nccl.sh` | a rebuilt `libnccl.so.2` in the serving image |
+| The bulk collective library | `sparknet/nccl/patches`, `scripts/build-nccl.sh` | a rebuilt `libnccl.so.2` in the serving image |
 | The small collectives | `sparknet.oneshot` | a runtime object the engine constructs per tensor-parallel group |
 | The decision of who carries what | `sparknet.policy` | a `CollectivePolicy`, read from the same environment |
 | Proof the fabric works | `sparknet.probe` | a bounded container per node, run before the model |
@@ -26,9 +26,13 @@ or judge model quality.
 On the build host and in the serving image:
 
 ```sh
-pip install /path/to/dgx-spark-networking            # CPU tooling: topology, nccl, policy, probe planning
-pip install '/path/to/dgx-spark-networking[runtime]'  # on the nodes: torch, cuda-python, nvidia-cutlass-dsl 4.7.1
+pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0                 # CPU tooling: topology, nccl, policy, probe planning
+pip install 'dgx-spark-networking[runtime] @ git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0'  # on the nodes: torch, cuda-python, nvidia-cutlass-dsl 4.7.1
 ```
+
+The package itself has no dependencies, and the NCCL patch series ships in
+it (`sparknet nccl patches --export DIR`), so an image build needs no
+checkout of this repository.
 
 The `runtime` extra pins the CuTe DSL to the version the vLLM nightly base
 image installs; keep it at whatever your base image ships (the kernels need
@@ -133,7 +137,13 @@ fence; without it NCCL can hang every rank); the `tp4-ring` profile needs
 0002 to 0004. Build once and replace the wheel's library:
 
 ```sh
-scripts/build-nccl.sh /opt/nccl 8
+scripts/build-nccl.sh /opt/nccl 8        # from a checkout
+# or, from the installed package, in an image build:
+sparknet nccl patches --export /workspace/nccl-patches
+git clone --filter=blob:none https://github.com/NVIDIA/nccl.git /workspace/nccl
+git -C /workspace/nccl checkout --detach 73cf112295c33aee2b895f329f592f2a9b4b0f97   # v2.30.7-1, upstreams.lock.json
+for p in $(grep -v '^#' /workspace/nccl-patches/series); do git -C /workspace/nccl am /workspace/nccl-patches/$p; done
+make -C /workspace/nccl -j8 src.build NVCC_GENCODE="-gencode=arch=compute_121,code=sm_121"
 # in the image: replace the nvidia-nccl wheel's libnccl.so.2 and keep the hash beside it
 ```
 
@@ -167,11 +177,15 @@ flags the probe container uses plus shared memory for the engine:
 --ulimit=memlock=-1:-1 --ulimit=stack=67108864:67108864 --shm-size=16g
 ```
 
-A Dockerfile has the shape of spark-ds41f's: an `nccl-builder` stage that runs
-the series and `make src.build` for `sm_121`, a runtime stage that installs
-the rebuilt library over the wheel's, installs the package with `--no-deps`,
-builds the proxy, and ends with an import check that fails the build if the
-proxy ABI or the NCCL hash is not what was built.
+[`docker/Dockerfile`](../docker/Dockerfile) is the reference for exactly
+this: an `nccl-builder` stage that exports the packaged series, applies it to
+the pinned release, checks the tree hash and runs `make src.build` for
+`sm_121`; a runtime stage that installs the rebuilt library over the wheel's,
+installs the package with `--no-deps`, builds the proxy into
+`SPARKNET_ROCE_CACHE_DIR`, and ends with an import check that fails the
+build if the proxy ABI or the NCCL hash is not what was built. The engine
+stages (spark-ds41f's vLLM fork, B12X, TileLang) are the recipe's own; CI
+lints the file and the image is built by hand on a Spark.
 
 ## 4. Qualify the fabric before the model
 
@@ -245,7 +259,8 @@ at 2 MiB; `prepare` adds two capacity-sized alignment buffers and, with
 `sparknet.integration.vllm.SparknetOneShotAllReduce` replaces the fork's
 `B12xRoceAllReduce` with the same constructor keywords and methods. The
 one-file switch and the policy guards it keeps are described in
-`sparknet/integration/vllm/README.md`.
+`sparknet/integration/vllm/README.md`; spark-ds41f carries it as its vLLM
+patch 0038 and serves both promoted recipes through it.
 
 Serving arguments per transport:
 
@@ -360,7 +375,7 @@ sequence-parallel threshold, which is a model-scheduling change.
 
 ```text
 sparknet topology validate|render|example|discover|inventory
-sparknet nccl env|validate|profiles|patches
+sparknet nccl env|validate|profiles|patches [--export DIR]
 sparknet policy show
 sparknet probe doctor|gpudirect|render-command|collectives
 ```

@@ -10,7 +10,9 @@ the explicit-collective-policy patch (spark-ds41f vLLM patch 0027) added.
 
 ## Switching the fork to sparknet
 
-One vLLM patch, on top of the spark-ds41f series:
+One vLLM patch, on top of the spark-ds41f series. spark-ds41f carries it as
+`patches/vllm/0038-tilelang-sparknet-collectives.patch` (2026-10-04) and its
+r6 image serves the TP3 and TP4 recipes through it:
 
 1. In `cuda_communicator.py`, import `SparknetOneShotAllReduce` from
    `sparknet.integration.vllm` where `B12xRoceAllReduce` is imported, and
