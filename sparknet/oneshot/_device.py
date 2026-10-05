@@ -40,6 +40,11 @@ FUNCTIONS = (
     "roce_reduce_pack_f16",
     "roce_reduce_pack_bf16",
     "roce_gather_pack",
+    "roce_stage",
+    "roce_reduce_f32",
+    "roce_reduce_f16",
+    "roce_reduce_bf16",
+    "roce_gather",
 )
 
 _HEADER = r"""
@@ -319,6 +324,51 @@ __device__ __forceinline__ void roce_gather_pack(const void *input, const void *
         roce_pack p = roce_source_pack(source, input, recv, slot_bytes, seq, offset);
         roce_byte *dest = (roce_byte *)output + ((long long)row * out_row_packs + (long long)source * row_packs + col) * ROCE_PACK_BYTES;
         roce_st_global_pack(dest, p);
+    }
+}
+
+// The pack loops of phases 1 and 4. Deliberately not unrolled: in a decode step
+// every launch re-fetches the kernel's code (the model's large kernels evict it
+// from the SMs' instruction caches) while the L2 weight prefetch saturates DRAM,
+// so the kernel's code size is part of its latency. The trip count comes from
+// the loop condition, with no division.
+__device__ __forceinline__ void roce_stage(const void *input, roce_byte *send_slot, int size_packs, int index, int stride) {
+#pragma unroll 1
+    for (int pack = index; pack < size_packs; pack += stride) {
+        long long offset = (long long)pack * ROCE_PACK_BYTES;
+        roce_copy_pack((const roce_byte *)input + offset, send_slot + offset);
+    }
+}
+
+__device__ __forceinline__ void roce_reduce_f32(const void *input, const void *recv, long long slot_bytes, roce_u32 seq,
+                                       void *output, int size_packs, int index, int stride) {
+#pragma unroll 1
+    for (int pack = index; pack < size_packs; pack += stride) {
+        roce_reduce_pack_f32(input, recv, slot_bytes, seq, output, (long long)pack * ROCE_PACK_BYTES);
+    }
+}
+
+__device__ __forceinline__ void roce_reduce_f16(const void *input, const void *recv, long long slot_bytes, roce_u32 seq,
+                                       void *output, int size_packs, int index, int stride) {
+#pragma unroll 1
+    for (int pack = index; pack < size_packs; pack += stride) {
+        roce_reduce_pack_f16(input, recv, slot_bytes, seq, output, (long long)pack * ROCE_PACK_BYTES);
+    }
+}
+
+__device__ __forceinline__ void roce_reduce_bf16(const void *input, const void *recv, long long slot_bytes, roce_u32 seq,
+                                       void *output, int size_packs, int index, int stride) {
+#pragma unroll 1
+    for (int pack = index; pack < size_packs; pack += stride) {
+        roce_reduce_pack_bf16(input, recv, slot_bytes, seq, output, (long long)pack * ROCE_PACK_BYTES);
+    }
+}
+
+__device__ __forceinline__ void roce_gather(const void *input, const void *recv, long long slot_bytes, roce_u32 seq,
+                                            int shard_packs, int row_packs, void *output, int index, int stride) {
+#pragma unroll 1
+    for (int pack = index; pack < shard_packs; pack += stride) {
+        roce_gather_pack(input, recv, slot_bytes, seq, pack, row_packs, output);
     }
 }
 """

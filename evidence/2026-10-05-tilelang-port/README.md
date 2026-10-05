@@ -36,3 +36,10 @@ profiles, which is what a pair or triangle uses above the cut. The ring's policy
 hands large collectives to the balanced four-channel NCCL of `tp4-ring`, which is
 faster than that control; compare the ring's cut against the balanced numbers in
 `docs/nccl.md`.
+
+## Third session the same evening (decode profiles and the register fix)
+
+| Directory | What |
+| --- | --- |
+| `decode-profiles/hot-allreduce.json` | per rank: registers, window span and p5/p50/p95 of the graph-replayed 4-block all-reduce, split into the MoE and the attention all-reduce, for CuTe (twice), TileLang at 56 registers, TileLang with header loops at 54, and TileLang at 40 registers |
+| `serving-bench-regs40/` | lab `measure` run `sparknet2`: CuTe, TileLang at 40 registers, CuTe again |

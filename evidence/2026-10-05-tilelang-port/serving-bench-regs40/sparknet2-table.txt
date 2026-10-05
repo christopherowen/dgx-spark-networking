@@ -1,0 +1,28 @@
+prose-c1
+  cute       tps   62.22 ± 0.6%   step  31.90 ms   accepted/draft 1.065   distinct outputs 1
+  tilelang-regs40 tps   62.19 ± 0.2%  -0.0%   step  31.94 ms  +0.1%   accepted/draft 1.065   distinct outputs 1
+  cute-end   tps   62.28 ± 0.8%  +0.1%   step  31.89 ms  -0.0%   accepted/draft 1.065   distinct outputs 1
+json-nothink-c1
+  cute       tps   99.17 ± 0.9%   step  37.83 ms   accepted/draft 3.000   distinct outputs 1
+  tilelang-regs40 tps   99.29 ± 0.1%  +0.1%   step  37.92 ms  +0.3%   accepted/draft 3.000   distinct outputs 1
+  cute-end   tps   99.18 ± 0.9%  +0.0%   step  37.89 ms  +0.2%   accepted/draft 3.000   distinct outputs 1
+single stream, distinct prompts one at a time (tok/s ±95%)
+  cute         82.19 ±13.0%
+  tilelang-regs40   82.12 ±13.1%  -0.1%
+  cute-end     82.17 ±13.1%  -0.0%
+cold prefill: tokens/s (TTFT s)
+  cute       1024: 2720 (0.35); 16384: 5678 (2.82)
+  tilelang-regs40 1024: 2718 (0.35)  -0.1%; 16384: 5670 (2.83)  -0.2%
+  cute-end   1024: 2712 (0.35)  -0.3%; 16384: 5664 (2.83)  -0.3%
+eight distinct concurrent prompts (tok/s ±95%)
+  cute        177.33 ±0.2%
+  tilelang-regs40  176.73 ±1.2%  -0.3%
+  cute-end    175.63 ±6.0%  -1.0%
+short prompts: request time, median over lengths (ms)
+  cute          91.5
+  tilelang-regs40    94.3  +3.0%  over
+  cute-end      95.9  +4.8%  over
+mixed traffic (means over rounds)
+  cute       short_ttft_median 214.0; long_ttft_mean 859.3; gap_p50 60.9; gap_p95 94.0; gap_p99 737.9; chunks_per_s 14.8
+  tilelang-regs40 short_ttft_median 221.2  +3.4%  over; long_ttft_mean 863.3  +0.5%; gap_p50 61.1  +0.3%; gap_p95 93.4  -0.6%; gap_p99 736.3  -0.2%; chunks_per_s 14.8  +0.0%
+  cute-end   short_ttft_median 231.5  +8.2%  over; long_ttft_mean 856.6  -0.3%; gap_p50 61.0  +0.2%; gap_p95 92.4  -1.7%; gap_p99 736.6  -0.2%; chunks_per_s 14.8  +0.0%

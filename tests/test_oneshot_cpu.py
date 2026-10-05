@@ -118,6 +118,14 @@ class KernelFamilyTest(unittest.TestCase):
         launch.thaw_kernel_resolution()
         launch.raise_if_kernel_resolution_frozen("tilelang.jit")
 
+    def test_tilelang_kernels_declare_full_residency(self):
+        # Without a minimum blocks-per-SM bound nvcc spends 54 to 56 registers and the
+        # all-reduce loses ~15 us per launch in a decode step (2026-10-05 profiles).
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+            text = (ROCE / module_name).read_text()
+            self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
+            self.assertIn("_resident_blocks(threads)", text, module_name)
+
     def test_runtime_routes_launchers_through_the_family(self):
         runtime = (ROCE / "runtime.py").read_text()
         self.assertIn("reduce_launcher(self.kernel_family,", runtime)

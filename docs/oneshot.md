@@ -175,13 +175,46 @@ Both TileLang arms are 0.6 to 1.2 percent slower per single-stream decode
 step, beyond the bracket's 0.1 to 0.2 percent drift; eight streams, prefill,
 time to first token and mixed traffic are within noise, and the outputs are
 identical. Proxy pinning has no measurable serving effect in this profile.
-Neither is promoted: the rule is a measurable improvement in serving, and
-the default stays `cute`. The step difference is not explained by the
-collectives in isolation: `benchmarks/benchmark_oneshot.py` on the pair puts
-the graph-replayed latencies equal (TileLang 1 percent faster at 768 KiB and
-1 MiB) and TileLang's eager launch 15 us cheaper per call (27 against 43 us
-at 8 KiB, 80 against 97 us for a 6 by 38,720 gather), so the cause is in the
-serving context and still open.
+The collectives in isolation did not explain it: `benchmarks/benchmark_oneshot.py`
+on the pair puts the graph-replayed latencies equal and TileLang's eager
+launch 15 us cheaper per call.
+
+**The cause: the TileLang kernel's register footprint.** Torch-profiler
+traces of a 128-token decode on every rank (`evidence/2026-10-05-tilelang-port/decode-profiles`)
+put the whole difference in the graph-replayed 4-block all-reduce, the
+60 KiB decode shape. Almost every one of those launches runs beside the
+model's L2 weight prefetch (vLLM `l2_prefetch.py`, which issues
+`cp.async.bulk.prefetch.L2` fills on a side stream right before each
+all-reduce), and there the TileLang kernel's floor was about 15 us higher on
+every rank (5th percentile 40 against 27 us on the MoE all-reduce), while it
+was faster than CuTe when no prefetch ran. The two kernels issue the same
+memory-ordering instructions; the difference was that nvcc, compiling
+TileLang's CUDA with `__launch_bounds__(512, 1)`, spent 54 to 56 registers
+per thread (2 resident blocks per SM) where the CuTe kernel uses 40 (3 per
+SM, the warp limit at 512 threads). With the kernels declaring full
+residency (`T.annotate_min_blocks_per_sm`, 40 registers) the profile matches
+CuTe on every rank:
+
+| dgx1, decode profile | CuTe | TileLang, 56 registers | TileLang, 40 registers |
+| --- | ---: | ---: | ---: |
+| MoE all-reduce p5 / p50 | 26.6 / 44.8 us | 40.2 / 63.6 us | 26.2 / 45.6 us |
+| Attention all-reduce p5 / p50 | 35.2 / 51.3 us | 48.2 / 59.2 us | 33.2 / 51.4 us |
+| Window span | 1,562.8 ms | 1,575.9 ms | 1,560.2 ms |
+
+Ruled out on the way, each measured: code size (non-unrolled header loops
+cut the kernel from 400 to 312 instructions and changed nothing), extra
+memory traffic (identical fences, invalidates and strong loads in the two
+SASS listings), runtime threads, programmatic dependent launch, cache
+carveout and launch attributes (TVM launches with a plain
+`cuLaunchKernel`). Microbenchmarks did not reproduce the effect; only the
+serving profile did.
+
+The serving benchmark with the 40-register kernels
+(`evidence/2026-10-05-tilelang-port/serving-bench-regs40`, same lean profile,
+bracket) puts the two families level: single-stream step +0.1 percent (prose)
+and +0.3 percent (JSON) against a bracket of 0.0 and +0.2 percent, eight
+streams and prefill within noise. TileLang no longer loses, but it is not
+measurably better, so the default stays `cute`.
 
 ### Where the NCCL cut is (2026-10-05)
 

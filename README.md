@@ -136,10 +136,13 @@ CuTe DSL kernels and a TileLang port (`SPARKNET_ROCE_KERNELS=tilelang`) that
 generates CUDA source with the protocol's device side in one header. The
 GPU suite shows the two bit-identical on the pair and the ring; latencies
 are equal within noise, with TileLang 3 to 5 percent faster at 480 KiB.
-Serving was benchmarked on both (2026-10-05, [docs/oneshot.md](docs/oneshot.md)):
-TileLang is 0.6 to 1.2 percent slower per decode step in the lean screen,
-equal elsewhere, so by the promotion rule (measurably better in serving) the
-default stays `cute` while the cause is found.
+Serving was benchmarked on both (2026-10-05, [docs/oneshot.md](docs/oneshot.md)).
+The first TileLang build was 0.6 to 1.2 percent slower per decode step;
+per-kernel decode profiles traced it to the kernel's register footprint (56
+against 40 per thread), which cost about 15 µs per all-reduce beside the
+model's L2 prefetch. With the kernels declaring full residency the two
+families are level in serving, so by the promotion rule (measurably better)
+the default stays `cute`.
 
 **Not yet.** The switched profiles reuse the triangle's settings and say so
 in their status. The GPU-initiated transport is staged, not implemented;
