@@ -1,0 +1,25 @@
+name: Bug report
+description: Something in the library, the CLI, the docs or the build is wrong.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or call, the output or traceback, and what you expected instead.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: sparknet version and Python
+      placeholder: "sparknet 0.3.0, Python 3.12, pip install from git tag v0.3.0"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Node environment (if it ran on a Spark)
+      description: Driver, firmware, rdma-core, kernel; the rendered environment of the rank (`sparknet topology render ... --json`) with site addresses replaced.
+      render: text

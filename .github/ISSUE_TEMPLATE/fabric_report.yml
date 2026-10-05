@@ -1,0 +1,56 @@
+name: Fabric report
+description: A measurement or a result from your own Spark fabric (a pair, a switch, other versions).
+title: "[fabric] "
+labels: ["fabric-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Results from fabrics this fleet does not have are the most useful thing you can send.
+        Keep site addresses out of the report, or replace them with documentation addresses (192.0.2.x, 10.x example subnets).
+  - type: dropdown
+    id: fabric
+    attributes:
+      label: Fabric
+      options:
+        - 2 Sparks, one cable
+        - 2 Sparks, two cables
+        - 3 Sparks, triangle
+        - 4 Sparks, ring
+        - Switched
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: transport_profile
+    attributes:
+      label: Transport and profile
+      placeholder: oneshot-direct / tp2-direct
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: DGX OS, kernel (and `kho=off`), NVIDIA driver, ConnectX-7 firmware, rdma-core, sparknet version, serving image or engine.
+      placeholder: |
+        DGX OS 26.09, kernel 7.0.0-1019-nvidia-64k kho=off, driver 580.178.04, CX7 fw 28.45.4028, rdma-core 50, sparknet 0.3.0
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor and inventory
+      description: Output of `sparknet probe doctor nodes.json --node <node> --transport <transport>` and `sparknet topology inventory` on one node.
+      render: text
+  - type: textarea
+    id: probe
+    attributes:
+      label: Probe result
+      description: The JSON result of `sparknet probe collectives` with `--benchmark` (one rank is enough; say which), and the NCCL init log lines that show the ring order and the IB transport.
+      render: json
+  - type: textarea
+    id: notes
+    attributes:
+      label: What you measured or observed
+      description: Serving numbers against a control, retransmissions, hangs, anything the profile's status should say.

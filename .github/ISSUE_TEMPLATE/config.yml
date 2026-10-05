@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: NVIDIA Developer Forums thread
+    url: https://forums.developer.nvidia.com/t/dgx-spark-networking-open-source-switchless-roce-collectives-nccl-profiles-and-fabric-tooling-for-multi-spark-inference/385049
+    about: Discussion of the release, GPUNetIO on GB10 and other Spark fabrics.
