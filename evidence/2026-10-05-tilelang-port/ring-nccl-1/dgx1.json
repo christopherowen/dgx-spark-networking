@@ -1,0 +1,1057 @@
+{
+  "rank": 0,
+  "world_size": 4,
+  "transport": "nccl-ring",
+  "policy": null,
+  "proxy": null,
+  "environment": {
+    "NCCL_ALGO": "Ring",
+    "NCCL_BUFFSIZE": "1048576",
+    "NCCL_COLLNET_ENABLE": "0",
+    "NCCL_CROSS_NIC": "1",
+    "NCCL_CUMEM_ENABLE": "1",
+    "NCCL_CUMEM_HOST_ENABLE": "0",
+    "NCCL_DEBUG": "INFO",
+    "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,NET",
+    "NCCL_GIN_ENABLE": "0",
+    "NCCL_IB_ADDR_FAMILY": "AF_INET",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_GID_INDEX": "3",
+    "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
+    "NCCL_IB_MERGE_NICS": "1",
+    "NCCL_IB_ROCE_VERSION_NUM": "2",
+    "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
+    "NCCL_IB_SUBNET_PREFIX_LEN": "24",
+    "NCCL_IGNORE_CPU_AFFINITY": "1",
+    "NCCL_LL128_BUFFSIZE": "262144",
+    "NCCL_MAX_NCHANNELS": "4",
+    "NCCL_MIN_NCHANNELS": "4",
+    "NCCL_MNNVL_ENABLE": "0",
+    "NCCL_NET": "IB",
+    "NCCL_NET_PLUGIN": "none",
+    "NCCL_NVLS_ENABLE": "0",
+    "NCCL_P2P_DISABLE": "1",
+    "NCCL_PAT_ENABLE": "0",
+    "NCCL_PROTO": "^LL128",
+    "NCCL_RMA_DISABLE": "1",
+    "NCCL_RUNTIME_CONNECT": "1",
+    "NCCL_SHM_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "enP7s7",
+    "SPARKNET_ROCE_CACHE_DIR": "/opt/sparknet/roce",
+    "SPARKNET_ROCE_GID_INDEX": "3"
+  },
+  "passed": true,
+  "checks": [
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 17,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1024,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 2097152,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 17,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1024,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 2097152,
+      "eager": true,
+      "graph_replays": 4
+    }
+  ],
+  "numerical_checks": [],
+  "timings": [
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 5120,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        106.49337619543076,
+        89.78937566280365,
+        118.13487857580185,
+        99.66924786567688,
+        90.60262143611908
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 5120,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        82.1005031466484,
+        82.70975202322006,
+        97.62124717235565,
+        97.15662151575089,
+        94.99012678861618
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 5120,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        92.67900139093399,
+        98.31075370311737,
+        83.43025296926498,
+        94.91387754678726,
+        75.00162720680237
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 30720,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        128.3237487077713,
+        114.32625353336334,
+        127.77775526046753,
+        118.68862807750702,
+        128.78437340259552
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 30720,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        129.81249392032623,
+        134.23661887645721,
+        127.77900695800781,
+        125.67199766635895,
+        111.61037534475327
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 30720,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        126.12074613571167,
+        116.05300009250641,
+        132.81138241291046,
+        132.5283795595169,
+        121.64662778377533
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 245760,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        177.42837965488434,
+        162.66262531280518,
+        184.41525101661682,
+        170.17875611782074,
+        185.37475168704987
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 245760,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        179.17199432849884,
+        183.49112570285797,
+        196.1328685283661,
+        168.24674606323242,
+        180.38436770439148
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 245760,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        177.25099623203278,
+        170.6673800945282,
+        166.6245013475418,
+        168.25799643993378,
+        169.32475566864014
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        273.8719880580902,
+        272.07088470458984,
+        269.9448764324188,
+        274.5712399482727,
+        275.7500112056732
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        478.14613580703735,
+        489.81761932373047,
+        471.87086939811707,
+        476.08786821365356,
+        477.08261013031006
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        395.8098888397217,
+        381.9768726825714,
+        385.6411278247833,
+        396.3696360588074,
+        390.66025614738464
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 5120,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        110.90137809515,
+        107.12987184524536,
+        104.08999770879745,
+        104.86049950122833,
+        102.00387239456177
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 5120,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        91.63299947977066,
+        96.86262160539627,
+        102.47437655925751,
+        87.42225170135498,
+        102.28724777698517
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 5120,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        106.69974982738495,
+        98.01050275564194,
+        111.11249774694443,
+        109.50800031423569,
+        110.29437184333801
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 30720,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        127.92424857616425,
+        135.2905035018921,
+        139.5726203918457,
+        141.81749522686005,
+        117.89499968290329
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 30720,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        123.02112579345703,
+        126.35037302970886,
+        131.4462572336197,
+        132.3196291923523,
+        127.62586772441864
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 30720,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        120.11387199163437,
+        131.93286955356598,
+        121.28350138664246,
+        132.26038217544556,
+        129.37112152576447
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 245760,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        183.8928759098053,
+        191.51537120342255,
+        189.68112766742706,
+        188.40299546718597,
+        196.66825234889984
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 245760,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        260.30823588371277,
+        265.25574922561646,
+        264.21111822128296,
+        270.2351212501526,
+        265.19912481307983
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 245760,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        236.56587302684784,
+        252.83962488174438,
+        237.35325038433075,
+        244.79149281978607,
+        235.24437844753265
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1048576,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        423.55936765670776,
+        426.6735017299652,
+        409.59298610687256,
+        403.3220112323761,
+        398.10851216316223
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1048576,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        921.1567640304565,
+        932.5392246246338,
+        924.4917631149292,
+        916.8694019317627,
+        924.5514869689941
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1048576,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        694.3498849868774,
+        699.4410157203674,
+        694.4416165351868,
+        696.7834830284119,
+        694.5143938064575
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16,
+      "rdma_error_deltas": {
+        "roceP2p1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "roceP2p1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f0": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        },
+        "rocep1s0f1": {
+          "roce_adp_retrans": 0,
+          "packet_seq_err": 0,
+          "out_of_sequence": 0,
+          "np_cnp_sent": 0
+        }
+      }
+    }
+  ]
+}

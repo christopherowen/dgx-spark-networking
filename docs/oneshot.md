@@ -112,6 +112,49 @@ profile, decode throughput was 14 to 27 percent above the three-node
 baseline in a matched comparison (`2026-10-03-tp3-tp4-comparison`), a
 historical control rather than a fresh pair.
 
+### Measured through this package (2026-10-05)
+
+First run of the package's own GPU suite and probe on the fleet, r6 image,
+both kernel families (`evidence/2026-10-05-tilelang-port`). BF16, median
+over runs of the slowest-rank median; the pair is `dgx1`-`dgx2` carved from
+the four-node ring (one cable, two PCIe-path stripes, `tp2-direct`), the
+ring is `tp4-ring`. "NCCL" is the NCCL-only control profile on the same
+fabric and image.
+
+| Pair of Sparks, one cable | One-shot (CuTe, 3 runs) | One-shot (TileLang, 3 runs) | NCCL only (2 runs) |
+| --- | ---: | ---: | ---: |
+| all-reduce 10 KiB | 10.9 us | 10.9 us | 67.2 to 77.3 us |
+| all-reduce 60 KiB | 17.0 us | 16.9 us | 80.0 to 87.8 us |
+| all-reduce 480 KiB | 43.1 us | 42.6 us | 109.1 to 122.6 us |
+| all-reduce 2 MiB | 137.1 us | 135.5 us | 191.7 to 205.2 us |
+| all-gather 10 KiB | 10.9 us | 10.9 us | 65.2 to 72.7 us |
+| all-gather 60 KiB | 17.1 us | 16.8 us | 81.7 to 92.8 us |
+| all-gather 480 KiB | 45.5 us | 46.0 us | 112.1 us |
+| all-gather 2 MiB | 147.9 us | 147.1 us | 223.8 to 233.1 us |
+
+| Four-node ring | One-shot (CuTe, 3 runs) | One-shot (TileLang, 3 runs) | NCCL only (1 run) |
+| --- | ---: | ---: | ---: |
+| all-reduce 10 KiB | 16.2 us | 18.1 us | 99.7 us |
+| all-reduce 60 KiB | 30.4 us | 28.5 us | 128.3 us |
+| all-reduce 480 KiB | 96.6 us | 92.9 us | 178.4 us |
+| all-reduce 2 MiB (policy: NCCL) | 271.9 us | 263.6 us | 273.9 us |
+| all-gather 10 KiB | 19.1 us | 21.5 us | 95.0 us |
+| all-gather 60 KiB | 30.6 us | 30.0 us | 127.8 us |
+| all-gather 480 KiB | 106.6 us | 103.2 us | 180.9 us |
+| all-gather 2 MiB | 354.0 us | 353.7 us | 477.1 us |
+
+The ring numbers reproduce the earlier spark-ds41f measurements above. The
+two families are bit-identical (the GPU suite's `test_kernel_families_*`,
+pair and ring); TileLang is 3 to 5 percent faster at 480 KiB in every ring
+run and about 1 percent faster at 2 MiB on the pair, and the 10 KiB gap in
+the full ring runs did not survive an interleaved series at 10 and 60 KiB
+(twelve runs: both families spread over 17.8 to 20.4 us unpinned, with no
+offset between them). In that series the proxy thread's placement explained
+the spread: with `SPARKNET_ROCE_PROXY_CPU=big` every run landed in 17.8 to
+18.4 us, and the one slow CuTe full run had its proxy on a little core.
+Proxy pinning is therefore a measured candidate for the profiles, pending
+a serving measurement (the serving process shares those cores).
+
 Streaming the relay in chunks and a shared progress window were measured
 slower than whole-fragment forwarding (`2026-10-03-relay-progress`) and are
 not carried. NIC forwarding (`mesh4`) is carried but not recommended.
@@ -129,10 +172,12 @@ fixed rank order and the same conversions, so the two families are meant to
 be bit-identical and the GPU test checks it (`test_kernel_families_*`).
 `SPARKNET_ROCE_KERNELS` selects the family for a process, the runtime's
 `kernels` keyword (and the probe's `--kernels`) for one runtime; every rank
-must agree, which the setup handshake enforces. The default is `cute` until
-the TileLang family has passed the GPU test and the probe on the fleet; the
-TileLang family needs `tilelang` (the image's) and compiles with nvcc on
-first `prepare`, into TileLang's own cache.
+must agree, which the setup handshake enforces. The TileLang family passed the GPU suite and the probe on the pair and the
+ring on 2026-10-05 (see Measured through this package); the default stays
+`cute` until the deployment repository has benchmarked serving with
+`SPARKNET_ROCE_KERNELS=tilelang`, which is the promotion gate. The TileLang
+family needs `tilelang` (the image's) and compiles with nvcc on first
+`prepare`, in well under a second per launcher, into TileLang's own cache.
 
 ## Tests
 

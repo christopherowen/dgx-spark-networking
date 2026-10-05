@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- First fleet qualification of the package's own GPU suite and probe
+  (2026-10-05, dgx1-dgx2 pair and the four-node ring, r6 image, both kernel
+  families): bit equality between the CuTe and TileLang kernels on every
+  fabric; the two-Spark pair measured for the first time; receipts under
+  `evidence/2026-10-05-tilelang-port`. `scripts/gpu-test-fleet.sh` runs the
+  GPU suite on every node of a map.
 - A TileLang kernel family for the one-shot all-reduce and all-gather
   (`SPARKNET_ROCE_KERNELS=tilelang`, or `kernels=` on the runtime): the same
   protocol phases generated as CUDA source with the device side in

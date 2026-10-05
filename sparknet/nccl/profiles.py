@@ -76,10 +76,10 @@ PROFILES: dict[str, dict[str, Any]] = {
     "tp2-direct": {
         "transport": "oneshot-direct",
         "node_counts": (2,),
-        "status": "configuration path: two Sparks on one cable (two PCIe-path stripes; a second cable goes to NCCL through nccl_hcas) with the promoted triangle settings; not measured on this fleet",
+        "status": "measured 2026-10-05 on dgx1-dgx2 (one cable, two PCIe-path stripes; a second cable would go to NCCL through nccl_hcas) with the promoted triangle settings: probe passed with both kernel families, numbers in docs/oneshot.md; not tuned separately",
         "nccl": dict(_DIRECT_NCCL),
         "oneshot": dict(_DIRECT_ONESHOT),
-        "evidence": "settings from tp3-triangle; the one-cable direct mode is the runtime's clique mode (b12x docs/oneshot.md, measured by Local Inference Lab on four Sparks); two-Spark qualification is this fleet's own task",
+        "evidence": "settings from tp3-triangle; evidence/2026-10-05-tilelang-port/pair-* (probe receipts, dgx1-dgx2 carved from the ring); the one-cable direct mode is the runtime's clique mode",
     },
     "tp3-triangle": {
         "transport": "oneshot-direct",

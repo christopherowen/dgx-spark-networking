@@ -31,6 +31,16 @@ median of the slowest rank per sample of 256 graph-replayed calls:
 | 480 KiB | 168.9 to 174.1 us | 94.0 us |
 | 2 MiB | 359.5 to 362.1 us | 307.7 us |
 
+Two DGX Sparks on one cable (measured 2026-10-05 through this package, same
+method, median of three runs; NCCL is the NCCL-only control on the same cable):
+
+| Input per rank | NCCL only | One-shot |
+| --- | ---: | ---: |
+| 10 KiB | 67.2 to 77.3 us | 10.9 us |
+| 60 KiB | 80.0 to 87.8 us | 17.0 us |
+| 480 KiB | 109.1 to 122.6 us | 43.1 us |
+| 2 MiB | 191.7 to 205.2 us | 137.1 us |
+
 The one-shot collective is one kernel launch, replays inside CUDA graphs and
 reduces in fixed rank order, so every rank produces bit-identical output. On
 the same ring, the balanced NCCL channel policy took the 2 MiB all-reduce
@@ -82,7 +92,7 @@ description, image build, probe, engine wiring, checklist and troubleshooting.
 
 | Fabric | Nodes | Transports | Small collectives | Status |
 | --- | --- | --- | --- | --- |
-| 2x direct connect | 2 | `oneshot-direct`, `nccl-direct` | One-shot over one cable's two PCIe paths; a second cable goes to NCCL (`nccl_hcas`) | configuration path with the triangle's settings (`tp2-direct`); not measured on this fleet |
+| 2x direct connect | 2 | `oneshot-direct`, `nccl-direct` | One-shot over one cable's two PCIe paths; a second cable goes to NCCL (`nccl_hcas`) | measured 2026-10-05 with the triangle's settings (`tp2-direct`): 10 KiB all-reduce 10.9 us, NCCL only 67 to 77 us |
 | 3x switchless triangle | 3 | `oneshot-direct`, `nccl-direct` | One-shot direct, every pair cabled | promoted spark-ds41f TP3 recipe (`tp3-triangle`), serving |
 | 4x switchless ring | 4 | `oneshot-ring4`, `nccl-ring`, `oneshot-mesh4` | One-shot bidirectional host relay; NCCL on neighbour edges only | promoted spark-ds41f TP4 recipe (`tp4-ring`), serving; NCCL-only control (`tp4-ring-nccl-only`); mesh4 carried, not recommended |
 | Switched | 2 to 16 | `oneshot-switched`, `nccl-switched` | One-shot clique over up to two rails; NCCL over every rail with its own topology selection | configuration path (`switched`, `switched-nccl-only`); the clique mode was measured upstream on four switched Sparks, not on this fleet |
@@ -114,11 +124,24 @@ and preparation decoupled from b12x; the protocol, kernels, proxy and wire
 ABI (10) are unchanged, and the C proxy runs under sanitizers in CI through
 26,000 simulated collectives.
 
-**Not yet.** The collective probe and the torchrun GPU test have not been run
-on the fleet from this package's code (they are the port of the tests the
-vendored tree passed in spark-ds41f). The two-Spark and switched profiles
-reuse the triangle's settings and say so in their status. The GPU-initiated
-transport is staged, not implemented.
+**Qualified through this package.** On 2026-10-05 the package's own GPU
+suite and collective probe ran on the fleet for the first time, on the
+two-Spark pair and the four-node ring, in the r6 image: both passed, the
+pair was measured for the first time (`tp2-direct` keeps the triangle's
+settings and is now measured, not tuned), and the receipts are under
+`evidence/2026-10-05-tilelang-port`.
+
+**Two kernel families.** The one-shot kernels now exist twice: the vendored
+CuTe DSL kernels and a TileLang port (`SPARKNET_ROCE_KERNELS=tilelang`) that
+generates CUDA source with the protocol's device side in one header. The
+GPU suite shows the two bit-identical on the pair and the ring; latencies
+are equal within noise, with TileLang 3 to 5 percent faster at 480 KiB.
+The default stays `cute` until serving has been benchmarked on TileLang;
+after that the CuTe family and the `nvidia-cutlass-dsl` pin go.
+
+**Not yet.** The switched profiles reuse the triangle's settings and say so
+in their status. The GPU-initiated transport is staged, not implemented;
+the TileLang port is the kernel it will be written into.
 
 ## Install
 
@@ -183,12 +206,12 @@ pattern in ninety lines.
 ## Questions
 
 **I have two Sparks and one cable.** Use `tp2-direct` with `oneshot-direct`.
-The one-cable direct mode is the runtime's clique mode, measured here on the
-three-node triangle and upstream on four switched Sparks, with the triangle's
-settings applied to one cable; it has not been measured on a pair on this
-fleet. Run the probe with `--benchmark` before serving, and consider
-[reporting the result](.github/ISSUE_TEMPLATE/fabric_report.yml). A second
-cable on the other port goes to NCCL through `nccl_hcas`.
+Measured on this fleet's pair on 2026-10-05: a 10 KiB BF16 all-reduce in
+10.9 us against 67 to 77 us for NCCL on the same cable, a 2 MiB one in 137 us
+against 192 to 205 us ([docs/oneshot.md](docs/oneshot.md)). The settings are
+the triangle's, not tuned for a pair. Run the probe with `--benchmark` before
+serving, and consider [reporting the result](.github/ISSUE_TEMPLATE/fabric_report.yml).
+A second cable on the other port goes to NCCL through `nccl_hcas`.
 
 **Do I need a switch, GPUDirect RDMA or `nvidia-peermem`?** No. Cabled
 fabrics need no switch, and the protocol registers pinned host memory with a
@@ -256,6 +279,7 @@ The full plan with acceptance criteria is
 
 ```text
 sparknet/              the library (CPU-only subpackages never import torch)
+sparknet/oneshot/      the runtime, the proxy, and both kernel families (CuTe DSL and TileLang)
 sparknet/nccl/patches/ NCCL 2.30.7 patch series and README, shipped in the wheel
 native/gpunetio/       DOCA GPUNetIO pin, Spark patches and build script
 recipes/               rendered environments for the named profiles
@@ -264,6 +288,8 @@ examples/              a minimal engine that uses the runtime the intended way
 docs/                  design, topology, nccl, oneshot, policy, roadmap, provenance
 tests/                 unit tests, the C proxy simulator, tests/gpu (torchrun)
 benchmarks/            one-shot versus NCCL latency with a receipt
+evidence/              probe receipts and GPU-test summaries behind the numbers
+scripts/               NCCL build and the fleet GPU-test launcher
 upstreams.lock.json    pinned revisions, patch heads and tree hashes
 ```
 
