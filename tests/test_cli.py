@@ -71,6 +71,49 @@ class CliTest(unittest.TestCase):
         self.assertEqual(json.loads(text)["all_reduce_dispatch_bytes"], 1048576)
         self.assertIn("NCCL carries every collective", run("policy", "show", "--profile", "tp4-ring-nccl-only")[1])
 
+    def test_policy_show_without_a_profile_reports_cleanly(self):
+        import os
+        from contextlib import redirect_stderr
+        from unittest import mock
+
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True), redirect_stderr(err):
+            code, text = run("policy", "show")
+        self.assertEqual(code, 1)
+        self.assertIn("pass --profile", err.getvalue())
+        with mock.patch.dict(os.environ, {"SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152",
+                                          "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "4194304"}, clear=True):
+            code, text = run("policy", "show")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(text)["all_reduce_dispatch_bytes"], 2097152)
+
+    def test_pass_through_arguments_are_split_before_parsing(self):
+        self.assertEqual(cli.split_pass_through(["probe", "x", "--", "--benchmark", "--"]), (["probe", "x"], ["--benchmark", "--"]))
+        self.assertEqual(cli.split_pass_through(["nccl", "profiles"]), (["nccl", "profiles"], None))
+        with self.assertRaises(SystemExit):
+            run("nccl", "profiles", "--", "extra")
+
+    def test_patch_series_is_packaged_and_exports(self):
+        import tempfile
+        from sparknet.nccl import patchset, profiles
+
+        names = patchset.series()
+        self.assertEqual(names[0], profiles.FENCE_PATCH)
+        self.assertIn(profiles.ADAPTIVE_THREADS_PATCH, names)
+        for control in profiles.PATCH_CONTROLS.values():
+            for patch in control:
+                self.assertIn(patch, names)
+        self.assertEqual(patchset.missing(), [])
+        code, text = run("nccl", "patches")
+        self.assertEqual(code, 0)
+        self.assertEqual([line for line in text.splitlines() if line and not line.startswith("#")], names)
+        with tempfile.TemporaryDirectory() as tmp:
+            code, text = run("nccl", "patches", "--export", tmp)
+            self.assertEqual(code, 0)
+            written = sorted(p.name for p in Path(tmp).iterdir())
+            self.assertEqual(written, sorted([patchset.SERIES_FILE, *names]))
+            self.assertEqual((Path(tmp) / names[0]).read_bytes(), (patchset.patch_directory() / names[0]).read_bytes())
+
     def test_probe_command_plan(self):
         code, text = run("probe", "render-command", EXAMPLE, "dgx4", "--transport", "oneshot-ring4", "--profile", "tp4-ring",
                          "--image", "example:tag", "--", "--benchmark")

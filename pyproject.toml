@@ -1,6 +1,6 @@
 [project]
 name = "dgx-spark-networking"
-version = "0.2.0"
+version = "0.3.0"
 description = "Switchless RoCE collectives, NCCL profiles and fabric tooling for DGX Spark inference recipes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,6 +32,7 @@ include = ["sparknet*"]
 
 [tool.setuptools.package-data]
 "sparknet.oneshot" = ["*.c"]
+"sparknet.nccl" = ["patches/series", "patches/*.patch", "patches/README.md"]
 "sparknet.topology" = ["examples/*.json"]
 
 [tool.ruff]

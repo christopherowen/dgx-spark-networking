@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
 
 from sparknet import __version__
-from sparknet.nccl import profiles as nccl_profiles
+from sparknet.nccl import patchset, profiles as nccl_profiles
 from sparknet.policy import CollectivePolicy, policy_for_profile
 from sparknet.probe.container import docker_probe_command
 from sparknet.probe.doctor import local_problems
@@ -173,16 +174,25 @@ def cmd_nccl_profiles(args) -> int:
 
 
 def cmd_nccl_patches(args) -> int:
-    series = Path(__file__).parent.parent / "patches" / "nccl" / "series"
-    print(series.read_text(), end="")
+    if args.export:
+        written = patchset.export(args.export)
+        print(f"wrote {len(written)} files to {Path(args.export)}: " + ", ".join(path.name for path in written))
+        return 0
+    print(patchset.series_text(), end="")
     return 0
 
 
 def cmd_policy_show(args) -> int:
-    policy = policy_for_profile(args.profile) if args.profile else CollectivePolicy.from_environment(dict(__import__("os").environ))
-    if policy is None:
-        print(f"{args.profile}: NCCL carries every collective (no one-shot runtime)")
-        return 0
+    if args.profile:
+        policy = policy_for_profile(args.profile)
+        if policy is None:
+            print(f"{args.profile}: NCCL carries every collective (no one-shot runtime)")
+            return 0
+    else:
+        try:
+            policy = CollectivePolicy.from_environment(dict(os.environ))
+        except ValueError as error:
+            return _report([f"{error} (set SPARKNET_ROCE_* in the environment or pass --profile)"], "policy")
     print(json.dumps({**policy.__dict__, "reduce_scatter": policy.reduce_scatter_backend(),
                       "environment": policy.environment()}, indent=2))
     return 0
@@ -234,58 +244,110 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sparknet", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"sparknet {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
+    profiles = list(nccl_profiles.PROFILES)
 
     t = sub.add_parser("topology", help="node maps and cabling").add_subparsers(dest="subcommand", required=True)
     v = t.add_parser("validate", help="check a node map for a transport")
-    v.add_argument("nodes"); v.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
-    v.add_argument("--mesh-paths", type=int, default=2); v.set_defaults(func=cmd_topology_validate)
+    v.add_argument("nodes")
+    v.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
+    v.add_argument("--mesh-paths", type=int, default=2)
+    v.set_defaults(func=cmd_topology_validate)
     r = t.add_parser("render", help="per-node environment for a transport and profile")
-    r.add_argument("nodes"); r.add_argument("node"); r.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
-    r.add_argument("--profile", choices=list(nccl_profiles.PROFILES)); r.add_argument("--mesh-paths", type=int, default=2)
+    r.add_argument("nodes")
+    r.add_argument("node")
+    r.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
+    r.add_argument("--profile", choices=profiles)
+    r.add_argument("--mesh-paths", type=int, default=2)
     r.add_argument("--json", action="store_true")
     r.set_defaults(func=cmd_topology_render)
-    e = t.add_parser("example", help="print a documentation node map"); e.add_argument("name"); e.set_defaults(func=cmd_topology_example)
+    e = t.add_parser("example", help="print a documentation node map")
+    e.add_argument("name")
+    e.set_defaults(func=cmd_topology_example)
     d = t.add_parser("discover", help="read cabling over LLDP or rails from sysfs (ssh, read-only) and generate configs")
-    d.add_argument("hosts", nargs="+"); d.add_argument("--ssh-user"); d.add_argument("--out")
+    d.add_argument("hosts", nargs="+")
+    d.add_argument("--ssh-user")
+    d.add_argument("--out")
     d.add_argument("--fabric", choices=("cabled", "switched"), default="cabled")
-    d.add_argument("--management-ip", action="append", metavar="HOST=IP"); d.add_argument("--management-interface")
-    d.add_argument("--gid-index", type=int, default=3); d.add_argument("--traffic-class", type=int)
+    d.add_argument("--management-ip", action="append", metavar="HOST=IP")
+    d.add_argument("--management-interface")
+    d.add_argument("--gid-index", type=int, default=3)
+    d.add_argument("--traffic-class", type=int)
     d.set_defaults(func=cmd_topology_discover)
-    i = t.add_parser("inventory", help="this host's RDMA devices from sysfs"); i.add_argument("--gid-index", type=int, default=3)
+    i = t.add_parser("inventory", help="this host's RDMA devices from sysfs")
+    i.add_argument("--gid-index", type=int, default=3)
     i.set_defaults(func=cmd_topology_inventory)
 
     n = sub.add_parser("nccl", help="NCCL profiles and patches").add_subparsers(dest="subcommand", required=True)
-    ne = n.add_parser("env", help="print a profile's environment"); ne.add_argument("--profile", required=True, choices=list(nccl_profiles.PROFILES))
-    ne.add_argument("--json", action="store_true"); ne.set_defaults(func=cmd_nccl_env)
+    ne = n.add_parser("env", help="print a profile's environment")
+    ne.add_argument("--profile", required=True, choices=profiles)
+    ne.add_argument("--json", action="store_true")
+    ne.set_defaults(func=cmd_nccl_env)
     nv = n.add_parser("validate", help="check a profile, optionally with overrides from an env file")
-    nv.add_argument("--profile", required=True, choices=list(nccl_profiles.PROFILES)); nv.add_argument("--env-file")
+    nv.add_argument("--profile", required=True, choices=profiles)
+    nv.add_argument("--env-file")
     nv.add_argument("--nodes", type=int, help="node count to validate against (default: the profile's first)")
-    nv.add_argument("--unpatched", action="store_true", help="the NCCL build lacks patches/nccl"); nv.set_defaults(func=cmd_nccl_validate)
+    nv.add_argument("--unpatched", action="store_true", help="the NCCL build lacks the sparknet/nccl/patches series")
+    nv.set_defaults(func=cmd_nccl_validate)
     n.add_parser("profiles", help="list profiles").set_defaults(func=cmd_nccl_profiles)
-    n.add_parser("patches", help="print the patch series").set_defaults(func=cmd_nccl_patches)
+    np_ = n.add_parser("patches", help="print the packaged NCCL patch series, or export it for an image build")
+    np_.add_argument("--export", metavar="DIR", help="write the series file and every patch to DIR")
+    np_.set_defaults(func=cmd_nccl_patches)
 
     po = sub.add_parser("policy", help="collective policy").add_subparsers(dest="subcommand", required=True)
-    ps = po.add_parser("show"); ps.add_argument("--profile", choices=list(nccl_profiles.PROFILES)); ps.set_defaults(func=cmd_policy_show)
+    ps = po.add_parser("show", help="the policy of a profile, or of this environment")
+    ps.add_argument("--profile", choices=profiles)
+    ps.set_defaults(func=cmd_policy_show)
 
     pr = sub.add_parser("probe", help="fabric checks and the collective probe").add_subparsers(dest="subcommand", required=True)
     pd = pr.add_parser("doctor", help="node map against this host, read-only")
-    pd.add_argument("nodes"); pd.add_argument("--node", required=True); pd.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
+    pd.add_argument("nodes")
+    pd.add_argument("--node", required=True)
+    pd.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
     pd.set_defaults(func=cmd_probe_doctor)
-    pg = pr.add_parser("gpudirect", help="GPU-initiated transport readiness"); pg.add_argument("--json", action="store_true")
-    pg.add_argument("--gpunetio-dir"); pg.set_defaults(func=cmd_probe_gpudirect)
+    pg = pr.add_parser("gpudirect", help="GPU-initiated transport readiness")
+    pg.add_argument("--json", action="store_true")
+    pg.add_argument("--gpunetio-dir")
+    pg.set_defaults(func=cmd_probe_gpudirect)
     rc = pr.add_parser("render-command", help="the bounded container command for one rank's probe")
-    rc.add_argument("nodes"); rc.add_argument("node"); rc.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
-    rc.add_argument("--profile", choices=list(nccl_profiles.PROFILES)); rc.add_argument("--image", required=True)
-    rc.add_argument("--port", type=int, default=29650); rc.add_argument("--probe-source")
+    rc.add_argument("nodes")
+    rc.add_argument("node")
+    rc.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
+    rc.add_argument("--profile", choices=profiles)
+    rc.add_argument("--image", required=True)
+    rc.add_argument("--port", type=int, default=29650)
+    rc.add_argument("--probe-source")
     rc.add_argument("probe_args", nargs="*", help="arguments after -- go to the probe (e.g. --benchmark)")
     rc.set_defaults(func=cmd_probe_render_command)
     pc = pr.add_parser("collectives", help="run the probe on this rank (needs torch)")
-    pc.add_argument("probe_args", nargs=argparse.REMAINDER); pc.set_defaults(func=cmd_probe_collectives)
+    pc.add_argument("probe_args", nargs=argparse.REMAINDER)
+    pc.set_defaults(func=cmd_probe_collectives)
     return p
 
 
+def split_pass_through(argv: list[str]) -> tuple[list[str], list[str] | None]:
+    """Split ``argv`` at the first bare ``--``: the words after it are passed through untouched.
+
+    argparse handles ``--`` differently across the supported Python versions
+    (3.10 rejects ``probe render-command ... -- --benchmark``), so the CLI
+    takes the separator out before parsing.
+    """
+    if "--" not in argv:
+        return argv, None
+    index = argv.index("--")
+    return argv[:index], argv[index + 1:]
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    head, passed = split_pass_through(argv)
+    args = parser().parse_args(head)
+    if passed is not None:
+        if args.command == "probe" and args.subcommand == "collectives":
+            args.probe_args = [*args.probe_args, "--", *passed]
+        elif hasattr(args, "probe_args"):
+            args.probe_args = [*args.probe_args, *passed]
+        else:
+            parser().error(f"unexpected arguments after --: {' '.join(passed)}")
     return args.func(args)
 
 

@@ -151,7 +151,7 @@ def main(argv=None) -> int:
             def collect():
                 return (comm.all_reduce(local), comm.all_gather(local, dim=0), comm.reduce_scatter(scattered, dim=0))
 
-            def verify(outputs, increment=0):
+            def verify(outputs, increment=0, pattern=pattern):
                 ar, ag, rs = outputs
                 torch.cuda.synchronize()
                 torch.testing.assert_close(ar, pattern * args.world_size + total + increment * args.world_size, rtol=0, atol=0)
@@ -255,7 +255,7 @@ def main(argv=None) -> int:
                         row["expected_backend"] = "oneshot" if expected_custom else "nccl"
                         proxy_after = runtime.stats()
                         row["proxy_payload_bytes"] = {h: after - before_ for h, after, before_ in zip(
-                            proxy_after["hcas"], proxy_after["bytes_posted_per_hca"], proxy_before["bytes_posted_per_hca"])}
+                            proxy_after["hcas"], proxy_after["bytes_posted_per_hca"], proxy_before["bytes_posted_per_hca"], strict=True)}
                         if bool(sum(row["proxy_payload_bytes"].values())) != expected_custom:
                             raise RuntimeError(f"{name}: actual transport counters disagree with the dispatch policy")
                     if ports_before is not None:

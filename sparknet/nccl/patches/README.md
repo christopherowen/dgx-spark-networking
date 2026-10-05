@@ -3,7 +3,8 @@
 Base: `NVIDIA/nccl@73cf112295c33aee2b895f329f592f2a9b4b0f97` (release tag
 `v2.30.7-1`), the version the vLLM nightly base image ships as the
 `nvidia-nccl-cu13` wheel. `scripts/build-nccl.sh` rebuilds it for SM121 with
-this series and writes `libnccl.so.2` plus its SHA-256; a serving image
+this series and writes `libnccl.so.2` plus its SHA-256 (the series ships in the
+wheel: `sparknet nccl patches --export DIR` writes it out after `pip install`); a serving image
 replaces the wheel's library with it and checks the hash at import.
 
 - `0001-ib-cts-nreqs-acquire-fence.patch` (Stanislav Bardyuk, NVIDIA/nccl#2393)

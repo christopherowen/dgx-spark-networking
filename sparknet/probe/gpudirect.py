@@ -13,11 +13,10 @@ import ctypes
 import os
 import platform
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
-from sparknet.transport.gpunetio import ENV_GPUNETIO_DIR, gpunetio_capability
+from sparknet.transport.gpunetio import gpunetio_capability
 from sparknet.transport.host_proxy import host_proxy_capability
 
 

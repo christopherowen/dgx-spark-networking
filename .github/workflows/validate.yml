@@ -10,26 +10,52 @@ permissions:
 jobs:
   library:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
+      - name: Lint
+        run: |
+          python3 -m pip install --quiet ruff==0.16.10
+          ruff check sparknet tests benchmarks examples
       - name: Compile every module
         run: python3 -m compileall -q sparknet tests benchmarks examples
       - name: Unit tests and the proxy simulator
         run: python3 -m unittest discover -s tests -v
-      - name: CLI smoke
+      - name: CLI smoke from the checkout
         run: |
           python3 -m sparknet.cli topology validate sparknet/topology/examples/tp4-ring.json --transport oneshot-ring4
           python3 -m sparknet.cli topology validate sparknet/topology/examples/tp3-triangle.json --transport oneshot-direct
           python3 -m sparknet.cli nccl validate --profile tp4-ring
           python3 -m sparknet.cli nccl validate --profile tp3-triangle
-      - name: Validate JSON, patches and whitespace
+      - name: Install the wheel and use the CLI from it
+        run: |
+          python3 -m pip install --quiet build
+          python3 -m build --wheel --outdir dist .
+          python3 -m venv .work/venv
+          .work/venv/bin/python -m pip install --quiet dist/*.whl
+          cd /tmp
+          sparknet=$GITHUB_WORKSPACE/.work/venv/bin/sparknet
+          "$sparknet" --version
+          "$sparknet" topology example tp4-ring > nodes.json
+          "$sparknet" topology validate nodes.json --transport oneshot-ring4
+          "$sparknet" topology render nodes.json dgx3 --transport oneshot-ring4 --profile tp4-ring --json > /dev/null
+          "$sparknet" nccl patches
+          "$sparknet" nccl patches --export nccl-patches
+          test -f nccl-patches/series && test -f nccl-patches/0001-ib-cts-nreqs-acquire-fence.patch
+          "$sparknet" policy show --profile tp4-ring > /dev/null
+          "$sparknet" probe render-command nodes.json dgx4 --transport oneshot-ring4 --profile tp4-ring --image example:tag -- --benchmark | grep -q -- '--benchmark$'
+          "$sparknet" probe gpudirect > /dev/null
+      - name: Validate JSON, patch series and whitespace
         run: |
           git diff --check
-          find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool >/dev/null
-          for series in patches/nccl/series native/gpunetio/series; do
+          find . -name '*.json' -not -path './.git/*' -not -path './.work/*' -print0 | xargs -0 -n1 python3 -m json.tool >/dev/null
+          for series in sparknet/nccl/patches/series native/gpunetio/series; do
             dir=$(dirname "$series")
             grep -v '^#' "$series" | grep -v '^$' | while read -r patch; do test -f "$dir/$patch" || { echo "missing $dir/$patch"; exit 1; }; done
           done
@@ -44,10 +70,17 @@ jobs:
           rev=$(python3 -c 'import json; print(json.load(open("upstreams.lock.json"))["sources"]["nccl"]["revision"])')
           git clone --quiet --filter=blob:none https://github.com/NVIDIA/nccl.git .work/nccl
           git -C .work/nccl checkout --quiet --detach "$rev"
-          grep -v '^#' patches/nccl/series | grep -v '^$' | while read -r patch; do
-            git -C .work/nccl -c user.name=ci -c user.email=ci@localhost am --quiet --committer-date-is-author-date "$GITHUB_WORKSPACE/patches/nccl/$patch"
+          grep -v '^#' sparknet/nccl/patches/series | grep -v '^$' | while read -r patch; do
+            git -C .work/nccl -c user.name=ci -c user.email=ci@localhost am --quiet --committer-date-is-author-date "$GITHUB_WORKSPACE/sparknet/nccl/patches/$patch"
           done
           tree=$(git -C .work/nccl rev-parse 'HEAD^{tree}')
           expected=$(python3 -c 'import json; print(json.load(open("upstreams.lock.json"))["sources"]["nccl"]["tree"])')
           echo "tree $tree expected $expected"
           test "$tree" = "$expected"
+
+  dockerfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lint the reference Dockerfile
+        run: docker buildx build --check -f docker/Dockerfile .

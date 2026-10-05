@@ -45,7 +45,7 @@
       "tracking_ref": "refs/tags/v2.30.7-1",
       "revision": "73cf112295c33aee2b895f329f592f2a9b4b0f97",
       "revision_url": "https://github.com/NVIDIA/nccl/commit/73cf112295c33aee2b895f329f592f2a9b4b0f97",
-      "patch_series": "patches/nccl/series",
+      "patch_series": "sparknet/nccl/patches/series",
       "patch_head": "eeacf1c6343f0499e4e7ab20ec7eecfb6f62eda6",
       "tree": "6af10aa730a64fcee8781d62340a9c9184e79469",
       "license": "BSD-3-Clause",
@@ -77,7 +77,7 @@
     "nccl_fence_upstream": {
       "kind": "pull-request",
       "url": "https://github.com/NVIDIA/nccl/pull/2393",
-      "role": "patches/nccl/0001 upstream submission (fixes NVIDIA/nccl#1983)"
+      "role": "sparknet/nccl/patches/0001 upstream submission (fixes NVIDIA/nccl#1983)"
     },
     "spark_gpunetio_guidance": {
       "kind": "documentation",

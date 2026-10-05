@@ -1,0 +1,14 @@
+.git
+.work
+build
+dist
+*.egg-info
+__pycache__
+.venv
+.env
+.env.*
+*.local.json
+*.local.env
+nodes.json
+evidence
+*.log

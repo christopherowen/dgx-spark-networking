@@ -41,7 +41,7 @@ Not carried: the relay streaming and progress-window patches (0012 to 0014,
 measured slower), the mesh4 host marker and TC tooling (not recommended),
 the b12x preparation session.
 
-## NCCL (`patches/nccl`)
+## NCCL (`sparknet/nccl/patches`)
 
 NCCL `v2.30.7-1`; the series is spark-ds41f's `nccl-adaptive` series (patch head
 `eeacf1c6`, tree `6af10aa7`). 0001 by Stanislav Bardyuk (NVIDIA/nccl#2393);

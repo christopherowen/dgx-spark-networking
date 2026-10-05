@@ -3,7 +3,7 @@
 Native environment names are the tuning API; a value of ``None`` means "omit
 the variable, use the pinned implementation's default", never zero. Each
 profile records where its numbers were measured (spark-ds41f
-experiments, see ``docs/nccl.md``) and which ``patches/nccl`` entries its
+experiments, see ``docs/nccl.md``) and which ``sparknet/nccl/patches`` entries its
 settings need: a control that the unpatched library ignores must never be
 passed silently.
 """
@@ -36,7 +36,7 @@ COMMON_IB_ENV = {
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
 }
 
-# Controls that only exist in the patched NCCL (patches/nccl). Passing them to
+# Controls that only exist in the patched NCCL (sparknet/nccl/patches). Passing them to
 # an unpatched library would be ignored silently, so profiles declare them.
 PATCH_CONTROLS = {
     "NCCL_SWITCHLESS_BIDIRECTIONAL": ("0002-bidirectional-switchless-rings.patch", "0003-balanced-channel-allocation.patch"),
@@ -215,7 +215,7 @@ def environment(name: str) -> dict[str, str]:
 
 
 def required_patches(env: dict[str, str]) -> list[str]:
-    """The ``patches/nccl`` entries an environment needs beyond the fence fix."""
+    """The ``sparknet/nccl/patches`` entries an environment needs beyond the fence fix."""
     needed = [FENCE_PATCH]
     for key, patches in PATCH_CONTROLS.items():
         if env.get(key):

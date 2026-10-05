@@ -61,7 +61,7 @@ class NodeMapTest(unittest.TestCase):
         node["roce_subnets"].pop("rocep1s0f1")
         self.assertTrue(any("second cable" in p for p in topology.problems(self.two, "oneshot-direct")))
         ring = example("tp4-ring")
-        ring["nodes"][0]["nccl_hcas"] = ring["nodes"][0]["nccl_hcas"] if "nccl_hcas" in ring["nodes"][0] else ["rocep1s0f0", "roceP2p1s0f0", "rocep1s0f1", "roceP2p1s0f1"]
+        ring["nodes"][0]["nccl_hcas"] = ring["nodes"][0].get("nccl_hcas", ["rocep1s0f0", "roceP2p1s0f0", "rocep1s0f1", "roceP2p1s0f1"])
         self.assertEqual(topology.problems(ring, "nccl-ring"), [])
         ring["nodes"][0]["nccl_hcas"] = ["rocep1s0f0", "roceP2p1s0f0"]
         self.assertTrue(any("must include every routed HCA" in p for p in topology.problems(ring, "nccl-ring")))
@@ -212,7 +212,10 @@ class RenderTest(unittest.TestCase):
 
 def _synthetic_ring(hosts):
     """LLDP rows for a cable loop: port 0 of each host to port 1 of the next, both PCIe paths."""
-    mac = lambda host, iface: f"02:00:00:{hosts.index(host):02x}:{list(discover.INTERFACES).index(iface):02x}:00"
+
+    def mac(host, iface):
+        return f"02:00:00:{hosts.index(host):02x}:{list(discover.INTERFACES).index(iface):02x}:00"
+
     data = {}
     for i, host in enumerate(hosts):
         nxt, prv = hosts[(i + 1) % len(hosts)], hosts[(i - 1) % len(hosts)]
@@ -242,7 +245,7 @@ class DiscoverTest(unittest.TestCase):
                                            ssh_user="spark", management_interface="enP7s7")
         self.assertEqual(topology.problems(document, "oneshot-ring4"), [])
         expected = example("tp4-ring")
-        for got, want in zip(document["nodes"], expected["nodes"]):
+        for got, want in zip(document["nodes"], expected["nodes"], strict=True):
             self.assertEqual(got["roce_peer_hcas"], want["roce_peer_hcas"], got["name"])
             self.assertEqual(got["roce_subnets"], want["roce_subnets"], got["name"])
         yaml = discover.netplan_yaml("dgx4", links, {h: discover.node_number(h) for h in hosts})
@@ -266,7 +269,7 @@ class DiscoverTest(unittest.TestCase):
         document = discover.generate_nodes(links, ["dgx1", "dgx2"], management_ips={"dgx1": "192.0.2.1", "dgx2": "192.0.2.2"}, ssh_user="spark")
         self.assertEqual(topology.problems(document, "oneshot-direct"), [])
         expected = example("tp2-direct")
-        for got, want in zip(document["nodes"], expected["nodes"]):
+        for got, want in zip(document["nodes"], expected["nodes"], strict=True):
             self.assertEqual(got["roce_peer_hcas"], want["roce_peer_hcas"], got["name"])
             self.assertEqual(got["roce_subnets"], want["roce_subnets"], got["name"])
             self.assertEqual(got["nccl_hcas"], want["nccl_hcas"], got["name"])

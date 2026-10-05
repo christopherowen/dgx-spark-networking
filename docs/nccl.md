@@ -3,7 +3,8 @@
 NCCL carries the bulk collectives: all-reduces above the dispatch limit,
 all-gathers above the shard limit, every reduce-scatter and the variable
 collectives. Pinned source: NCCL 2.30.7 (`v2.30.7-1`), rebuilt for SM121
-with `patches/nccl` by `scripts/build-nccl.sh`.
+with `sparknet/nccl/patches` by `scripts/build-nccl.sh`; the series ships in
+the wheel and `sparknet nccl patches --export DIR` writes it out.
 
 ## Profiles
 

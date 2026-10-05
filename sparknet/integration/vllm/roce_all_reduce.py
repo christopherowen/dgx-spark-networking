@@ -220,4 +220,4 @@ class SparknetOneShotAllReduce:
         self.disabled = True
 
 
-__all__ = ["REQUIRED_API_VERSION", "SparknetOneShotAllReduce", "enabled", "parse_byte_size"]
+__all__ = ["REQUIRED_API_VERSION", "SparknetOneShotAllReduce", "parse_byte_size"]
