@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 RDMA_ERROR_COUNTERS = ("roce_adp_retrans", "packet_seq_err", "out_of_sequence", "np_cnp_sent")
 PORT_COUNTERS = ("tx_bytes_phy", "rx_bytes_phy", "rx_out_of_buffer",
                  "tx_vport_rdma_unicast_bytes", "rx_vport_rdma_unicast_bytes")
+# Without ethtool (a serving image rarely ships it) the netdev's sysfs statistics stand in:
+# per-function bytes and drops, not the physical port's.
+SYSFS_PORT_COUNTERS = ("tx_bytes", "rx_bytes", "rx_dropped", "tx_dropped", "rx_missed_errors")
 
 
 def rdma_error_counters(sysfs: str | Path = "/sys/class/infiniband") -> dict[str, dict[str, int]]:
@@ -31,12 +35,18 @@ def port_counters(sysfs: str | Path = "/sys/class/infiniband") -> dict[str, dict
     counters; sum ``*_phy`` across functions as duplicates, never as wire bytes.
     """
     counters = {}
+    ethtool = shutil.which("ethtool")
     for hca in sorted(Path(sysfs).iterdir()) if Path(sysfs).exists() else []:
         for netdev in (hca / "device/net").iterdir() if (hca / "device/net").exists() else []:
-            output = subprocess.check_output(["ethtool", "-S", netdev.name], text=True, timeout=10)
-            values = {key.strip(): int(value.strip()) for line in output.splitlines()
-                      if ":" in line for key, value in [line.split(":", 1)] if value.strip().isdigit()}
-            counters[netdev.name] = {name: values[name] for name in PORT_COUNTERS if name in values}
+            if ethtool:
+                output = subprocess.check_output([ethtool, "-S", netdev.name], text=True, timeout=10)
+                values = {key.strip(): int(value.strip()) for line in output.splitlines()
+                          if ":" in line for key, value in [line.split(":", 1)] if value.strip().isdigit()}
+                counters[netdev.name] = {name: values[name] for name in PORT_COUNTERS if name in values}
+            else:
+                statistics = netdev / "statistics"
+                counters[netdev.name] = {name: int((statistics / name).read_text()) for name in SYSFS_PORT_COUNTERS
+                                         if (statistics / name).exists()}
     if not counters:
         raise RuntimeError("port counter sampling requested but no RDMA netdevs visible")
     return counters
@@ -46,4 +56,4 @@ def deltas(before: dict[str, dict[str, int]], after: dict[str, dict[str, int]]) 
     return {dev: {k: v - before.get(dev, {}).get(k, 0) for k, v in values.items()} for dev, values in after.items()}
 
 
-__all__ = ["PORT_COUNTERS", "RDMA_ERROR_COUNTERS", "deltas", "port_counters", "rdma_error_counters"]
+__all__ = ["PORT_COUNTERS", "RDMA_ERROR_COUNTERS", "SYSFS_PORT_COUNTERS", "deltas", "port_counters", "rdma_error_counters"]
