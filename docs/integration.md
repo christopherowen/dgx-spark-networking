@@ -160,8 +160,10 @@ SPARKNET_ROCE_CACHE_DIR=/opt/sparknet/roce python3 -c \
   'from sparknet.oneshot._proxy import load; print("proxy ABI", load().roce_abi_version())'
 ```
 
-**The CuTe kernels.** They compile on the first `prepare` on a GPU and are
-cached by the DSL under `CUTE_DSL_CACHE_DIR`. Either warm that cache on each
+**The kernels.** Both families compile on the first `prepare` on a GPU and
+cache on disk: the CuTe DSL under `CUTE_DSL_CACHE_DIR`, TileLang under
+`TILELANG_CACHE_DIR` (the reference Dockerfile sets it to
+`/opt/sparknet/tilelang`, a place to mount a per-node cache). Either warm that cache on each
 node once (a `prepare` for every dtype the engine reduces, which the probe
 does) and mount it into the serving container, or run the warm-up during the
 image build on a Spark with `--gpus=all`. After the engine's own warm-up,

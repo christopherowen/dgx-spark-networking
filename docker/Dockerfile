@@ -86,6 +86,9 @@ RUN set -eux; \
 RUN --mount=type=bind,from=sparknet-wheel,source=/opt/sparknet-wheel,target=/tmp/sparknet-wheel \
     python3 -m pip install --no-cache-dir --no-deps /tmp/sparknet-wheel/dgx_spark_networking-*.whl
 ENV SPARKNET_ROCE_CACHE_DIR=/opt/sparknet/roce
+# TileLang's compiled-kernel cache for the TileLang kernel family: mount a
+# per-node directory here (or warm it on a Spark) so serving compiles nothing.
+ENV TILELANG_CACHE_DIR=/opt/sparknet/tilelang
 RUN python3 - <<'PY'
 import ctypes
 import hashlib

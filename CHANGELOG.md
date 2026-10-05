@@ -8,6 +8,9 @@
   fabric; the two-Spark pair measured for the first time; receipts under
   `evidence/2026-10-05-tilelang-port`. `scripts/gpu-test-fleet.sh` runs the
   GPU suite on every node of a map.
+- The reference Dockerfile sets `TILELANG_CACHE_DIR=/opt/sparknet/tilelang`, so
+  the TileLang family's compiled kernels can be warmed at build or mounted
+  per node, like the CuTe DSL cache and the proxy's build directory.
 - A TileLang kernel family for the one-shot all-reduce and all-gather
   (`SPARKNET_ROCE_KERNELS=tilelang`, or `kernels=` on the runtime): the same
   protocol phases generated as CUDA source with the device side in
