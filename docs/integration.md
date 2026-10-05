@@ -161,9 +161,12 @@ SPARKNET_ROCE_CACHE_DIR=/opt/sparknet/roce python3 -c \
 ```
 
 **The kernels.** Both families compile on the first `prepare` on a GPU and
-cache on disk: the CuTe DSL under `CUTE_DSL_CACHE_DIR`, TileLang under
-`TILELANG_CACHE_DIR` (the reference Dockerfile sets it to
-`/opt/sparknet/tilelang`, a place to mount a per-node cache). Either warm that cache on each
+cache on disk through their toolchains' own variables: the CuTe DSL under
+`CUTE_DSL_CACHE_DIR`, TileLang under `TILELANG_CACHE_DIR` (default
+`~/.tilelang/cache`). Those caches are shared with every other kernel of
+the same toolchain in the serving process, so the recipe, not this library,
+places them with its other JIT caches on a mounted volume (spark-ds41f uses
+`/cache/kkref/jit/<toolchain>`). Either warm that cache on each
 node once (a `prepare` for every dtype the engine reduces, which the probe
 does) and mount it into the serving container, or run the warm-up during the
 image build on a Spark with `--gpus=all`. After the engine's own warm-up,
