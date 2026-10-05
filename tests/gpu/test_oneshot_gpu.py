@@ -64,9 +64,14 @@ def _tolerance(dtype: torch.dtype, world: int) -> tuple[float, float]:
 
 
 def test_payload_is_striped_across_every_hca(runtime):
-    """One peer payload is split evenly across both QSFP PCIe functions."""
+    """One peer payload is split evenly across both QSFP PCIe functions (direct cliques)."""
     if len(runtime.hca_names) < 2:
         pytest.skip("requires two RoCE interfaces for one QSFP port")
+    if runtime.topology != "direct":
+        # A ring posts each payload to two neighbours only and relays the opposite
+        # rank's halves; the probe's counter checks and the simulator's byte balance
+        # cover that path.
+        pytest.skip("per-HCA striping of every peer payload is a direct-clique property")
     world = dist.get_world_size()
     nbytes = 256 * 1024
     before = runtime.stats()
