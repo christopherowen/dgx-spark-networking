@@ -10,7 +10,8 @@ geometry; ``run`` takes the CuTe launcher's positional arguments.
 Importing this module needs nothing; ``get_launcher`` imports TileLang.
 """
 
-from __future__ import annotations
+# No postponed annotations: TileLang evaluates the prim_func's annotations
+# when the function is defined, and the symbolic shape must be visible then.
 
 import functools
 import logging
@@ -54,8 +55,15 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
 
     @tilelang.jit(pass_configs=_pass_configs())
     def program():
+        # The counters tensor anchors the launch: TileLang's tvm_ffi backend takes the
+        # device and the current stream from the tensor arguments (through the DLPack
+        # exchange), and a scalar-only kernel would otherwise launch on the default
+        # stream, outside a CUDA graph capture.
+        anchor_words = T.dynamic("anchor_words")
+
         @T.prim_func
         def oneshot_allreduce(
+            anchor: T.Tensor((anchor_words,), T.int32),
             input_base: T.int64,
             output_base: T.int64,
             size_packs: T.int32,
@@ -187,9 +195,12 @@ def get_launcher(
         poison_address: int,
         spin_limit: int,
         grid_x: int,
+        *,
+        anchor,
     ) -> None:
-        """Launch the compiled kernel with runtime scalar arguments on the current stream."""
+        """Launch the compiled kernel on the current stream; ``anchor`` is the runtime's counters tensor."""
         kernel(
+            anchor,
             int(input_address), int(output_address), int(size_packs), int(nbytes), int(recv_base), int(flag_base),
             int(send_base), int(ctrl_base), int(slot_bytes), int(epoch_address), int(stage_counter_address),
             int(tail_counter_address), int(poison_address), int(spin_limit), int(grid_x),

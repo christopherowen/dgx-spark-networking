@@ -32,7 +32,8 @@ freeze flag); the b12x preparation plan (`plan=` argument,
 `b12x.preparation`) replaced by in-process `prepare`; `SPARKNET_ROCE_*`
 environment names (the `B12X_ROCE_*` names are not read); a `transport`
 factory and `topology`
-keyword; `make_ptr` from `cutlass.cute.runtime`. The C proxy differs from
+keyword; `make_ptr` from `cutlass.cute.runtime`; the launchers' `run` take an
+ignored keyword `anchor` so both kernel families share one call. The C proxy differs from
 the vendored file only in two comment lines and the `MESH_ROTATE`
 environment name lookup. Verify with `diff` against the tree named in
 `upstreams.lock.json`.

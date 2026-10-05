@@ -437,8 +437,11 @@ def get_launcher(
         poison_address: int,
         spin_limit: int,
         grid_x: int,
+        *,
+        anchor=None,
     ) -> None:
-        """Launch the compiled kernel with runtime scalar arguments."""
+        """Launch the compiled kernel with runtime scalar arguments (``anchor`` is for the TileLang family)."""
+        del anchor
         raw(
             make_ptr(
                 cutlass.Uint32, input_address, cute.AddressSpace.gmem, assumed_align=16

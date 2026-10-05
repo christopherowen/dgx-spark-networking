@@ -815,6 +815,7 @@ class RoceOneshotAllReduce:
                     self._poison_address,
                     self.spin_limit,
                     grid_blocks,
+                    anchor=self._counters,
                 )
                 if dst is not out:
                     out.copy_(dst)
@@ -1076,6 +1077,7 @@ class RoceOneshotAllReduce:
             self._poison_address,
             self.spin_limit,
             grid_blocks,
+            anchor=self._counters,
         )
         if not torch.cuda.is_current_stream_capturing():
             self.check_health()
