@@ -28,8 +28,10 @@
 # CI lints this file (`docker buildx build --check`); it does not build it.
 
 ARG BASE_IMAGE=docker.io/vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
+# The base image digest is linux/arm64 only (the Spark is aarch64), so every
+# stage says so; a build or a lint on another host otherwise assumes its own.
 
-FROM ${BASE_IMAGE} AS sparknet-wheel
+FROM --platform=linux/arm64 ${BASE_IMAGE} AS sparknet-wheel
 
 USER root
 WORKDIR /workspace/sparknet
@@ -37,7 +39,7 @@ COPY . .
 RUN python3 -m pip wheel --no-cache-dir --no-deps --wheel-dir /opt/sparknet-wheel . \
     && ls /opt/sparknet-wheel/dgx_spark_networking-*.whl
 
-FROM ${BASE_IMAGE} AS nccl-builder
+FROM --platform=linux/arm64 ${BASE_IMAGE} AS nccl-builder
 
 USER root
 RUN apt-get update \
@@ -67,7 +69,7 @@ RUN set -eux; \
     cp -L /workspace/nccl/build/lib/libnccl.so.2 /opt/nccl/libnccl.so.2; \
     sha256sum /opt/nccl/libnccl.so.2 | cut -d' ' -f1 > /opt/nccl/libnccl.so.2.sha256
 
-FROM ${BASE_IMAGE} AS runtime
+FROM --platform=linux/arm64 ${BASE_IMAGE} AS runtime
 
 USER root
 # The proxy is plain C over libibverbs, built once here so no compiler runs
