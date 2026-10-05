@@ -82,7 +82,7 @@ traffic class fall back to NCCL's own settings.
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
 | `SPARKNET_ROCE_KERNELS` | kernel family, `cute` (default) or `tilelang`; see Kernel families below |
-| `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it; `big` pins it to the CPU with the highest `cpu_capacity` (GB10: ten Cortex-X925 and ten Cortex-A725). Candidate, unmeasured: the probe's `proxy_cpu_observed` shows where the thread ran |
+| `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it to that core; `big` confines it to the big-core cluster, the cores above the midpoint between the smallest and largest `cpu_capacity` (GB10: the ten Cortex-X925 at 997 to 1024, excluding the ten Cortex-A725 at 718 to 731). `stats()` reports `proxy_cpus` and `proxy_cpu_observed`. Measured on the probe (see below), a candidate for the recipe environment pending a serving benchmark |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
 adapter reads `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES` and
@@ -152,8 +152,10 @@ the full ring runs did not survive an interleaved series at 10 and 60 KiB
 offset between them). In that series the proxy thread's placement explained
 the spread: with `SPARKNET_ROCE_PROXY_CPU=big` every run landed in 17.8 to
 18.4 us, and the one slow CuTe full run had its proxy on a little core.
-Proxy pinning is therefore a measured candidate for the profiles, pending
-a serving measurement (the serving process shares those cores).
+Proxy pinning is therefore a measured candidate for the recipe environment,
+pending a serving benchmark (the serving process shares those cores). Those
+runs pinned the single top core (cpu19); `big` now confines the thread to the
+whole big-core set, so the scheduler can still move it off a busy core.
 
 Streaming the relay in chunks and a shared progress window were measured
 slower than whole-fragment forwarding (`2026-10-03-relay-progress`) and are

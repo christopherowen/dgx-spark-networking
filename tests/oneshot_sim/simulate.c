@@ -312,25 +312,34 @@ static void independent_directions(void) {
 }
 
 static void placement(void) {
-    // SPARKNET_ROCE_PROXY_CPU parsing, and (on Linux) that a pinned proxy thread
-    // reports the CPU it was placed on.
+    // SPARKNET_ROCE_PROXY_CPU parsing (none, one core, the big-core set) and, on
+    // Linux, that a pinned proxy thread reports the CPUs it was given and ran on.
     char err[160];
-    assert(resolve_proxy_cpu(NULL, err, sizeof err) == -1);
-    assert(resolve_proxy_cpu("", err, sizeof err) == -1);
-    assert(resolve_proxy_cpu("none", err, sizeof err) == -1);
-    assert(resolve_proxy_cpu("0", err, sizeof err) == 0);
-    assert(resolve_proxy_cpu("x", err, sizeof err) == -2 && strstr(err, "SPARKNET_ROCE_PROXY_CPU"));
-    assert(resolve_proxy_cpu("-1", err, sizeof err) == -2);
-    assert(resolve_proxy_cpu("1000000", err, sizeof err) == -2);
-    int big = resolve_proxy_cpu("big", err, sizeof err);
-    assert(big >= 0 || strstr(err, "cpu_capacity"));  // hosts without cpu_capacity refuse "big"
+    uint64_t mask[ROCE_CPU_WORDS];
+    assert(resolve_proxy_cpus(NULL, mask, err, sizeof err) == 0);
+    assert(resolve_proxy_cpus("", mask, err, sizeof err) == 0);
+    assert(resolve_proxy_cpus("none", mask, err, sizeof err) == 0);
+    assert(resolve_proxy_cpus("0", mask, err, sizeof err) == 1 && mask_test(mask, 0) && !mask_test(mask, 1));
+    assert(resolve_proxy_cpus("x", mask, err, sizeof err) == -1 && strstr(err, "SPARKNET_ROCE_PROXY_CPU"));
+    assert(resolve_proxy_cpus("-1", mask, err, sizeof err) == -1);
+    assert(resolve_proxy_cpus("1000000", mask, err, sizeof err) == -1);
+    int big = resolve_proxy_cpus("big", mask, err, sizeof err);
+    assert(big >= 1 || strstr(err, "cpu_capacity"));  // hosts without cpu_capacity refuse "big"
+    if (big >= 1) {
+        int selected = 0;
+        for (long cpu = 0; cpu < CPU_SETSIZE; cpu++) selected += mask_test(mask, cpu);
+        assert(selected == big);
+    }
 #ifdef __linux__
     world = 3; ring4 = 0; stripes = 1; rotate = 0;
     setup(0);
-    ranks[0]->proxy_cpu_plus1 = 1;
+    mask_set(ranks[0]->proxy_cpu_mask, 0);
+    ranks[0]->proxy_cpu_count = 1;
     assert(!roce_start(ranks[0]));
     for (int i = 0; i < 10000 && roce_stat(ranks[0], 6) == 0; i++) usleep(100);
     assert(roce_stat(ranks[0], 5) == 1 && roce_stat(ranks[0], 6) == 1);
+    int cpus[4];
+    assert(roce_proxy_cpus(ranks[0], cpus, 4) == 1 && cpus[0] == 0);
     assert(!roce_failed(ranks[0]));
     cleanup();
 #endif

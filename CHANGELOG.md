@@ -15,9 +15,12 @@
   test compares the two families. The default stays `cute` until the fleet
   has qualified the port. The kernel-resolution freeze is shared (`_freeze`).
 - `SPARKNET_ROCE_PROXY_CPU`: proxy thread placement (`none`, a CPU number, or
-  `big` for the highest-capacity core). The thread is named `sparknet-proxy`,
-  and `stats()` reports the CPU it was pinned to and the one it first ran on.
-  A candidate until measured.
+  `big`, which confines the thread to the big-core cluster, the cores above the
+  midpoint between the smallest and largest capacity: the GB10's ten X925 cores). The thread is named `sparknet-proxy`, and `stats()`
+  reports `proxy_cpus` and the CPU it first ran on. Measured on the probe
+  (pinning held the 10 KiB case within 0.6 us where unpinned runs spread
+  over 2.6 us); a candidate for the recipe environment pending a serving
+  benchmark.
 - `sparknet topology subset`: carve a pair or a triangle out of a cabled map,
   so a ring owner can measure a pair without recabling.
 - `sparknet probe fleet`: run every rank's probe container at once over ssh,

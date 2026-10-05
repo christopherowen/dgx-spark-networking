@@ -144,6 +144,8 @@ def load() -> ctypes.CDLL:
         lib.roce_stat.argtypes = [p, ctypes.c_int]
         lib.roce_hca_stat.restype = u64
         lib.roce_hca_stat.argtypes = [p, ctypes.c_int, ctypes.c_int]
+        lib.roce_proxy_cpus.restype = ctypes.c_int
+        lib.roce_proxy_cpus.argtypes = [p, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
         lib.roce_destroy.restype = None
         lib.roce_destroy.argtypes = [p]
         if lib.roce_abi_version() != 10:
@@ -287,8 +289,8 @@ class Proxy:
             "last_seq": int(self._lib.roce_stat(self._ctx, 2)),
             "path_slots": int(self._lib.roce_stat(self._ctx, 3)),
             "mesh_rotate": int(self._lib.roce_stat(self._ctx, 4)),
-            # SPARKNET_ROCE_PROXY_CPU: the CPU the thread was pinned to, and the one it first ran on.
-            "proxy_cpu": int(self._lib.roce_stat(self._ctx, 5)) - 1 if self._lib.roce_stat(self._ctx, 5) else None,
+            # SPARKNET_ROCE_PROXY_CPU: the CPUs the thread may run on (empty = unpinned), and the one it first ran on.
+            "proxy_cpus": self._proxy_cpus(),
             "proxy_cpu_observed": int(self._lib.roce_stat(self._ctx, 6)) - 1 if self._lib.roce_stat(self._ctx, 6) else None,
             "writes_completed_per_hca": [
                 int(self._lib.roce_hca_stat(self._ctx, hca, 0))
@@ -299,6 +301,13 @@ class Proxy:
                 for hca in range(len(self.hca_names))
             ],
         }
+
+    def _proxy_cpus(self) -> list[int]:
+        count = int(self._lib.roce_stat(self._ctx, 5))
+        if count <= 0:
+            return []
+        out = (ctypes.c_int * count)()
+        return [int(v) for v in out[: self._lib.roce_proxy_cpus(self._ctx, out, count)]]
 
     def close(self) -> None:
         """Stop the thread and release the RDMA resources."""

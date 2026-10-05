@@ -45,6 +45,7 @@
 #ifndef CPU_SETSIZE
 #define CPU_SETSIZE 1024
 #endif
+#define ROCE_CPU_WORDS (CPU_SETSIZE / 64)
 
 #define ROCE_MAX_PEERS 16
 #define ROCE_MAX_LOCAL_HCAS 4
@@ -114,10 +115,11 @@ typedef struct {
     uint32_t last_seq;
     uint64_t ops_posted;
     uint64_t writes_completed;
-    // Proxy thread placement (SPARKNET_ROCE_PROXY_CPU), stored plus one so a
-    // zeroed context means "unpinned": the CPU requested, and the CPU the
-    // thread first ran on.
-    int proxy_cpu_plus1;
+    // Proxy thread placement (SPARKNET_ROCE_PROXY_CPU): the CPUs the thread may
+    // run on (a zeroed context is unpinned) and, plus one, the CPU it first
+    // ran on.
+    uint64_t proxy_cpu_mask[ROCE_CPU_WORDS];
+    int proxy_cpu_count;
     int proxy_cpu_observed_plus1;
     char err[512];
 } roce_ctx_t;
@@ -130,62 +132,94 @@ static void set_err(roce_ctx_t *c, const char *what, int e) {
 
 int roce_abi_version(void) { return ROCE_ABI_VERSION; }
 
-// SPARKNET_ROCE_PROXY_CPU: unset, empty or "none" leaves the proxy thread to
-// the scheduler; a CPU number pins it there; "big" pins it to the CPU with the
-// highest cpu_capacity in sysfs (the GB10 mixes ten Cortex-X925 and ten
-// Cortex-A725 cores, and an unpinned poller can land on a little one).
-// Returns the CPU, -1 for none, or -2 with err set.
-static int resolve_proxy_cpu(const char *value, char *err, size_t err_len) {
-    if (value == NULL || value[0] == '\0' || strcmp(value, "none") == 0) {
+static void mask_set(uint64_t *mask, long cpu) { mask[cpu / 64] |= (uint64_t)1 << (cpu % 64); }
+
+static int mask_test(const uint64_t *mask, long cpu) { return (int)((mask[cpu / 64] >> (cpu % 64)) & 1u); }
+
+static long cpu_capacity(long cpu) {
+    char path[96];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", cpu);
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
         return -1;
+    }
+    long capacity = -1;
+    if (fscanf(f, "%ld", &capacity) != 1) {
+        capacity = -1;
+    }
+    fclose(f);
+    return capacity;
+}
+
+// SPARKNET_ROCE_PROXY_CPU: unset, empty or "none" leaves the proxy thread to
+// the scheduler; a CPU number pins it to that core; "big" confines it to the
+// big-core cluster: every core whose sysfs cpu_capacity lies above the
+// midpoint between the smallest and the largest capacity (the GB10 reports
+// its ten Cortex-X925 cores at 997 to 1024 and its ten Cortex-A725 cores at
+// 718 to 731; a homogeneous host selects every core). An unpinned poller can
+// land on a little core, and a single-core pin would compete with whatever
+// the serving process keeps on that core. Fills the mask and returns the
+// number of CPUs selected (0 = unpinned), or -1 with err set.
+static int resolve_proxy_cpus(const char *value, uint64_t *mask, char *err, size_t err_len) {
+    memset(mask, 0, ROCE_CPU_WORDS * sizeof(uint64_t));
+    if (value == NULL || value[0] == '\0' || strcmp(value, "none") == 0) {
+        return 0;
     }
     long ncpu = sysconf(_SC_NPROCESSORS_CONF);
     if (ncpu > CPU_SETSIZE) {
         ncpu = CPU_SETSIZE;
     }
     if (strcmp(value, "big") == 0) {
-        int best = -1;
-        long best_capacity = -1;
+        long best = -1, worst = -1;
         for (long cpu = 0; cpu < ncpu; cpu++) {
-            char path[96];
-            snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", cpu);
-            FILE *f = fopen(path, "r");
-            if (f == NULL) {
+            long capacity = cpu_capacity(cpu);
+            if (capacity < 0) {
                 continue;
             }
-            long capacity = -1;
-            if (fscanf(f, "%ld", &capacity) != 1) {
-                capacity = -1;
+            if (capacity > best) {
+                best = capacity;
             }
-            fclose(f);
-            if (capacity > best_capacity) {
-                best_capacity = capacity;
-                best = (int)cpu;
+            if (worst < 0 || capacity < worst) {
+                worst = capacity;
             }
         }
         if (best < 0) {
             snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU=big: no cpu_capacity under /sys/devices/system/cpu");
-            return -2;
+            return -1;
         }
-        return best;
+        long threshold = (best + worst) / 2;
+        int count = 0;
+        for (long cpu = 0; cpu < ncpu; cpu++) {
+            long capacity = cpu_capacity(cpu);
+            if (capacity >= 0 && (best == worst || capacity > threshold)) {
+                mask_set(mask, cpu);
+                count++;
+            }
+        }
+        return count;
     }
     char *end = NULL;
     long cpu = strtol(value, &end, 10);
     if (end == value || *end != '\0' || cpu < 0 || cpu >= ncpu) {
         snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU must be none, big or a CPU number below %ld", ncpu);
-        return -2;
+        return -1;
     }
-    return (int)cpu;
+    mask_set(mask, cpu);
+    return 1;
 }
 
 // Name the proxy thread and apply the requested placement from inside it.
 static int place_proxy_thread(roce_ctx_t *c) {
 #ifdef __linux__
     pthread_setname_np(pthread_self(), "sparknet-proxy");
-    if (c->proxy_cpu_plus1 > 0) {
+    if (c->proxy_cpu_count > 0) {
         cpu_set_t set;
         CPU_ZERO(&set);
-        CPU_SET(c->proxy_cpu_plus1 - 1, &set);
+        for (long cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+            if (mask_test(c->proxy_cpu_mask, cpu)) {
+                CPU_SET(cpu, &set);
+            }
+        }
         int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
         if (rc != 0) {
             set_err(c, "pthread_setaffinity_np", rc);
@@ -413,17 +447,16 @@ roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n
         snprintf(err, err_len, "rotating posts require four mesh paths");
         free(c); return NULL;
     }
-    int proxy_cpu = resolve_proxy_cpu(getenv("SPARKNET_ROCE_PROXY_CPU"), err, err_len);
-    if (proxy_cpu == -2) {
+    c->proxy_cpu_count = resolve_proxy_cpus(getenv("SPARKNET_ROCE_PROXY_CPU"), c->proxy_cpu_mask, err, err_len);
+    if (c->proxy_cpu_count < 0) {
         free(c); return NULL;
     }
 #ifndef __linux__
-    if (proxy_cpu >= 0) {
+    if (c->proxy_cpu_count > 0) {
         snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU: thread pinning is only supported on Linux");
         free(c); return NULL;
     }
 #endif
-    c->proxy_cpu_plus1 = proxy_cpu + 1;
     c->world = world;
     c->rank = rank;
     c->ring4 = ring4;
@@ -927,12 +960,23 @@ uint64_t roce_stat(roce_ctx_t *c, int which) {
     case 4:
         return c->mesh_rotate;
     case 5:
-        return (uint64_t)c->proxy_cpu_plus1;
+        return (uint64_t)c->proxy_cpu_count;
     case 6:
         return (uint64_t)c->proxy_cpu_observed_plus1;
     default:
         return 0;
     }
+}
+
+// The CPUs the proxy thread is pinned to, in ascending order; returns how many were written.
+int roce_proxy_cpus(roce_ctx_t *c, int *out, int max) {
+    int n = 0;
+    for (long cpu = 0; cpu < CPU_SETSIZE && n < max; cpu++) {
+        if (mask_test(c->proxy_cpu_mask, cpu)) {
+            out[n++] = (int)cpu;
+        }
+    }
+    return n;
 }
 
 uint64_t roce_hca_stat(roce_ctx_t *c, int hca, int which) {

@@ -341,6 +341,13 @@ sequence-parallel threshold, which is a model-scheduling change.
 
 ## 7. Operate
 
+- The proxy thread polls a doorbell on the host, and on the GB10 the scheduler
+  may place it on a little core: the probe measured a 16 to 20 us spread at
+  10 KiB unpinned against 17.8 to 18.4 us with `SPARKNET_ROCE_PROXY_CPU=big`
+  (`docs/oneshot.md`). Put that variable in the recipe's container environment
+  to confine the proxy to the big cores; promote it on a serving benchmark,
+  since the serving process shares those cores. `runtime.stats()` shows
+  `proxy_cpus` and `proxy_cpu_observed`.
 - Log `runtime.stats()` at startup: topology, HCAs, stripe count, dispatch
   limit, and later the per-HCA byte counters. On a ring the bytes must be
   equal across interfaces.
