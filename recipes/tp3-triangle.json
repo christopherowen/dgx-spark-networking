@@ -3,8 +3,8 @@
   "transport": "oneshot-direct",
   "fabric": "triangle3",
   "nodes_example": "sparknet/topology/examples/tp3-triangle.json",
-  "status": "promoted: spark3-vllm-ds41f baseline 2026-10-02-karmic-kraken-r5o-64k (TP3, every pair cabled)",
-  "evidence": "spark3 manifests/baselines/2026-10-02-karmic-kraken-r5o-64k.json; experiments/2026-09-27-nccl-fence",
+  "status": "promoted: spark-ds41f baseline 2026-10-02-karmic-kraken-r5o-64k (TP3, every pair cabled)",
+  "evidence": "spark-ds41f manifests/baselines/2026-10-02-karmic-kraken-r5o-64k.json; experiments/2026-09-27-nccl-fence",
   "required_nccl_patches": [
     "0001-ib-cts-nreqs-acquire-fence.patch"
   ],

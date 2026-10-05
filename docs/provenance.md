@@ -1,15 +1,15 @@
 # Provenance
 
 Everything with a measured number in this repository names where it was
-measured. The deployment repository is spark3-vllm-ds41f
-(`https://github.com/christopherowen/spark3-vllm-ds41f`); its experiments
+measured. The deployment repository is spark-ds41f
+(`https://github.com/christopherowen/spark-ds41f`); its experiments
 are referenced by directory name.
 
 ## One-shot collectives (`sparknet/oneshot`, upstream name RoCEnante)
 
 Vendored from local-inference-lab/b12x `b12x/comm/roce/` at
 `f8069b2c0be1311df3b112591c6b8876a843f8be` (`integration/karmic-kraken-beta`)
-with the eleven spark3 B12X patches applied in order (patch head
+with the eleven spark-ds41f B12X patches applied in order (patch head
 `abe4b2af`, tree `cd615bd6`), the tree labelled in the
 `roce-balanced-dispatch-v1` serving image that measured the balanced policy:
 
@@ -43,21 +43,21 @@ the b12x preparation session.
 
 ## NCCL (`patches/nccl`)
 
-NCCL `v2.30.7-1`; the series is spark3's `nccl-adaptive` series (patch head
+NCCL `v2.30.7-1`; the series is spark-ds41f's `nccl-adaptive` series (patch head
 `eeacf1c6`, tree `6af10aa7`). 0001 by Stanislav Bardyuk (NVIDIA/nccl#2393);
 0002 to 0004 by Christopher Owen from `2026-10-03-nccl-bidirectional` and
 `2026-10-03-balanced-policy`.
 
 ## Profiles (`sparknet/nccl/profiles.py`)
 
-`tp3-triangle` from spark3 `config/cluster.json` at baseline
+`tp3-triangle` from spark-ds41f `config/cluster.json` at baseline
 `2026-10-02-karmic-kraken-r5o-64k`; `tp4-ring` from
 `experiments/2026-10-03-balanced-policy/selected.json`; `tp4-ring-nccl-only`
 from `experiments/2026-10-03-collective-serving` (four-channel arm).
 
 ## Topology tooling
 
-Validation ported from spark3 `scripts/topology.py` (the vLLM-specific
+Validation ported from spark-ds41f `scripts/topology.py` (the vLLM-specific
 argument checks stayed there); discovery from the fleet's `cx7-config.py`.
 Example maps use documentation addresses (RFC 5737) and the fleet's cable
 subnet rule.

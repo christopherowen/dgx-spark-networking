@@ -78,7 +78,7 @@ def gpudirect_report(root: str | Path = "/", *, gpunetio_root: str | None = None
     }
     stages["2-gpu-doorbell"] = {
         "ready": False,
-        "needs": ["a host-level investigation of the dgx1 reboot seen with NIC_HANDLER_GPU_SM_DB (spark3 2026-10-03-relay-progress)",
+        "needs": ["a host-level investigation of the dgx1 reboot seen with NIC_HANDLER_GPU_SM_DB (spark-ds41f 2026-10-03-relay-progress)",
                   "doca_gpu_verbs_can_gpu_register_uar true on this driver"],
     }
     dmabuf = report["cuda_dmabuf"].get("supported")

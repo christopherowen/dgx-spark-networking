@@ -2,7 +2,7 @@
 
 Native environment names are the tuning API; a value of ``None`` means "omit
 the variable, use the pinned implementation's default", never zero. Each
-profile records where its numbers were measured (spark3-vllm-ds41f
+profile records where its numbers were measured (spark-ds41f
 experiments, see ``docs/nccl.md``) and which ``patches/nccl`` entries its
 settings need: a control that the unpatched library ignores must never be
 passed silently.
@@ -84,10 +84,10 @@ PROFILES: dict[str, dict[str, Any]] = {
     "tp3-triangle": {
         "transport": "oneshot-direct",
         "node_counts": (3,),
-        "status": "promoted: spark3-vllm-ds41f baseline 2026-10-02-karmic-kraken-r5o-64k (TP3, every pair cabled)",
+        "status": "promoted: spark-ds41f baseline 2026-10-02-karmic-kraken-r5o-64k (TP3, every pair cabled)",
         "nccl": dict(_DIRECT_NCCL),
         "oneshot": dict(_DIRECT_ONESHOT),
-        "evidence": "spark3 manifests/baselines/2026-10-02-karmic-kraken-r5o-64k.json; experiments/2026-09-27-nccl-fence",
+        "evidence": "spark-ds41f manifests/baselines/2026-10-02-karmic-kraken-r5o-64k.json; experiments/2026-09-27-nccl-fence",
     },
     "direct-nccl-only": {
         "transport": "nccl-direct",
@@ -100,7 +100,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     "tp4-ring": {
         "transport": "oneshot-ring4",
         "node_counts": (4,),
-        "status": "measured balanced candidate: spark3 experiments/2026-10-03-balanced-policy selected.json (TP4, cable loop, bidirectional relay, four balanced NCCL channels)",
+        "status": "measured balanced candidate: spark-ds41f experiments/2026-10-03-balanced-policy selected.json (TP4, cable loop, bidirectional relay, four balanced NCCL channels)",
         "nccl": {
             **RING_ENV,
             "NCCL_MIN_NCHANNELS": "4",
@@ -118,12 +118,12 @@ PROFILES: dict[str, dict[str, Any]] = {
             "ALLGATHER_MAX_BYTES": "2097152",
             "SPIN_LIMIT": "5000000",
         },
-        "evidence": "spark3 experiments/2026-10-03-balanced-policy (decision.md), 2026-10-03-collective-serving, 2026-10-03-tp3-tp4-comparison",
+        "evidence": "spark-ds41f experiments/2026-10-03-balanced-policy (decision.md), 2026-10-03-collective-serving, 2026-10-03-tp3-tp4-comparison",
     },
     "tp4-ring-nccl-only": {
         "transport": "nccl-ring",
         "node_counts": (4,),
-        "status": "control: four-node neighbour ring with every collective on NCCL (spark3 experiments/2026-10-03-collective-serving one-channel and four-channel arms)",
+        "status": "control: four-node neighbour ring with every collective on NCCL (spark-ds41f experiments/2026-10-03-collective-serving one-channel and four-channel arms)",
         "nccl": {
             **RING_ENV,
             "NCCL_MIN_NCHANNELS": "4",
@@ -136,7 +136,7 @@ PROFILES: dict[str, dict[str, Any]] = {
             "NCCL_THREAD_THRESHOLDS": None,
         },
         "oneshot": dict(_NO_ONESHOT),
-        "evidence": "spark3 experiments/2026-10-03-collective-serving/decision.md",
+        "evidence": "spark-ds41f experiments/2026-10-03-collective-serving/decision.md",
     },
     "switched": {
         "transport": "oneshot-switched",

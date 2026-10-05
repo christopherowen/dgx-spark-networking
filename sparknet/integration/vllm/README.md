@@ -3,14 +3,14 @@
 `SparknetOneShotAllReduce` is a drop-in replacement for the `B12xRoceAllReduce`
 class in Local Inference Lab's vLLM fork
 (`vllm/distributed/device_communicators/b12x_roce_all_reduce.py`, pinned by
-spark3-vllm-ds41f at `04c30fa98e79`). It keeps the constructor keywords, the
+spark-ds41f at `04c30fa98e79`). It keeps the constructor keywords, the
 `should_custom_ar`/`custom_all_reduce`/`should_all_gather`/`all_gather`/
 `capture`/`check_health`/`close` methods and the three limit properties that
-the explicit-collective-policy patch (spark3 vLLM patch 0027) added.
+the explicit-collective-policy patch (spark-ds41f vLLM patch 0027) added.
 
 ## Switching the fork to sparknet
 
-One vLLM patch, on top of the spark3 series:
+One vLLM patch, on top of the spark-ds41f series:
 
 1. In `cuda_communicator.py`, import `SparknetOneShotAllReduce` from
    `sparknet.integration.vllm` where `B12xRoceAllReduce` is imported, and

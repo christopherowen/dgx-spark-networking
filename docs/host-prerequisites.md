@@ -20,4 +20,4 @@ only by the owner's fleet tooling.
   desktop: the fleet's host policy, which keeps memory and interrupts
   predictable for the memory guards and the proxy thread.
 - A memory guard beside the serving process: the fleet's watermark-boost
-  and MemAvailable guards (spark3 `memguard`) are outside this library.
+  and MemAvailable guards (spark-ds41f `memguard`) are outside this library.

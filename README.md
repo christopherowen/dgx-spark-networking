@@ -43,7 +43,7 @@ description, image build, probe, engine wiring, checklist and troubleshooting.
 | Fabric | Nodes | Transports | Small collectives | Status |
 | --- | --- | --- | --- | --- |
 | 2x direct connect | 2 | `oneshot-direct`, `nccl-direct` | One-shot over one cable's two PCIe paths; a second cable goes to NCCL (`nccl_hcas`) | configuration path with the triangle's settings (`tp2-direct`); not measured on this fleet |
-| 3x switchless triangle | 3 | `oneshot-direct`, `nccl-direct` | One-shot direct, every pair cabled | promoted spark3 TP3 baseline (`tp3-triangle`) |
+| 3x switchless triangle | 3 | `oneshot-direct`, `nccl-direct` | One-shot direct, every pair cabled | promoted spark-ds41f TP3 baseline (`tp3-triangle`) |
 | 4x switchless ring | 4 | `oneshot-ring4`, `nccl-ring`, `oneshot-mesh4` | One-shot bidirectional host relay; NCCL on neighbour edges only | measured balanced candidate (`tp4-ring`), NCCL-only control (`tp4-ring-nccl-only`); mesh4 carried, not recommended |
 | Switched | 2 to 16 | `oneshot-switched`, `nccl-switched` | One-shot clique over up to two rails; NCCL over every rail with its own topology selection | configuration path (`switched`, `switched-nccl-only`); the clique mode was measured upstream on four switched Sparks, not on this fleet |
 
@@ -57,11 +57,11 @@ fit the map.
 ## Status
 
 The one-shot sources are vendored verbatim from the hardware-qualified tree
-of spark3-vllm-ds41f (b12x `f8069b2c` plus its eleven switchless patches,
+of spark-ds41f (b12x `f8069b2c` plus its eleven switchless patches,
 tree `cd615bd6`, the `roce-balanced-dispatch-v1` serving image), with only
 imports, environment names and preparation decoupled from b12x; the protocol,
 kernels, proxy and wire ABI (10) are unchanged. The TP3 profile is the
-promoted spark3 baseline; the TP4 profile is the measured balanced candidate
+promoted spark-ds41f baseline; the TP4 profile is the measured balanced candidate
 (every interface at 24.8 to 25.2 percent of RDMA bytes, 2 MiB all-reduce 320
 to 232 us, prefill +1.6 to +1.9 percent, decode within noise). Numbers and
 their experiments are in [docs/nccl.md](docs/nccl.md) and

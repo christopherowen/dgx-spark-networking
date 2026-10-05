@@ -51,7 +51,7 @@ directions and both NIC roots, and exposes the allocation floor; patch 0004
 keeps four lanes active for tiny calls by shrinking thread blocks before
 dropping channels.
 
-## Measurements (spark3-vllm-ds41f, four Sparks, 2026-10-03)
+## Measurements (spark-ds41f, four Sparks, 2026-10-03)
 
 Balanced selected policy against the clockwise control, same image, BF16,
 median of the slowest rank per sample:
@@ -83,6 +83,6 @@ order; no bitwise equivalence with the clockwise rings is claimed.
 `ncclIbIsend` loads the clear-to-send slot's `nreqs` after checking `idx`;
 AArch64 may reorder the loads and read a previous round's value, so the
 proxy thread spins forever and every rank hangs. One acquire fence on the
-path where the CTS has arrived. It costs nothing measurable (spark3
+path where the CTS has arrived. It costs nothing measurable (spark-ds41f
 `2026-09-27-nccl-fence`) and is required on every profile. Upstream:
 NVIDIA/nccl#2393.

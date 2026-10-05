@@ -25,7 +25,7 @@ staging and publishes them; a host thread only rings the NIC doorbell
 (`doca_gpu_verbs_cpu_proxy_progress`). This is NVIDIA's recommended mode on
 Spark (CPU/GPU shared memory, CPU-proxy transmissions).
 
-Qualified on the fleet (spark3 `2026-10-03-relay-progress`): built for SM121
+Qualified on the fleet (spark-ds41f `2026-10-03-relay-progress`): built for SM121
 with CUDA 13.0 and rdma-core 50, no DOCA SDK, no driver change. Two sample
 adaptations were necessary: queues and data buffers in explicit CPU/GPU
 shared host memory registered through the CPU pointer, and a system-scope

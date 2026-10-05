@@ -7,7 +7,7 @@ Design (see ``docs/gpudirect-roadmap.md``):
    after staging, and publishes them with a system-scope release; a host
    thread only rings the NIC doorbell. This removes the proxy's doorbell
    poll, stripe arithmetic and posting from the critical path. Qualified on
-   every neighbour link of the four Sparks in the spark3
+   every neighbour link of the four Sparks in the spark-ds41f
    ``2026-10-03-relay-progress`` experiment (ping-pong 4.1 to 7 us), with the
    patches under ``native/gpunetio``.
 2. **GPU doorbell** (``NIC_HANDLER_GPU_SM_DB``): the kernel rings the NIC's

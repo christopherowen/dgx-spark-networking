@@ -89,7 +89,7 @@ constructed; there is no switch.
 
 ## Evidence
 
-Measured in spark3-vllm-ds41f on the four Sparks (GB10, driver 580.178.04,
+Measured in spark-ds41f on the four Sparks (GB10, driver 580.178.04,
 kernel 7.0.0-1019-nvidia-64k), BF16 all-reduce, median of the slowest rank
 per sample of 256 graph-replayed calls:
 
@@ -105,7 +105,7 @@ The bidirectional relay changed each node's proxy bytes from about
 control/candidate/control launches passed exact-data checks, changing
 CUDA-graph inputs, dispatch boundaries and zero tracked RDMA errors
 (`2026-10-03-ring4-bidirectional`). The three-node direct mode is the
-promoted spark3 TP3 baseline; on four nodes with the relay and the tuned NCCL
+promoted spark-ds41f TP3 baseline; on four nodes with the relay and the tuned NCCL
 profile, decode throughput was 14 to 27 percent above the three-node
 baseline in a matched comparison (`2026-10-03-tp3-tp4-comparison`), a
 historical control rather than a fresh pair.

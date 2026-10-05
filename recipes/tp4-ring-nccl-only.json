@@ -3,8 +3,8 @@
   "transport": "nccl-ring",
   "fabric": "ring4",
   "nodes_example": "sparknet/topology/examples/tp4-ring.json",
-  "status": "control: four-node neighbour ring with every collective on NCCL (spark3 experiments/2026-10-03-collective-serving one-channel and four-channel arms)",
-  "evidence": "spark3 experiments/2026-10-03-collective-serving/decision.md",
+  "status": "control: four-node neighbour ring with every collective on NCCL (spark-ds41f experiments/2026-10-03-collective-serving one-channel and four-channel arms)",
+  "evidence": "spark-ds41f experiments/2026-10-03-collective-serving/decision.md",
   "required_nccl_patches": [
     "0001-ib-cts-nreqs-acquire-fence.patch"
   ],

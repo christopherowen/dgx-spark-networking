@@ -3,8 +3,8 @@
   "transport": "oneshot-ring4",
   "fabric": "ring4",
   "nodes_example": "sparknet/topology/examples/tp4-ring.json",
-  "status": "measured balanced candidate: spark3 experiments/2026-10-03-balanced-policy selected.json (TP4, cable loop, bidirectional relay, four balanced NCCL channels)",
-  "evidence": "spark3 experiments/2026-10-03-balanced-policy (decision.md), 2026-10-03-collective-serving, 2026-10-03-tp3-tp4-comparison",
+  "status": "measured balanced candidate: spark-ds41f experiments/2026-10-03-balanced-policy selected.json (TP4, cable loop, bidirectional relay, four balanced NCCL channels)",
+  "evidence": "spark-ds41f experiments/2026-10-03-balanced-policy (decision.md), 2026-10-03-collective-serving, 2026-10-03-tp3-tp4-comparison",
   "required_nccl_patches": [
     "0001-ib-cts-nreqs-acquire-fence.patch",
     "0002-bidirectional-switchless-rings.patch",

@@ -80,7 +80,7 @@ not prove a cable delivers packets; section 4 does.
 | --- | --- | --- | --- |
 | 2 nodes, one cable | `oneshot-direct` | `tp2-direct` | triangle settings applied to one cable; not measured on the authors' fleet |
 | 2 or 3 nodes, NCCL only | `nccl-direct` | `direct-nccl-only` | control |
-| 3 nodes, triangle | `oneshot-direct` | `tp3-triangle` | promoted spark3 baseline |
+| 3 nodes, triangle | `oneshot-direct` | `tp3-triangle` | promoted spark-ds41f baseline |
 | 4 nodes, loop | `oneshot-ring4` | `tp4-ring` | measured balanced candidate |
 | 4 nodes, loop, NCCL only | `nccl-ring` | `tp4-ring-nccl-only` | measured control |
 | 4 nodes, loop, NIC forwarding | `oneshot-mesh4` | none | carried, not recommended |
@@ -137,7 +137,7 @@ scripts/build-nccl.sh /opt/nccl 8
 # in the image: replace the nvidia-nccl wheel's libnccl.so.2 and keep the hash beside it
 ```
 
-The spark3 Dockerfile checks at build time that `ncclGetVersion` reports
+The spark-ds41f Dockerfile checks at build time that `ncclGetVersion` reports
 2.30.7 and that the installed file's SHA-256 is the built one; do the same.
 
 **The one-shot proxy.** It is plain C over libibverbs, built with the host
@@ -167,7 +167,7 @@ flags the probe container uses plus shared memory for the engine:
 --ulimit=memlock=-1:-1 --ulimit=stack=67108864:67108864 --shm-size=16g
 ```
 
-A Dockerfile has the shape of spark3's: an `nccl-builder` stage that runs
+A Dockerfile has the shape of spark-ds41f's: an `nccl-builder` stage that runs
 the series and `make src.build` for `sm_121`, a runtime stage that installs
 the rebuilt library over the wheel's, installs the package with `--no-deps`,
 builds the proxy, and ends with an import check that fails the build if the

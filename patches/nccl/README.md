@@ -25,7 +25,7 @@ replaces the wheel's library with it and checks the hash at import.
   lanes stay active at 128 bytes per rank without the measured cost of
   forcing 128 threads globally.
 
-Measured together as the `tp4-ring` profile (spark3-vllm-ds41f
+Measured together as the `tp4-ring` profile (spark-ds41f
 `experiments/2026-10-03-balanced-policy`): 24.8 to 25.2 percent of RDMA
 bytes on each of the four interfaces, clockwise share 49.7 to 50.2 percent,
 2 MiB BF16 all-reduce 320 to 232 us against the clockwise control. Reversing

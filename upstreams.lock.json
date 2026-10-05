@@ -19,17 +19,17 @@
         "benchmarks/benchmark_roce_oneshot.py"
       ],
       "applied_patches": [
-        "spark3-vllm-ds41f patches/b12x/0001-switchless-oneshot.patch",
-        "spark3-vllm-ds41f patches/b12x/0002-cutlass-dsl-4.7.1.patch",
-        "spark3-vllm-ds41f patches/b12x/0003-dsa-topk-position-ties.patch",
-        "spark3-vllm-ds41f patches/b12x/0004-gemm-fence-stage-reads-before-tma-refill.patch",
-        "spark3-vllm-ds41f patches/b12x/0005-fence-stage-reads-three-kernels.patch",
-        "spark3-vllm-ds41f experiments/2026-10-02-oneshot-ring4/b12x/0006-oneshot-ring4.patch",
-        "spark3-vllm-ds41f experiments/2026-10-02-oneshot-mesh4/b12x/0007-oneshot-mesh4.patch",
-        "spark3-vllm-ds41f experiments/2026-10-02-mesh4-fourpaths/b12x/0008-four-path-mesh.patch",
-        "spark3-vllm-ds41f experiments/2026-10-03-ring4-bidirectional/b12x/0009-bidirectional-relay.patch",
-        "spark3-vllm-ds41f experiments/2026-10-03-balanced-policy/b12x/0010-dispatch-capacity.patch",
-        "spark3-vllm-ds41f experiments/2026-10-03-balanced-policy/b12x/0011-loader-abi.patch"
+        "spark-ds41f patches/b12x/0001-switchless-oneshot.patch",
+        "spark-ds41f patches/b12x/0002-cutlass-dsl-4.7.1.patch",
+        "spark-ds41f patches/b12x/0003-dsa-topk-position-ties.patch",
+        "spark-ds41f patches/b12x/0004-gemm-fence-stage-reads-before-tma-refill.patch",
+        "spark-ds41f patches/b12x/0005-fence-stage-reads-three-kernels.patch",
+        "spark-ds41f experiments/2026-10-02-oneshot-ring4/b12x/0006-oneshot-ring4.patch",
+        "spark-ds41f experiments/2026-10-02-oneshot-mesh4/b12x/0007-oneshot-mesh4.patch",
+        "spark-ds41f experiments/2026-10-02-mesh4-fourpaths/b12x/0008-four-path-mesh.patch",
+        "spark-ds41f experiments/2026-10-03-ring4-bidirectional/b12x/0009-bidirectional-relay.patch",
+        "spark-ds41f experiments/2026-10-03-balanced-policy/b12x/0010-dispatch-capacity.patch",
+        "spark-ds41f experiments/2026-10-03-balanced-policy/b12x/0011-loader-abi.patch"
       ],
       "patch_head": "abe4b2afd7b60e2699bf4a62ac8543ed63d1d937",
       "tree": "cd615bd69ed1a99d6b59217329a3ff429b5277fe",
@@ -63,9 +63,9 @@
     }
   },
   "references": {
-    "spark3_vllm_ds41f": {
+    "spark_ds41f": {
       "kind": "git-watch",
-      "url": "https://github.com/christopherowen/spark3-vllm-ds41f",
+      "url": "https://github.com/christopherowen/spark-ds41f",
       "role": "the deployment repository whose experiments measured every profile here; its B12X RoCE patch series is what this library vendors"
     },
     "sparkring": {

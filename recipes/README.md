@@ -14,7 +14,7 @@ documentation addresses.
 | --- | --- | --- | --- |
 | `tp2-direct.json` | 2 | One-shot direct over one cable + NCCL over both | configuration path, unmeasured here |
 | `direct-nccl-only.json` | 2 or 3 | NCCL only, every pair cabled | control |
-| `tp3-triangle.json` | 3 | One-shot direct + NCCL | promoted spark3 baseline |
+| `tp3-triangle.json` | 3 | One-shot direct + NCCL | promoted spark-ds41f baseline |
 | `tp4-ring.json` | 4 | One-shot ring4 relay + balanced NCCL | measured candidate |
 | `tp4-ring-nccl-only.json` | 4 | NCCL neighbour ring | control |
 | `switched.json` | 2 to 16 | One-shot clique over two rails + NCCL over every rail | configuration path, unmeasured here |
