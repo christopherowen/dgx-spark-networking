@@ -32,6 +32,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
     lanes, neighbor_lanes = _lanes(hca_count, ring4)
     source = render_source(world_size=world_size, rank=rank, slots=slots, flag_stride=flag_stride,
                            hca_count=lanes, neighbor_lanes=neighbor_lanes)
+    pack_words = PACK_BYTES // 4
     resident = _resident_blocks(threads)
 
     @tilelang.jit(pass_configs=_pass_configs())
@@ -78,9 +79,12 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 poisoned = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
                 if poisoned == T.uint32(0):
                     # 1. stage the local shard into the pinned send slot
-                    T.call_extern("roce_stage", T.address_of(inp[0]),
-                                  T.call_extern("roce_ptr", region_base + T.cast(send_slot, T.int64), dtype="handle"),
-                                  shard_packs, index, stride, dtype="handle")
+                    count = T.alloc_var(T.int32)
+                    count = T.max(0, (shard_packs - index + stride - 1) // stride)
+                    for i in T.serial(count):
+                        pack = index + i * stride
+                        T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
+                                      T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
                     T.sync_threads()
                     # 2. the last block to finish staging rings the proxy doorbell
                     if tx == 0:
@@ -94,10 +98,10 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                     failed = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
                     if failed == T.uint32(0):
                         # 4. concatenate: shard s occupies column block s of every output row
-                        T.call_extern("roce_gather", T.address_of(inp[0]),
-                                      T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
-                                      T.cast(slot_bytes, T.int64), seq, shard_packs, row_packs, T.address_of(out[0]),
-                                      index, stride, dtype="handle")
+                        for i in T.serial(count):
+                            T.call_extern("roce_gather_pack", T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
+                                          T.cast(slot_bytes, T.int64), seq, index + i * stride, row_packs,
+                                          T.address_of(out[0]), dtype="handle")
                     # 5. the last block to finish publishes the next epoch
                     T.call_extern("roce_fence_sc_gpu", dtype="handle")
                     T.sync_threads()

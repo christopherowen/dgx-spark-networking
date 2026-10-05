@@ -201,15 +201,22 @@ CuTe on every rank:
 | Attention all-reduce p5 / p50 | 35.2 / 51.3 us | 48.2 / 59.2 us | 33.2 / 51.4 us |
 | Window span | 1,562.8 ms | 1,575.9 ms | 1,560.2 ms |
 
-Ruled out on the way, each measured: code size (non-unrolled header loops
-cut the kernel from 400 to 312 instructions and changed nothing), extra
+The 40-register column was measured on a variant with the stage, reduce and
+gather loops moved into the CUDA header. The kernels as committed keep those
+loops in TileLang; profiled beside CuTe in one later window they match it as
+well (dgx1: span 1,558.8 against 1,561.3 ms, MoE all-reduce p5 / p50 26.8 /
+44.5 against 25.6 / 43.6 us, every rank within the run-to-run spread).
+
+Ruled out on the way, each measured: code size (the header-loop variant cut
+the kernel from 400 to 312 instructions and changed nothing, so it was not
+kept), extra
 memory traffic (identical fences, invalidates and strong loads in the two
 SASS listings), runtime threads, programmatic dependent launch, cache
 carveout and launch attributes (TVM launches with a plain
 `cuLaunchKernel`). Microbenchmarks did not reproduce the effect; only the
 serving profile did.
 
-The serving benchmark with the 40-register kernels
+The serving benchmark with the 40-register header-loop variant
 (`evidence/2026-10-05-tilelang-port/serving-bench-regs40`, same lean profile,
 bracket) puts the two families level: single-stream step +0.1 percent (prose)
 and +0.3 percent (JSON) against a bracket of 0.0 and +0.2 percent, eight

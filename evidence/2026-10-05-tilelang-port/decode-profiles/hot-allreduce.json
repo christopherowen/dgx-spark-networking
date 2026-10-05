@@ -1,5 +1,5 @@
 {
- "what": "128-token single-stream decode on the TP4 ring, torch profiler on every rank; graph-replayed 4-block all-reduces split by predecessor (MoE all-reduce after the elementwise kernel, attention all-reduce after the dense GEMM); microseconds",
+ "what": "128-token single-stream decode on the TP4 ring, torch profiler on every rank; graph-replayed 4-block all-reduces split by predecessor (MoE all-reduce after the elementwise kernel, attention all-reduce after the dense GEMM); microseconds. 'header loops' = the stage/reduce/gather loops moved into the CUDA header as non-unrolled loops (not kept); 'as committed' = the loops in TileLang with the full-residency bound",
  "arms": {
   "cute (profile 1)": {
    "dgx1": {
@@ -291,7 +291,7 @@
     ]
    }
   },
-  "tilelang 40 regs (profile 3)": {
+  "tilelang 40 regs, header loops (profile 3)": {
    "dgx1": {
     "registers": 40,
     "span_ms": 1560.2,
@@ -346,6 +346,122 @@
      35.3,
      51.9,
      65.4
+    ]
+   }
+  },
+  "cute (profile 4)": {
+   "dgx1": {
+    "registers": 40,
+    "span_ms": 1561.3,
+    "moe_p5_p50_p95": [
+     25.6,
+     43.6,
+     64.9
+    ],
+    "attention_p5_p50_p95": [
+     32.2,
+     49.5,
+     64.7
+    ]
+   },
+   "dgx2": {
+    "registers": 39,
+    "span_ms": 1560.9,
+    "moe_p5_p50_p95": [
+     25.8,
+     45.0,
+     67.8
+    ],
+    "attention_p5_p50_p95": [
+     33.3,
+     50.5,
+     64.3
+    ]
+   },
+   "dgx3": {
+    "registers": 40,
+    "span_ms": 1560.7,
+    "moe_p5_p50_p95": [
+     28.3,
+     48.1,
+     70.6
+    ],
+    "attention_p5_p50_p95": [
+     37.6,
+     54.0,
+     66.8
+    ]
+   },
+   "dgx4": {
+    "registers": 40,
+    "span_ms": 1560.7,
+    "moe_p5_p50_p95": [
+     25.8,
+     43.7,
+     63.6
+    ],
+    "attention_p5_p50_p95": [
+     30.9,
+     47.2,
+     63.0
+    ]
+   }
+  },
+  "tilelang 40 regs, as committed (profile 4)": {
+   "dgx1": {
+    "registers": 40,
+    "span_ms": 1558.8,
+    "moe_p5_p50_p95": [
+     26.8,
+     44.5,
+     64.2
+    ],
+    "attention_p5_p50_p95": [
+     34.8,
+     50.3,
+     64.9
+    ]
+   },
+   "dgx2": {
+    "registers": 40,
+    "span_ms": 1557.7,
+    "moe_p5_p50_p95": [
+     27.4,
+     45.4,
+     67.2
+    ],
+    "attention_p5_p50_p95": [
+     34.2,
+     50.0,
+     63.8
+    ]
+   },
+   "dgx3": {
+    "registers": 40,
+    "span_ms": 1558.3,
+    "moe_p5_p50_p95": [
+     30.5,
+     50.9,
+     70.2
+    ],
+    "attention_p5_p50_p95": [
+     38.2,
+     53.9,
+     66.1
+    ]
+   },
+   "dgx4": {
+    "registers": 40,
+    "span_ms": 1558.4,
+    "moe_p5_p50_p95": [
+     30.7,
+     48.2,
+     67.5
+    ],
+    "attention_p5_p50_p95": [
+     35.8,
+     51.3,
+     65.1
     ]
    }
   }

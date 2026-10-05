@@ -7,9 +7,7 @@
   GB10), which bounds them to CuTe's 40 registers. Left to nvcc they used 54
   to 56, and decode profiles showed every graph-replayed all-reduce about
   15 us slower beside the model's L2 prefetch; with the bound the TileLang
-  family is level with CuTe in serving. The stage, reduce and gather loops
-  move into the device header as non-unrolled loops with no trip-count
-  division (smaller code, no measurable change on its own). Receipts:
+  family is level with CuTe in serving. Receipts:
   `evidence/2026-10-05-tilelang-port/decode-profiles`, `serving-bench-regs40`.
 - First fleet qualification of the package's own GPU suite and probe
   (2026-10-05, dgx1-dgx2 pair and the four-node ring, r6 image, both kernel

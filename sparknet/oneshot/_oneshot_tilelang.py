@@ -28,7 +28,7 @@ from ._kernels import Launch
 logger = logging.getLogger(__name__)
 
 _DTYPE_PACK_ELEMS = {"float32": 4, "float16": 8, "bfloat16": 8}
-_REDUCE_LOOP = {"float32": "roce_reduce_f32", "float16": "roce_reduce_f16", "bfloat16": "roce_reduce_bf16"}
+_REDUCE_FUNCTION = {"float32": "roce_reduce_pack_f32", "float16": "roce_reduce_pack_f16", "bfloat16": "roce_reduce_pack_bf16"}
 _PREPARED_LAUNCHERS: set[tuple[object, ...]] = set()
 
 
@@ -70,8 +70,9 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
     lanes, neighbor_lanes = _lanes(hca_count, ring4)
     source = render_source(world_size=world_size, rank=rank, slots=slots, flag_stride=flag_stride,
                            hca_count=lanes, neighbor_lanes=neighbor_lanes)
-    reduce_loop = _REDUCE_LOOP[dtype_name]
+    reduce_pack = _REDUCE_FUNCTION[dtype_name]
     resident = _resident_blocks(threads)
+    pack_words = PACK_BYTES // 4
 
     @tilelang.jit(pass_configs=_pass_configs())
     def program():
@@ -121,9 +122,12 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                 poisoned = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
                 if poisoned == T.uint32(0):
                     # 1. stage the input into the pinned send slot
-                    T.call_extern("roce_stage", T.address_of(inp[0]),
-                                  T.call_extern("roce_ptr", region_base + T.cast(send_slot, T.int64), dtype="handle"),
-                                  size_packs, index, stride, dtype="handle")
+                    count = T.alloc_var(T.int32)
+                    count = T.max(0, (size_packs - index + stride - 1) // stride)
+                    for i in T.serial(count):
+                        pack = index + i * stride
+                        T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
+                                      T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
                     T.sync_threads()
                     # 2. the last block to finish staging rings the proxy doorbell
                     if tx == 0:
@@ -139,10 +143,11 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                     failed = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
                     if failed == T.uint32(0):
                         # 4. reduce in fixed rank order so every rank stores identical bits
-                        T.call_extern(reduce_loop, T.address_of(inp[0]),
-                                      T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
-                                      T.cast(slot_bytes, T.int64), seq, T.address_of(out[0]), size_packs, index, stride,
-                                      dtype="handle")
+                        for i in T.serial(count):
+                            pack = index + i * stride
+                            T.call_extern(reduce_pack, T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
+                                          T.cast(slot_bytes, T.int64), seq, T.address_of(out[0]),
+                                          T.cast(pack, T.int64) * PACK_BYTES, dtype="handle")
                     # 5. the last block to finish reduction publishes the next epoch
                     T.call_extern("roce_fence_sc_gpu", dtype="handle")
                     T.sync_threads()

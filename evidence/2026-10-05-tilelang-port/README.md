@@ -41,5 +41,5 @@ faster than that control; compare the ring's cut against the balanced numbers in
 
 | Directory | What |
 | --- | --- |
-| `decode-profiles/hot-allreduce.json` | per rank: registers, window span and p5/p50/p95 of the graph-replayed 4-block all-reduce, split into the MoE and the attention all-reduce, for CuTe (twice), TileLang at 56 registers, TileLang with header loops at 54, and TileLang at 40 registers |
-| `serving-bench-regs40/` | lab `measure` run `sparknet2`: CuTe, TileLang at 40 registers, CuTe again |
+| `decode-profiles/hot-allreduce.json` | per rank: registers, window span and p5/p50/p95 of the graph-replayed 4-block all-reduce, split into the MoE and the attention all-reduce, for CuTe (four windows), TileLang at 56 registers, TileLang with header loops at 54 and at 40 registers, and the committed TileLang kernels (loops in TileLang, 40 registers) |
+| `serving-bench-regs40/` | lab `measure` run `sparknet2`: CuTe, TileLang at 40 registers (header-loop variant), CuTe again |
