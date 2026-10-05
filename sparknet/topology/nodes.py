@@ -294,6 +294,65 @@ def _cabled_problems(by_rank: dict[int, dict], count: int, transport: str) -> li
     return errors
 
 
+def subset(nodes: dict, names: list[str]) -> dict:
+    """A cabled map of just ``names``: a pair or a triangle carved out of a larger map.
+
+    Ranks follow the order given (the first name is the head); routes, subnets
+    and NCCL devices keep only what reaches the chosen peers. Every pair must
+    share a cable in the source map (two neighbours of a ring, any two or
+    three nodes of a triangle), and the result validates as a direct map
+    (``oneshot-direct`` / ``nccl-direct``), so a ring owner can measure a pair
+    without recabling.
+    """
+    if len(names) not in (2, 3):
+        raise ValueError("a subset has two or three nodes")
+    if len(set(names)) != len(names):
+        raise ValueError("subset names must be distinct")
+    chosen = [node_by_name(nodes, name) for name in names]
+    if any(not isinstance(node.get("roce_peer_hcas"), dict) for node in chosen):
+        raise ValueError("subset needs a cabled map (roce_peer_hcas); a switched map already reaches every peer")
+    old_rank = {node["name"]: int(node["rank"]) for node in chosen}
+    new_rank = {name: index for index, name in enumerate(names)}
+    result = []
+    for node in chosen:
+        routes: dict[str, list[str]] = {}
+        subnets: dict[str, str] = {}
+        for peer_name in names:
+            if peer_name == node["name"]:
+                continue
+            route = node["roce_peer_hcas"].get(str(old_rank[peer_name]))
+            if not isinstance(route, list) or not route:
+                raise ValueError(f"{node['name']} and {peer_name} share no cable in this map")
+            routes[str(new_rank[peer_name])] = list(route)
+            for hca in route:
+                if hca in node.get("roce_subnets", {}):
+                    subnets[hca] = node["roce_subnets"][hca]
+        routed = [hca for route in routes.values() for hca in route]
+        # A second cable to a chosen peer stays NCCL's: keep an extra device only
+        # when its subnet also appears at a chosen peer.
+        peer_subnets = {net for peer in chosen if peer is not node for net in peer.get("roce_subnets", {}).values()}
+        extra = [hca for hca in node.get("nccl_hcas", []) if hca not in routed
+                 and node.get("roce_subnets", {}).get(hca) in peer_subnets]
+        new = {"name": node["name"], "rank": new_rank[node["name"]], "management_ip": node["management_ip"],
+               "head": new_rank[node["name"]] == 0}
+        for key in ("roce_gid_index", "roce_traffic_class", "management_interface"):
+            if key in node:
+                new[key] = node[key]
+        new["roce_peer_hcas"] = dict(sorted(routes.items(), key=lambda item: int(item[0])))
+        if extra:
+            new["nccl_hcas"] = routed + extra
+            for hca in extra:
+                subnets[hca] = node["roce_subnets"][hca]
+        if subnets:
+            new["roce_subnets"] = subnets
+        result.append(new)
+    document = {"schema_version": nodes.get("schema_version", SCHEMA_VERSION), "ssh_user": nodes.get("ssh_user"), "nodes": result}
+    errors = problems(document, "oneshot-direct")
+    if errors:
+        raise ValueError("the subset is not a direct fabric: " + "; ".join(errors))
+    return document
+
+
 def gid_subnet_problems(node: dict, gid_index: int, show_gids_output: str) -> list[str]:
     """Compare live ``show_gids``-style lines with the declared subnets.
 

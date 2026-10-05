@@ -572,9 +572,15 @@ class RoceOneshotAllReduce:
         max_size: int = DEFAULT_MAX_SIZE,
         eager_buffer_bytes: Optional[int] = None,
         max_gather_bytes: int = DEFAULT_MAX_GATHER_BYTES,
+        threads: int = DEFAULT_THREADS,
+        blocks: int = DEFAULT_BLOCKS,
         **_ignored: Any,
     ) -> "RoceOneshotAllReduce":
-        """Mirror ``comm.pcie.AllReduce.from_exchange_group``; PCIe-only knobs are ignored."""
+        """Mirror ``comm.pcie.AllReduce.from_exchange_group``; PCIe-only knobs are ignored.
+
+        ``threads`` and ``blocks`` are the launch geometry (part of the
+        configuration every rank must agree on); the probe exposes them for sweeps.
+        """
 
         capacity = max(int(max_size), int(eager_buffer_bytes or 0))
         return cls(
@@ -582,6 +588,8 @@ class RoceOneshotAllReduce:
             device=device,
             max_size=capacity,
             max_gather_bytes=max_gather_bytes,
+            threads=threads,
+            blocks=blocks,
         )
 
     @classmethod
@@ -1111,6 +1119,8 @@ class RoceOneshotAllReduce:
             "ctrl_seq": int(self._ctrl_words[0].item()),
             "spin_limit": self.spin_limit,
             "stripe_hcas": list(range(self.stripe_count)),
+            "threads": self._threads,
+            "blocks": self._blocks,
         }
         if self._proxy is not None:
             info.update(self._proxy.stats())

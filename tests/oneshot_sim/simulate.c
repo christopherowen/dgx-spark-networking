@@ -311,6 +311,31 @@ static void independent_directions(void) {
     }
 }
 
+static void placement(void) {
+    // SPARKNET_ROCE_PROXY_CPU parsing, and (on Linux) that a pinned proxy thread
+    // reports the CPU it was placed on.
+    char err[160];
+    assert(resolve_proxy_cpu(NULL, err, sizeof err) == -1);
+    assert(resolve_proxy_cpu("", err, sizeof err) == -1);
+    assert(resolve_proxy_cpu("none", err, sizeof err) == -1);
+    assert(resolve_proxy_cpu("0", err, sizeof err) == 0);
+    assert(resolve_proxy_cpu("x", err, sizeof err) == -2 && strstr(err, "SPARKNET_ROCE_PROXY_CPU"));
+    assert(resolve_proxy_cpu("-1", err, sizeof err) == -2);
+    assert(resolve_proxy_cpu("1000000", err, sizeof err) == -2);
+    int big = resolve_proxy_cpu("big", err, sizeof err);
+    assert(big >= 0 || strstr(err, "cpu_capacity"));  // hosts without cpu_capacity refuse "big"
+#ifdef __linux__
+    world = 3; ring4 = 0; stripes = 1; rotate = 0;
+    setup(0);
+    ranks[0]->proxy_cpu_plus1 = 1;
+    assert(!roce_start(ranks[0]));
+    for (int i = 0; i < 10000 && roce_stat(ranks[0], 6) == 0; i++) usleep(100);
+    assert(roce_stat(ranks[0], 5) == 1 && roce_stat(ranks[0], 6) == 1);
+    assert(!roce_failed(ranks[0]));
+    cleanup();
+#endif
+}
+
 int main(void) {
     for(stripes=1;stripes<=2;stripes++) {
         world=3;ring4=0;run(1000,0);
@@ -320,7 +345,8 @@ int main(void) {
     }
     stripes=4;world=4;ring4=2;run(3000,0);run(1000,UINT32_MAX-100);
     rotate=1;run(3000,0);run(1000,UINT32_MAX-100);rotate=0;
-    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 26000 collectives, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors (%llu writes)\n", (unsigned long long)messages);
+    placement();
+    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 26000 collectives, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement (%llu writes)\n", (unsigned long long)messages);
 }
 
 /* Setup/teardown stubs. Contexts are supplied by setup; no fake successful NIC discovery. */

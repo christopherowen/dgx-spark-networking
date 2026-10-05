@@ -41,12 +41,14 @@ class ProxySimulatorTest(unittest.TestCase):
             run = subprocess.run([binary], capture_output=True, text=True, timeout=300)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("PASS: direct3/ring4/mesh4", run.stdout)
+            self.assertIn("thread placement", run.stdout)
 
     def test_proxy_abi_is_the_qualified_one(self):
         source = (ROCE / "_roce_proxy.c").read_text()
         self.assertIn("#define ROCE_ABI_VERSION 10", source)
         self.assertIn("lib.roce_abi_version() != 10", (ROCE / "_proxy.py").read_text())
         self.assertIn('getenv("SPARKNET_ROCE_MESH_ROTATE")', source)
+        self.assertIn('getenv("SPARKNET_ROCE_PROXY_CPU")', source)
         self.assertNotIn("b12x.", (ROCE / "runtime.py").read_text())
 
 

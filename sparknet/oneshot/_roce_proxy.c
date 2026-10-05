@@ -40,6 +40,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+#ifndef CPU_SETSIZE
+#define CPU_SETSIZE 1024
+#endif
 
 #define ROCE_MAX_PEERS 16
 #define ROCE_MAX_LOCAL_HCAS 4
@@ -109,6 +114,11 @@ typedef struct {
     uint32_t last_seq;
     uint64_t ops_posted;
     uint64_t writes_completed;
+    // Proxy thread placement (SPARKNET_ROCE_PROXY_CPU), stored plus one so a
+    // zeroed context means "unpinned": the CPU requested, and the CPU the
+    // thread first ran on.
+    int proxy_cpu_plus1;
+    int proxy_cpu_observed_plus1;
     char err[512];
 } roce_ctx_t;
 
@@ -119,6 +129,76 @@ static void set_err(roce_ctx_t *c, const char *what, int e) {
 }
 
 int roce_abi_version(void) { return ROCE_ABI_VERSION; }
+
+// SPARKNET_ROCE_PROXY_CPU: unset, empty or "none" leaves the proxy thread to
+// the scheduler; a CPU number pins it there; "big" pins it to the CPU with the
+// highest cpu_capacity in sysfs (the GB10 mixes ten Cortex-X925 and ten
+// Cortex-A725 cores, and an unpinned poller can land on a little one).
+// Returns the CPU, -1 for none, or -2 with err set.
+static int resolve_proxy_cpu(const char *value, char *err, size_t err_len) {
+    if (value == NULL || value[0] == '\0' || strcmp(value, "none") == 0) {
+        return -1;
+    }
+    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+    if (ncpu > CPU_SETSIZE) {
+        ncpu = CPU_SETSIZE;
+    }
+    if (strcmp(value, "big") == 0) {
+        int best = -1;
+        long best_capacity = -1;
+        for (long cpu = 0; cpu < ncpu; cpu++) {
+            char path[96];
+            snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", cpu);
+            FILE *f = fopen(path, "r");
+            if (f == NULL) {
+                continue;
+            }
+            long capacity = -1;
+            if (fscanf(f, "%ld", &capacity) != 1) {
+                capacity = -1;
+            }
+            fclose(f);
+            if (capacity > best_capacity) {
+                best_capacity = capacity;
+                best = (int)cpu;
+            }
+        }
+        if (best < 0) {
+            snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU=big: no cpu_capacity under /sys/devices/system/cpu");
+            return -2;
+        }
+        return best;
+    }
+    char *end = NULL;
+    long cpu = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || cpu < 0 || cpu >= ncpu) {
+        snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU must be none, big or a CPU number below %ld", ncpu);
+        return -2;
+    }
+    return (int)cpu;
+}
+
+// Name the proxy thread and apply the requested placement from inside it.
+static int place_proxy_thread(roce_ctx_t *c) {
+#ifdef __linux__
+    pthread_setname_np(pthread_self(), "sparknet-proxy");
+    if (c->proxy_cpu_plus1 > 0) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(c->proxy_cpu_plus1 - 1, &set);
+        int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+        if (rc != 0) {
+            set_err(c, "pthread_setaffinity_np", rc);
+            return -1;
+        }
+    }
+    int cpu = sched_getcpu();
+    c->proxy_cpu_observed_plus1 = cpu >= 0 ? cpu + 1 : 0;
+#else
+    (void)c;
+#endif
+    return 0;
+}
 
 int roce_layout(int world, uint64_t slot_bytes, uint64_t *out) {
     // out = {recv_off, flag_off, send_off, ctrl_off, total_bytes, flag_stride, slots}
@@ -333,6 +413,17 @@ roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n
         snprintf(err, err_len, "rotating posts require four mesh paths");
         free(c); return NULL;
     }
+    int proxy_cpu = resolve_proxy_cpu(getenv("SPARKNET_ROCE_PROXY_CPU"), err, err_len);
+    if (proxy_cpu == -2) {
+        free(c); return NULL;
+    }
+#ifndef __linux__
+    if (proxy_cpu >= 0) {
+        snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU: thread pinning is only supported on Linux");
+        free(c); return NULL;
+    }
+#endif
+    c->proxy_cpu_plus1 = proxy_cpu + 1;
     c->world = world;
     c->rank = rank;
     c->ring4 = ring4;
@@ -737,6 +828,10 @@ static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
 static void *proxy_main(void *arg) {
     roce_ctx_t *c = (roce_ctx_t *)arg;
     volatile uint32_t *ctrl = (volatile uint32_t *)(c->region + c->ctrl_off);
+    if (place_proxy_thread(c) != 0) {
+        atomic_store(&c->failed, 1);
+        return NULL;
+    }
     // Spin while ops are flowing.  After ROCE_IDLE_SPINS polls without a
     // doorbell, request a short nanosleep between polls (the OS decides the
     // actual delay) so an idle runtime does not hold a core next to the
@@ -831,6 +926,10 @@ uint64_t roce_stat(roce_ctx_t *c, int which) {
         return c->n_stripes;
     case 4:
         return c->mesh_rotate;
+    case 5:
+        return (uint64_t)c->proxy_cpu_plus1;
+    case 6:
+        return (uint64_t)c->proxy_cpu_observed_plus1;
     default:
         return 0;
     }

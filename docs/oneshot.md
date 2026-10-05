@@ -81,6 +81,7 @@ traffic class fall back to NCCL's own settings.
 | `SPARKNET_ROCE_TRAFFIC_CLASS` | DSCP/ECN byte for every QP (falls back to `NCCL_IB_TC`, default 0) |
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
+| `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it; `big` pins it to the CPU with the highest `cpu_capacity` (GB10: ten Cortex-X925 and ten Cortex-A725). Candidate, unmeasured: the probe's `proxy_cpu_observed` shows where the thread ran |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
 adapter reads `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES` and

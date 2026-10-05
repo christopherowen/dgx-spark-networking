@@ -215,6 +215,18 @@ For a new transport or a changed kernel, also run the GPU test
 parity, bit-identical ranks, graph replay, alternating streams, a proxy that
 misses a doorbell, and fault injection that proves every rank fails stop.
 
+`sparknet probe fleet` runs that command on every node at once over ssh
+(one session per node, the ranks rendezvous on the head's management
+address), keeps `<node>.log` and `<node>.json` under `--out`, and prints the
+latency table; `--dry-run` shows the ssh commands first. `--package-source
+DIR` mounts a checkout's `sparknet/` over the image's installed package, so a
+change can be probed through a released image, and `--env KEY=VALUE` adds a
+candidate setting for an A/B. `sparknet probe summarize control=DIR1
+candidate=DIR2` tabulates two sets of receipts with deltas. To measure a
+pair out of a ring or a triangle without recabling,
+`sparknet topology subset nodes.json dgx2 dgx3 --out pair.json` carves the
+two-node map (a `tp2-direct` fabric) from the site map.
+
 A passing probe is a prerequisite for serving, not serving acceptance.
 
 ## 5. Wire the engine
@@ -374,16 +386,17 @@ sequence-parallel threshold, which is a model-scheduling change.
 **CLI**
 
 ```text
-sparknet topology validate|render|example|discover|inventory
+sparknet topology validate|render|example|subset|discover|inventory
 sparknet nccl env|validate|profiles|patches [--export DIR]
 sparknet policy show
-sparknet probe doctor|gpudirect|render-command|collectives
+sparknet probe doctor|gpudirect|render-command|fleet|summarize|collectives
 ```
 
 **Profile-level environment** (from `sparknet nccl env`): `NCCL_*` as listed
 in `docs/nccl.md`; `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES`,
 `SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES`,
-`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`, `SPARKNET_ROCE_SPIN_LIMIT`.
+`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`, `SPARKNET_ROCE_SPIN_LIMIT`; per host,
+`SPARKNET_ROCE_PROXY_CPU` (`docs/oneshot.md`).
 
 **Per-node environment** (from `sparknet topology render`):
 `SPARKNET_ROCE_TOPOLOGY`, `SPARKNET_ROCE_PEER_HCAS` (cabled) or

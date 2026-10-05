@@ -66,6 +66,42 @@ class NodeMapTest(unittest.TestCase):
         ring["nodes"][0]["nccl_hcas"] = ["rocep1s0f0", "roceP2p1s0f0"]
         self.assertTrue(any("must include every routed HCA" in p for p in topology.problems(ring, "nccl-ring")))
 
+    def test_subset_carves_a_pair_out_of_a_ring(self):
+        ring = example("tp4-ring")
+        pair = topology.subset(ring, ["dgx2", "dgx3"])
+        self.assertEqual(topology.problems(pair, "oneshot-direct"), [])
+        self.assertEqual(topology.problems(pair, "nccl-direct"), [])
+        self.assertEqual([n["name"] for n in pair["nodes"]], ["dgx2", "dgx3"])
+        self.assertEqual([n["rank"] for n in pair["nodes"]], [0, 1])
+        self.assertTrue(pair["nodes"][0]["head"] and not pair["nodes"][1]["head"])
+        self.assertEqual(pair["nodes"][0]["roce_peer_hcas"], {"1": ring["nodes"][1]["roce_peer_hcas"]["2"]})
+        self.assertEqual(pair["nodes"][1]["roce_peer_hcas"], {"0": ring["nodes"][2]["roce_peer_hcas"]["1"]})
+        self.assertEqual(set(pair["nodes"][0]["roce_subnets"].values()), {"10.23.1.0/24", "10.23.2.0/24"})
+        self.assertNotIn("nccl_hcas", pair["nodes"][0])
+        self.assertEqual(pair["ssh_user"], ring["ssh_user"])
+        self.assertEqual(pair["nodes"][0]["management_ip"], ring["nodes"][1]["management_ip"])
+        env = render.node_environment(pair, pair["nodes"][0], transport="oneshot-direct")
+        self.assertEqual(env["NCCL_IB_HCA"], "=roceP2p1s0f0,rocep1s0f0")  # exact names, sorted
+        with self.assertRaisesRegex(ValueError, "share no cable"):
+            topology.subset(ring, ["dgx1", "dgx3"])
+        with self.assertRaisesRegex(ValueError, "two or three"):
+            topology.subset(ring, ["dgx1"])
+        with self.assertRaises(KeyError):
+            topology.subset(ring, ["dgx1", "dgx9"])
+
+    def test_subset_keeps_a_triangle_and_a_second_cable(self):
+        triangle = example("tp3-triangle")
+        three = topology.subset(triangle, ["dgx3", "dgx1", "dgx2"])
+        self.assertEqual(topology.problems(three, "oneshot-direct"), [])
+        self.assertEqual([n["name"] for n in three["nodes"]], ["dgx3", "dgx1", "dgx2"])
+        self.assertEqual(set(three["nodes"][1]["roce_peer_hcas"]), {"0", "2"})
+        two = topology.subset(example("tp2-direct"), ["dgx1", "dgx2"])
+        self.assertEqual(topology.problems(two, "oneshot-direct"), [])
+        self.assertEqual(two["nodes"][0]["nccl_hcas"], example("tp2-direct")["nodes"][0]["nccl_hcas"])
+        self.assertEqual(len(two["nodes"][0]["roce_subnets"]), 4)
+        with self.assertRaisesRegex(ValueError, "cabled map"):
+            topology.subset(example("switched"), ["dgx1", "dgx2"])
+
     def test_switched_rails_must_agree_across_nodes(self):
         self.switched["nodes"][2]["roce_subnets"]["rocep1s0f0"] = "10.200.1.0/24"
         self.assertTrue(any("rail 0 must use one subnet" in p for p in topology.problems(self.switched, "oneshot-switched")))

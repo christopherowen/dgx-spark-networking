@@ -7,6 +7,7 @@ Every command here runs without torch. The collective probe itself
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -16,6 +17,7 @@ from pathlib import Path
 from sparknet import __version__
 from sparknet.nccl import patchset, profiles as nccl_profiles
 from sparknet.policy import CollectivePolicy, policy_for_profile
+from sparknet.probe import fleet, summary
 from sparknet.probe.container import docker_probe_command
 from sparknet.probe.doctor import local_problems
 from sparknet.probe.gpudirect import gpudirect_report
@@ -139,6 +141,21 @@ def _discover_switched(args) -> int:
     return 1 if problems else 0
 
 
+def cmd_topology_subset(args) -> int:
+    nodes = topology.load(args.nodes)
+    try:
+        document = topology.subset(nodes, args.names)
+    except (KeyError, ValueError) as error:
+        return _report([str(error)], "subset")
+    text = json.dumps(document, indent=2) + "\n"
+    if args.out:
+        Path(args.out).write_text(text)
+        print(f"wrote {args.out}: {len(document['nodes'])} nodes, validates as oneshot-direct")
+    else:
+        print(text, end="")
+    return 0
+
+
 def cmd_topology_inventory(args) -> int:
     print(json.dumps(discover.local_inventory(gid_index=args.gid_index), indent=2))
     return 0
@@ -216,6 +233,29 @@ def cmd_probe_gpudirect(args) -> int:
     return 0
 
 
+def _extra_env(items: list[str] | None) -> dict[str, str]:
+    env = {}
+    for item in items or ():
+        if "=" not in item:
+            raise SystemExit(f"error: --env expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        env[key.strip()] = value
+    return env
+
+
+def _fleet_environments(args, nodes: dict) -> dict[str, dict[str, str]]:
+    environments = {}
+    for node in nodes["nodes"]:
+        env = rendered_environment(nodes, node, transport=args.transport, profile=args.profile)
+        errors = render.environment_problems(env, args.transport, len(nodes["nodes"]))
+        if args.profile:
+            errors += nccl_profiles.problems(env, node_count=len(nodes["nodes"]))
+        if errors:
+            raise SystemExit("\n".join(f"error: {node['name']}: {e}" for e in errors))
+        environments[node["name"]] = env
+    return environments
+
+
 def cmd_probe_render_command(args) -> int:
     nodes = topology.load(args.nodes)
     errors = _profile_errors(args, nodes)
@@ -223,14 +263,59 @@ def cmd_probe_render_command(args) -> int:
         return _report(errors, args.nodes)
     node = topology.node_by_name(nodes, args.node)
     env = rendered_environment(nodes, node, transport=args.transport, profile=args.profile)
-    source = args.probe_source or str(Path(__file__).parent / "probe" / "collectives.py")
+    env.update(_extra_env(args.env))
     command = docker_probe_command(
         image=args.image, environment=env, rank=node["rank"], world_size=len(nodes["nodes"]),
         master_addr=topology.head_node(nodes)["management_ip"], master_port=args.port,
-        transport=args.transport, probe_source=source, extra_args=tuple(args.probe_args or ()),
+        transport=args.transport, probe_source=args.probe_source, package_source=args.package_source,
+        extra_args=tuple(args.probe_args or ()),
     )
     print("# Plan only. Run on this node during a coordinated window with serving stopped.")
     print(shlex.join(command))
+    return 0
+
+
+def cmd_probe_fleet(args) -> int:
+    nodes = topology.load(args.nodes)
+    errors = _profile_errors(args, nodes)
+    if errors:
+        return _report(errors, args.nodes)
+    plans = fleet.plan(
+        nodes, _fleet_environments(args, nodes), transport=args.transport, image=args.image, port=args.port,
+        probe_args=tuple(args.probe_args or ()), probe_source=args.probe_source, package_source=args.package_source,
+        extra_env=_extra_env(args.env), ssh_user=args.ssh_user, target_field=args.target,
+    )
+    ssh = tuple(shlex.split(args.ssh)) if args.ssh else fleet.DEFAULT_SSH
+    if args.dry_run:
+        print("# Plan only: one ssh session per node, started together, inside a window with serving stopped.")
+        for item in plans:
+            print(shlex.join(fleet.ssh_command(item, ssh)))
+        return 0
+    out = Path(args.out)
+    print(f"probing {len(plans)} ranks ({args.transport}, profile {args.profile or 'none'}, image {args.image}) -> {out}", flush=True)
+    outcomes = fleet.run(plans, out, ssh=ssh, timeout=args.timeout)
+    failed = 0
+    for outcome in outcomes:
+        state = "passed" if outcome.passed else "FAILED"
+        failed += not outcome.passed
+        detail = "; ".join(outcome.problems) if outcome.problems else f"{len(outcome.result.get('timings', []))} timed cases"
+        print(f"{outcome.name} (rank {outcome.rank}): {state}, {detail}, log {outcome.log}")
+    if failed:
+        print(f"error: {failed} of {len(outcomes)} ranks did not pass", file=sys.stderr)
+        return 1
+    with contextlib.suppress(FileNotFoundError):
+        print(summary.markdown({args.label: summary.cases(summary.load_results(out))}), end="")
+    return 0
+
+
+def cmd_probe_summarize(args) -> int:
+    labelled = {}
+    for item in args.receipts:
+        label, _, directory = item.rpartition("=")
+        directory = directory or item
+        label = label or Path(directory).name
+        labelled[label] = summary.cases(summary.load_results(directory))
+    print(summary.markdown(labelled, dtype=args.dtype), end="")
     return 0
 
 
@@ -273,6 +358,11 @@ def parser() -> argparse.ArgumentParser:
     d.add_argument("--gid-index", type=int, default=3)
     d.add_argument("--traffic-class", type=int)
     d.set_defaults(func=cmd_topology_discover)
+    ts = t.add_parser("subset", help="carve a pair or a triangle out of a cabled map (ranks in the order given)")
+    ts.add_argument("nodes")
+    ts.add_argument("names", nargs="+", metavar="NODE")
+    ts.add_argument("--out", help="write the map here instead of stdout")
+    ts.set_defaults(func=cmd_topology_subset)
     i = t.add_parser("inventory", help="this host's RDMA devices from sysfs")
     i.add_argument("--gid-index", type=int, default=3)
     i.set_defaults(func=cmd_topology_inventory)
@@ -308,16 +398,36 @@ def parser() -> argparse.ArgumentParser:
     pg.add_argument("--json", action="store_true")
     pg.add_argument("--gpunetio-dir")
     pg.set_defaults(func=cmd_probe_gpudirect)
+    def probe_options(parser_):
+        parser_.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
+        parser_.add_argument("--profile", choices=profiles)
+        parser_.add_argument("--image", required=True)
+        parser_.add_argument("--port", type=int, default=29650)
+        parser_.add_argument("--probe-source", help="mount this collectives.py from the host instead of the image's probe")
+        parser_.add_argument("--package-source", metavar="DIR", help="mount this sparknet package directory over the image's")
+        parser_.add_argument("--env", action="append", metavar="KEY=VALUE", help="extra environment for the probe (repeatable)")
+        parser_.add_argument("probe_args", nargs="*", help="arguments after -- go to the probe (e.g. --benchmark)")
+
     rc = pr.add_parser("render-command", help="the bounded container command for one rank's probe")
     rc.add_argument("nodes")
     rc.add_argument("node")
-    rc.add_argument("--transport", required=True, choices=topology.TRANSPORTS)
-    rc.add_argument("--profile", choices=profiles)
-    rc.add_argument("--image", required=True)
-    rc.add_argument("--port", type=int, default=29650)
-    rc.add_argument("--probe-source")
-    rc.add_argument("probe_args", nargs="*", help="arguments after -- go to the probe (e.g. --benchmark)")
+    probe_options(rc)
     rc.set_defaults(func=cmd_probe_render_command)
+    pf = pr.add_parser("fleet", help="run every rank's probe container at once over ssh and keep the receipts")
+    pf.add_argument("nodes")
+    probe_options(pf)
+    pf.add_argument("--out", default="probe-receipts", help="directory for <node>.log and <node>.json")
+    pf.add_argument("--label", default="probe", help="column label for the summary table")
+    pf.add_argument("--ssh-user", help="ssh user (default: the map's ssh_user)")
+    pf.add_argument("--target", choices=("name", "management_ip"), default="name", help="ssh to the node name or its management address")
+    pf.add_argument("--ssh", help="ssh command prefix (default: ssh -o BatchMode=yes -o ConnectTimeout=15)")
+    pf.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for every rank")
+    pf.add_argument("--dry-run", action="store_true", help="print the ssh commands and exit")
+    pf.set_defaults(func=cmd_probe_fleet)
+    psm = pr.add_parser("summarize", help="latency tables from probe receipts (LABEL=DIR ...); deltas against the first")
+    psm.add_argument("receipts", nargs="+", metavar="[LABEL=]DIR")
+    psm.add_argument("--dtype", default="bfloat16")
+    psm.set_defaults(func=cmd_probe_summarize)
     pc = pr.add_parser("collectives", help="run the probe on this rank (needs torch)")
     pc.add_argument("probe_args", nargs=argparse.REMAINDER)
     pc.set_defaults(func=cmd_probe_collectives)

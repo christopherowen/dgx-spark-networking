@@ -114,6 +114,39 @@ class CliTest(unittest.TestCase):
             self.assertEqual(written, sorted([patchset.SERIES_FILE, *names]))
             self.assertEqual((Path(tmp) / names[0]).read_bytes(), (patchset.patch_directory() / names[0]).read_bytes())
 
+    def test_subset_fleet_and_summarize(self):
+        import tempfile
+
+        code, text = run("topology", "subset", EXAMPLE, "dgx2", "dgx3")
+        self.assertEqual(code, 0)
+        pair = json.loads(text)
+        self.assertEqual([n["name"] for n in pair["nodes"]], ["dgx2", "dgx3"])
+        self.assertEqual(run("topology", "subset", EXAMPLE, "dgx1", "dgx3")[0], 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = str(Path(tmp) / "pair.json")
+            self.assertEqual(run("topology", "subset", EXAMPLE, "dgx1", "dgx2", "--out", out)[0], 0)
+            code, text = run("probe", "fleet", out, "--transport", "oneshot-direct", "--profile", "tp2-direct", "--image", "img:tag",
+                             "--env", "SPARKNET_ROCE_PROXY_CPU=big", "--dry-run", "--", "--benchmark")
+            self.assertEqual(code, 0, text)
+            lines = [line for line in text.splitlines() if not line.startswith("#")]
+            self.assertEqual(len(lines), 2)
+            self.assertTrue(lines[0].startswith("ssh -o BatchMode=yes -o ConnectTimeout=15 spark@dgx1 "))
+            self.assertIn("SPARKNET_ROCE_PROXY_CPU=big", lines[0])
+            self.assertIn("sparknet.probe.collectives", lines[1])
+            self.assertTrue(lines[1].rstrip("'").endswith("--benchmark"), lines[1])
+            # A profile that does not fit the carved map is refused before any ssh.
+            self.assertEqual(run("probe", "fleet", out, "--transport", "oneshot-direct", "--profile", "tp4-ring", "--image", "i", "--dry-run")[0], 1)
+            receipts = Path(tmp) / "receipts"
+            receipts.mkdir()
+            for rank, name in enumerate(("dgx1", "dgx2")):
+                (receipts / f"{name}.json").write_text(json.dumps({"rank": rank, "passed": True, "timings": [
+                    {"dtype": "torch.bfloat16", "elements_per_rank": 5120, "operation": "all_reduce",
+                     "microseconds_per_call": [17.0 + rank] * 5, "expected_backend": "oneshot"}]}))
+            code, text = run("probe", "summarize", f"ring={receipts}")
+            self.assertEqual(code, 0)
+            self.assertIn("| 10 KiB | 18.0 us (oneshot) |", text)
+            self.assertIn("| all-reduce (bfloat16), per rank | ring |", text)
+
     def test_probe_command_plan(self):
         code, text = run("probe", "render-command", EXAMPLE, "dgx4", "--transport", "oneshot-ring4", "--profile", "tp4-ring",
                          "--image", "example:tag", "--", "--benchmark")

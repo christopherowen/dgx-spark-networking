@@ -3,6 +3,8 @@
 - ``doctor``: configuration and live-link checks on one node, before any queue pair opens.
 - ``counters``: RDMA error and physical-port counters around a measurement.
 - ``container``: the bounded Docker command that runs the probe on one rank.
+- ``fleet``: runs that command on every node of a map over ssh and keeps the receipts.
+- ``summary``: latency tables from the receipts.
 - ``gpudirect``: what the host offers for the GPU-initiated transport.
 - ``collectives``: the torch.distributed probe (needs torch; run on the nodes).
 """

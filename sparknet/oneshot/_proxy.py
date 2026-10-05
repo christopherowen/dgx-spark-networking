@@ -287,6 +287,9 @@ class Proxy:
             "last_seq": int(self._lib.roce_stat(self._ctx, 2)),
             "path_slots": int(self._lib.roce_stat(self._ctx, 3)),
             "mesh_rotate": int(self._lib.roce_stat(self._ctx, 4)),
+            # SPARKNET_ROCE_PROXY_CPU: the CPU the thread was pinned to, and the one it first ran on.
+            "proxy_cpu": int(self._lib.roce_stat(self._ctx, 5)) - 1 if self._lib.roce_stat(self._ctx, 5) else None,
+            "proxy_cpu_observed": int(self._lib.roce_stat(self._ctx, 6)) - 1 if self._lib.roce_stat(self._ctx, 6) else None,
             "writes_completed_per_hca": [
                 int(self._lib.roce_hca_stat(self._ctx, hca, 0))
                 for hca in range(len(self.hca_names))

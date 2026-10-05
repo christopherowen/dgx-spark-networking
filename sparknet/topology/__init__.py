@@ -12,6 +12,7 @@ from .nodes import (
     node_by_name,
     node_by_rank,
     problems,
+    subset,
 )
 from .render import RING_ENV, node_environment
 
@@ -29,4 +30,5 @@ __all__ = [
     "node_by_rank",
     "node_environment",
     "problems",
+    "subset",
 ]

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- `SPARKNET_ROCE_PROXY_CPU`: proxy thread placement (`none`, a CPU number, or
+  `big` for the highest-capacity core). The thread is named `sparknet-proxy`,
+  and `stats()` reports the CPU it was pinned to and the one it first ran on.
+  A candidate until measured.
+- `sparknet topology subset`: carve a pair or a triangle out of a cabled map,
+  so a ring owner can measure a pair without recabling.
+- `sparknet probe fleet`: run every rank's probe container at once over ssh,
+  keep the receipts, print the latency table; `--package-source` mounts a
+  checkout over the image's package, `--env` adds a candidate setting.
+  `sparknet probe summarize` tabulates receipts with deltas. The container
+  plan runs the image's own probe unless `--probe-source` is given.
+- The probe takes `--runtime-threads` and `--runtime-blocks` for launch
+  geometry sweeps and records its `SPARKNET_ROCE_*` and `NCCL_*` environment
+  in the receipt.
+
 ## 0.3.0 (2026-10-05)
 
 - The NCCL patch series ships inside the package (`sparknet/nccl/patches`,

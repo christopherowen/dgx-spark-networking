@@ -91,6 +91,8 @@ def main(argv=None) -> int:
     parser.add_argument("--lengths", type=int, nargs="+", default=[5120, 30720, 245760, 1048576])
     parser.add_argument("--numerics", action="store_true", help="cancellation-sensitive reduction-order fingerprints")
     parser.add_argument("--output", default="", help="write the JSON result here as well as to stdout")
+    parser.add_argument("--runtime-threads", type=int, default=None, help="one-shot launch threads (default: the runtime's)")
+    parser.add_argument("--runtime-blocks", type=int, default=None, help="one-shot launch blocks, a power of two (default: the runtime's)")
     args = parser.parse_args(argv)
     if any(n < 64 or n > 5242880 or n % 8 for n in args.lengths):
         parser.error("benchmark lengths must be aligned and between 64 and 5242880")
@@ -117,9 +119,10 @@ def main(argv=None) -> int:
         from sparknet import oneshot
 
         policy = _policy_from_environment()
+        geometry = {k: v for k, v in (("threads", args.runtime_threads), ("blocks", args.runtime_blocks)) if v is not None}
         runtime = oneshot.AllReduce.from_exchange_group(
             exchange_group=cpu_group, device=device,
-            max_size=policy.all_reduce_capacity_bytes, max_gather_bytes=policy.all_gather_shard_bytes,
+            max_size=policy.all_reduce_capacity_bytes, max_gather_bytes=policy.all_gather_shard_bytes, **geometry,
         )
         if runtime.topology != roce_topology(transport):
             raise RuntimeError(f"runtime topology {runtime.topology} differs from the {transport} routing mode")
@@ -273,9 +276,10 @@ def main(argv=None) -> int:
         if runtime.stats()["ops_posted"] <= before:
             raise RuntimeError("no probe payload used the one-shot proxy")
         proxy_stats = runtime.stats()
+    environment = {k: v for k, v in sorted(os.environ.items()) if k.startswith(("SPARKNET_ROCE_", "NCCL_"))}
     result = {"rank": args.rank, "world_size": args.world_size, "transport": transport,
-              "policy": policy.__dict__ if policy else None, "proxy": proxy_stats, "passed": True,
-              "checks": checks, "numerical_checks": numerical_checks, "timings": timings}
+              "policy": policy.__dict__ if policy else None, "proxy": proxy_stats, "environment": environment,
+              "passed": True, "checks": checks, "numerical_checks": numerical_checks, "timings": timings}
     text = json.dumps(result)
     print(text, flush=True)
     if args.output:

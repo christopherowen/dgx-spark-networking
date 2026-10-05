@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 PROBE_CONTAINER = "sparknet-collective-probe"
+# Where a vLLM nightly image installs the package; ``package_source`` is mounted over it.
+DEFAULT_PACKAGE_TARGET = "/usr/local/lib/python3.12/dist-packages/sparknet"
 
 
 def docker_probe_command(
@@ -14,7 +16,9 @@ def docker_probe_command(
     master_addr: str,
     master_port: int,
     transport: str,
-    probe_source: str,
+    probe_source: str | None = None,
+    package_source: str | None = None,
+    package_target: str = DEFAULT_PACKAGE_TARGET,
     memory: str = "12g",
     timeout_seconds: int = 600,
     extra_args: tuple[str, ...] = (),
@@ -22,8 +26,12 @@ def docker_probe_command(
     """One rank's probe container: separate IPC namespace, bounded memory and lifetime.
 
     The 12 GiB limit covers two NCCL communicators plus cold one-shot
-    compilation. ``probe_source`` is the path of ``sparknet/probe/collectives.py``
-    on the host (or an installed sparknet package directory) mounted read-only.
+    compilation. By default the probe is the one installed in the image
+    (``python3 -m sparknet.probe.collectives``); ``probe_source`` mounts a
+    newer ``collectives.py`` from the host instead, and ``package_source``
+    mounts a whole ``sparknet`` package directory from the host over the
+    image's, so a checkout can be probed through a released image (the proxy
+    is rebuilt from the mounted source on first use).
     """
     env = dict(environment)
     env.update(NCCL_DEBUG="INFO", NCCL_DEBUG_SUBSYS="INIT,GRAPH,NET")
@@ -34,12 +42,18 @@ def docker_probe_command(
                "--entrypoint=/usr/bin/timeout"]
     for key, value in sorted(env.items()):
         command.extend(["--env", f"{key}={value}"])
-    command.extend(["--volume", f"{probe_source}:/probe.py:ro", image,
-                    "--signal=TERM", "--kill-after=10s", f"{timeout_seconds}s",
-                    "python3", "/probe.py", "--rank", str(rank), "--world-size", str(world_size),
+    if package_source:
+        command.extend(["--volume", f"{package_source}:{package_target}:ro"])
+    if probe_source:
+        command.extend(["--volume", f"{probe_source}:/probe.py:ro"])
+        program = ["python3", "/probe.py"]
+    else:
+        program = ["python3", "-m", "sparknet.probe.collectives"]
+    command.extend([image, "--signal=TERM", "--kill-after=10s", f"{timeout_seconds}s",
+                    *program, "--rank", str(rank), "--world-size", str(world_size),
                     "--master-addr", master_addr, "--master-port", str(master_port),
                     "--transport", transport, *extra_args])
     return command
 
 
-__all__ = ["PROBE_CONTAINER", "docker_probe_command"]
+__all__ = ["DEFAULT_PACKAGE_TARGET", "PROBE_CONTAINER", "docker_probe_command"]
