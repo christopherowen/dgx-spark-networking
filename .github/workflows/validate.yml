@@ -83,4 +83,4 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Lint the reference Dockerfile
-        run: docker buildx build --check -f docker/Dockerfile .
+        run: docker buildx build --check --platform linux/arm64 -f docker/Dockerfile .
