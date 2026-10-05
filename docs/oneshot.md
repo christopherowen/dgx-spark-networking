@@ -81,6 +81,7 @@ traffic class fall back to NCCL's own settings.
 | `SPARKNET_ROCE_TRAFFIC_CLASS` | DSCP/ECN byte for every QP (falls back to `NCCL_IB_TC`, default 0) |
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
+| `SPARKNET_ROCE_KERNELS` | kernel family, `cute` (default) or `tilelang`; see Kernel families below |
 | `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it; `big` pins it to the CPU with the highest `cpu_capacity` (GB10: ten Cortex-X925 and ten Cortex-A725). Candidate, unmeasured: the probe's `proxy_cpu_observed` shows where the thread ran |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
@@ -114,6 +115,24 @@ historical control rather than a fresh pair.
 Streaming the relay in chunks and a shared progress window were measured
 slower than whole-fragment forwarding (`2026-10-03-relay-progress`) and are
 not carried. NIC forwarding (`mesh4`) is carried but not recommended.
+
+## Kernel families
+
+Two kernel families carry the protocol over the same pinned region, proxy,
+launcher signature and runtime. ``cute`` is the vendored CuTe DSL pair
+(`_oneshot_cute.py`, `_allgather_cute.py`, intrinsics in
+`_cute_intrinsics.py`); ``tilelang`` is the TileLang pair
+(`_oneshot_tilelang.py`, `_allgather_tilelang.py`), generated as CUDA source
+with the protocol steps in `_device.py`: the same PTX for every system-scope
+load, store and fence, the same spin, the same float32 accumulation in
+fixed rank order and the same conversions, so the two families are meant to
+be bit-identical and the GPU test checks it (`test_kernel_families_*`).
+`SPARKNET_ROCE_KERNELS` selects the family for a process, the runtime's
+`kernels` keyword (and the probe's `--kernels`) for one runtime; every rank
+must agree, which the setup handshake enforces. The default is `cute` until
+the TileLang family has passed the GPU test and the probe on the fleet; the
+TileLang family needs `tilelang` (the image's) and compiles with nvcc on
+first `prepare`, into TileLang's own cache.
 
 ## Tests
 

@@ -93,6 +93,8 @@ def main(argv=None) -> int:
     parser.add_argument("--output", default="", help="write the JSON result here as well as to stdout")
     parser.add_argument("--runtime-threads", type=int, default=None, help="one-shot launch threads (default: the runtime's)")
     parser.add_argument("--runtime-blocks", type=int, default=None, help="one-shot launch blocks, a power of two (default: the runtime's)")
+    parser.add_argument("--kernels", choices=("cute", "tilelang"), default=None,
+                        help="one-shot kernel family (default: SPARKNET_ROCE_KERNELS, else cute)")
     args = parser.parse_args(argv)
     if any(n < 64 or n > 5242880 or n % 8 for n in args.lengths):
         parser.error("benchmark lengths must be aligned and between 64 and 5242880")
@@ -119,7 +121,8 @@ def main(argv=None) -> int:
         from sparknet import oneshot
 
         policy = _policy_from_environment()
-        geometry = {k: v for k, v in (("threads", args.runtime_threads), ("blocks", args.runtime_blocks)) if v is not None}
+        geometry = {k: v for k, v in (("threads", args.runtime_threads), ("blocks", args.runtime_blocks),
+                                      ("kernels", args.kernels)) if v is not None}
         runtime = oneshot.AllReduce.from_exchange_group(
             exchange_group=cpu_group, device=device,
             max_size=policy.all_reduce_capacity_bytes, max_gather_bytes=policy.all_gather_shard_bytes, **geometry,

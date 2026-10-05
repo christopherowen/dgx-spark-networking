@@ -9,12 +9,14 @@ in isolation, because importing the runtime needs torch and the CuTe DSL.
 import ast
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import types
 import typing
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +52,75 @@ class ProxySimulatorTest(unittest.TestCase):
         self.assertIn('getenv("SPARKNET_ROCE_MESH_ROTATE")', source)
         self.assertIn('getenv("SPARKNET_ROCE_PROXY_CPU")', source)
         self.assertNotIn("b12x.", (ROCE / "runtime.py").read_text())
+
+
+def _module(path: Path):
+    """Import one module file directly (the package __init__ needs torch)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class KernelFamilyTest(unittest.TestCase):
+    def test_family_selection(self):
+        kernels = _module(ROCE / "_kernels.py")
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(kernels.family(), "cute")
+            self.assertEqual(kernels.family("tilelang"), "tilelang")
+        with unittest.mock.patch.dict(os.environ, {"SPARKNET_ROCE_KERNELS": "tilelang"}):
+            self.assertEqual(kernels.family(), "tilelang")
+            self.assertEqual(kernels.family("cute"), "cute")
+        with self.assertRaises(ValueError):
+            kernels.family("triton")
+        self.assertEqual(kernels.FAMILIES, ("cute", "tilelang"))
+
+    def test_device_header_defines_every_function_the_kernels_call(self):
+        device = _module(ROCE / "_device.py")
+        source = device.render_source(world_size=4, rank=1, slots=2, flag_stride=128, hca_count=4, neighbor_lanes=2)
+        for name in device.FUNCTIONS:
+            self.assertIn(f" {name}(", source, name)
+        for define in ("#define ROCE_WORLD 4", "#define ROCE_RANK 1", "#define ROCE_SLOTS 2",
+                       "#define ROCE_FLAG_STRIDE 128", "#define ROCE_HCA_COUNT 4", "#define ROCE_NEIGHBOR_LANES 2"):
+            self.assertIn(define, source)
+        self.assertEqual(source.count("{"), source.count("}"), "unbalanced braces in the device header")
+        # The same PTX as the CuTe intrinsics, so both families order memory and round the same way.
+        intrinsics = (ROCE / "_cute_intrinsics.py").read_text()
+        for ptx in ("ld.relaxed.gpu.global.u32", "ld.relaxed.sys.global.u32", "atom.relaxed.gpu.global.add.u32",
+                    "st.release.gpu.global.u32", "st.relaxed.sys.global.u32", "fence.sc.sys;", "fence.sc.gpu;",
+                    "ld.acquire.sys.global.u32", "ld.relaxed.sys.global.v4.u32", "ld.global.v4.u32", "st.global.v4.u32",
+                    "cvt.f32.bf16", "cvt.f32.f16", "cvt.rn.bf16.f32", "cvt.rn.f16x2.f32"):
+            self.assertIn(ptx, source, ptx)
+            self.assertIn(ptx, intrinsics, ptx)
+        # Every extern the TileLang kernels name exists in the header.
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+            text = (ROCE / module_name).read_text()
+            for name in sorted(set(re.findall(r'T\.call_extern\("(roce_[a-z0-9_]+)"', text))):
+                self.assertIn(name, device.FUNCTIONS, (module_name, name))
+            for name in sorted(set(re.findall(r'"(roce_reduce_pack_[a-z0-9]+)"', text))):
+                self.assertIn(name, device.FUNCTIONS, (module_name, name))
+
+    def test_tilelang_modules_import_without_a_gpu_stack(self):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_kernels.py", "_device.py", "_freeze.py"):
+            tree = ast.parse((ROCE / module_name).read_text())
+            top_level = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
+            top_level |= {(node.module or "").split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom) and node.level == 0}
+            self.assertFalse(top_level & {"torch", "tilelang", "cutlass", "cuda", "tvm"}, (module_name, top_level))
+        launch = _module(ROCE / "_freeze.py")
+        launch.freeze_kernel_resolution("test")
+        with self.assertRaises(launch.KernelResolutionFrozenError):
+            launch.raise_if_kernel_resolution_frozen("tilelang.jit")
+        launch.thaw_kernel_resolution()
+        launch.raise_if_kernel_resolution_frozen("tilelang.jit")
+
+    def test_runtime_routes_launchers_through_the_family(self):
+        runtime = (ROCE / "runtime.py").read_text()
+        self.assertIn("reduce_launcher(self.kernel_family,", runtime)
+        self.assertIn("gather_launcher(self.kernel_family,", runtime)
+        self.assertIn('"kernel_family": self.kernel_family', runtime)
+        self.assertNotIn("_oneshot_cute import", runtime)
 
 
 class TopologyResolverTest(unittest.TestCase):

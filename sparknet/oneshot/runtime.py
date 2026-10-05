@@ -37,8 +37,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 
-from . import _allgather_cute
-from ._oneshot_cute import PACK_BYTES, get_launcher
+from ._kernels import PACK_BYTES, family as _kernel_family, gather_launcher, reduce_launcher
 from ._proxy import Layout, Proxy, load as _load_proxy_library
 
 logger = logging.getLogger(__name__)
@@ -345,6 +344,7 @@ class RoceOneshotAllReduce:
         blocks: int = DEFAULT_BLOCKS,
         topology: Optional[str] = None,
         transport: Optional[Callable[..., Any]] = None,
+        kernels: Optional[str] = None,
     ) -> None:
         """Allocate the pinned region, build and connect the transport, and start it.
 
@@ -354,6 +354,8 @@ class RoceOneshotAllReduce:
         outside this library); it defaults to ``SPARKNET_ROCE_TOPOLOGY``.
         ``transport`` is the factory that owns the RDMA side of the protocol
         and defaults to the host proxy (``sparknet.transport.HostProxyTransport``).
+        ``kernels`` selects the kernel family (``cute`` or ``tilelang``; default
+        ``SPARKNET_ROCE_KERNELS``, else ``cute``); every rank must agree.
         """
         self.device = _normalize_device(device)
         self.rank = dist.get_rank(group=exchange_group)
@@ -396,6 +398,7 @@ class RoceOneshotAllReduce:
         if self.topology not in TOPOLOGIES:
             raise ValueError(f"unknown RoCE topology {self.topology!r}; choose one of {TOPOLOGIES}")
         self._transport_factory = transport if transport is not None else Proxy
+        self.kernel_family = _kernel_family(kernels)
         self.hca_names, self.peer_hca_names, self.stripe_count = _resolve_hca_topology(
             world_size=self.world_size,
             rank=self.rank,
@@ -498,6 +501,7 @@ class RoceOneshotAllReduce:
             "spin_limit": self.spin_limit,
             "threads": self._threads,
             "blocks": self._blocks,
+            "kernel_family": self.kernel_family,
         }
         statuses = _exchange((error, blob, config), exchange_group)
         failures = [
@@ -574,12 +578,14 @@ class RoceOneshotAllReduce:
         max_gather_bytes: int = DEFAULT_MAX_GATHER_BYTES,
         threads: int = DEFAULT_THREADS,
         blocks: int = DEFAULT_BLOCKS,
+        kernels: Optional[str] = None,
         **_ignored: Any,
     ) -> "RoceOneshotAllReduce":
         """Mirror ``comm.pcie.AllReduce.from_exchange_group``; PCIe-only knobs are ignored.
 
-        ``threads`` and ``blocks`` are the launch geometry (part of the
-        configuration every rank must agree on); the probe exposes them for sweeps.
+        ``threads`` and ``blocks`` are the launch geometry and ``kernels`` the
+        kernel family (part of the configuration every rank must agree on);
+        the probe exposes them for sweeps and parity runs.
         """
 
         capacity = max(int(max_size), int(eager_buffer_bytes or 0))
@@ -590,6 +596,7 @@ class RoceOneshotAllReduce:
             max_gather_bytes=max_gather_bytes,
             threads=threads,
             blocks=blocks,
+            kernels=kernels,
         )
 
     @classmethod
@@ -715,7 +722,7 @@ class RoceOneshotAllReduce:
                 )
             if dtype not in SUPPORTED_DTYPES:
                 raise ValueError(f"unsupported RoCE all-reduce dtype {dtype}")
-            launcher = get_launcher(*self._launcher_key(dtype))
+            launcher = reduce_launcher(self.kernel_family, *self._launcher_key(dtype))
             self._launchers[dtype] = launcher
         return launcher
 
@@ -726,7 +733,7 @@ class RoceOneshotAllReduce:
                 raise RuntimeError(
                     "RoCE all-gather launcher was not prepared before CUDA graph capture; call prepare()"
                 )
-            self._gather_launcher = _allgather_cute.get_launcher(*self._gather_launcher_key())
+            self._gather_launcher = gather_launcher(self.kernel_family, *self._gather_launcher_key())
         return self._gather_launcher
 
 
@@ -1121,6 +1128,7 @@ class RoceOneshotAllReduce:
             "stripe_hcas": list(range(self.stripe_count)),
             "threads": self._threads,
             "blocks": self._blocks,
+            "kernel_family": self.kernel_family,
         }
         if self._proxy is not None:
             info.update(self._proxy.stats())

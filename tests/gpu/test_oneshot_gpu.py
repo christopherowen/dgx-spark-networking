@@ -695,3 +695,97 @@ def test_all_gather_graph_replay_mixed_with_all_reduce(runtime):
         torch.testing.assert_close(
             reduced, expected_reduce, rtol=2e-2, atol=2e-2 * world
         )
+
+
+# -- kernel families ---------------------------------------------------------------
+
+
+def _other_family(runtime) -> str:
+    from sparknet import oneshot as roce
+
+    return next(f for f in roce.KERNEL_FAMILIES if f != runtime.kernel_family)
+
+
+@pytest.fixture(scope="module")
+def other_runtime(runtime):
+    """A runtime of the other kernel family over the same world, for bit-equality checks."""
+    from sparknet import oneshot as roce
+
+    rt = roce.AllReduce.from_exchange_group(
+        exchange_group=dist.group.WORLD,
+        device=runtime.device,
+        max_size=runtime.max_size,
+        max_gather_bytes=runtime.max_gather_bytes,
+        kernels=_other_family(runtime),
+    )
+    rt.prepare((torch.float16, torch.bfloat16, torch.float32), padded_gather=True)
+    yield rt
+    rt.close()
+    dist.barrier()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float16])
+@pytest.mark.parametrize("numel_bytes", [16, 4096, 48 * 1024, 256 * 1024, 1 << 20])
+def test_kernel_families_reduce_bit_identically(runtime, other_runtime, dtype, numel_bytes):
+    """The CuTe and TileLang all-reduce kernels produce the same bits for the same inputs."""
+    assert {runtime.kernel_family, other_runtime.kernel_family} == {"cute", "tilelang"}
+    rank = dist.get_rank()
+    numel = numel_bytes // torch.tensor([], dtype=dtype).element_size()
+    for trial in range(3):
+        torch.manual_seed(7000 * trial + rank)
+        inp = torch.randn(numel, dtype=dtype, device=runtime.device)
+        a = runtime.all_reduce(inp)
+        b = other_runtime.all_reduce(inp)
+        torch.cuda.synchronize()
+        assert torch.equal(a, b), f"{runtime.kernel_family} and {other_runtime.kernel_family} differ ({dtype}, {numel_bytes} B)"
+    dist.barrier()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.int32])
+@pytest.mark.parametrize("shape,dim", [((6, 38720), -1), ((16, 4096), 0), ((4096,), 0), ((6, 2), -1), ((7, 3), 0)])
+def test_kernel_families_gather_bit_identically(runtime, other_runtime, dtype, shape, dim):
+    """Both families write the same concatenated output on both gather paths."""
+    rank = dist.get_rank()
+    torch.manual_seed(9000 + rank)
+    if dtype.is_floating_point:
+        inp = torch.randn(*shape, dtype=dtype, device=runtime.device)
+    else:
+        inp = torch.randint(-1000, 1000, shape, dtype=dtype, device=runtime.device)
+    if inp.numel() * inp.element_size() > runtime.max_gather_bytes:
+        pytest.skip("shard exceeds the runtime's all-gather capacity")
+    a = runtime.all_gather(inp, dim=dim)
+    b = other_runtime.all_gather(inp, dim=dim)
+    torch.cuda.synchronize()
+    assert torch.equal(a, b)
+    dist.barrier()
+
+
+def test_kernel_families_graph_replay_agree(runtime, other_runtime):
+    """Graph replay with changing inputs gives identical bits from both families."""
+    rank = dist.get_rank()
+    device = runtime.device
+    results = {}
+    for rt in (runtime, other_runtime):
+        torch.manual_seed(11000 + rank)
+        x = torch.randn(30720, dtype=torch.bfloat16, device=device)
+        g = torch.randn(6, 8192, dtype=torch.bfloat16, device=device)
+        stream = torch.cuda.Stream(device=device)
+        stream.wait_stream(torch.cuda.current_stream())
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream), rt.capture(stream=stream):
+            y = rt.all_reduce(x)
+            z = rt.all_gather(g, dim=-1)
+        outputs = []
+        for _ in range(4):
+            x.add_(0.5)
+            g.add_(0.25)
+            graph.replay()
+            torch.cuda.synchronize()
+            outputs.append((y.clone(), z.clone()))
+        rt.check_health()
+        results[rt.kernel_family] = outputs
+        del graph
+    for (ya, za), (yb, zb) in zip(results["cute"], results["tilelang"], strict=True):
+        assert torch.equal(ya, yb)
+        assert torch.equal(za, zb)
+    dist.barrier()

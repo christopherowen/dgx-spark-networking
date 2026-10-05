@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A TileLang kernel family for the one-shot all-reduce and all-gather
+  (`SPARKNET_ROCE_KERNELS=tilelang`, or `kernels=` on the runtime): the same
+  protocol phases generated as CUDA source with the device side in
+  `_device.py`, meant to be bit-identical to the CuTe DSL kernels; the GPU
+  test compares the two families. The default stays `cute` until the fleet
+  has qualified the port. The kernel-resolution freeze is shared (`_freeze`).
 - `SPARKNET_ROCE_PROXY_CPU`: proxy thread placement (`none`, a CPU number, or
   `big` for the highest-capacity core). The thread is named `sparknet-proxy`,
   and `stats()` reports the CPU it was pinned to and the one it first ran on.
