@@ -1,0 +1,708 @@
+{
+  "rank": 3,
+  "world_size": 4,
+  "transport": "oneshot-ring4",
+  "policy": {
+    "all_reduce_dispatch_bytes": 2097152,
+    "all_reduce_capacity_bytes": 2097152,
+    "all_gather_shard_bytes": 2097152
+  },
+  "proxy": {
+    "world_size": 4,
+    "rank": 3,
+    "topology": "ring4",
+    "hcas": [
+      "rocep1s0f0",
+      "roceP2p1s0f0",
+      "rocep1s0f1",
+      "roceP2p1s0f1"
+    ],
+    "peer_hca_routes": {
+      "0": [
+        "rocep1s0f0",
+        "roceP2p1s0f0"
+      ],
+      "1": [],
+      "2": [
+        "rocep1s0f1",
+        "roceP2p1s0f1"
+      ]
+    },
+    "stripe_count": 2,
+    "max_size": 2097152,
+    "dispatch_max_bytes": 2097152,
+    "max_gather_bytes": 2097152,
+    "slot_bytes": 2097152,
+    "epoch": 24290,
+    "error_seq": 0,
+    "error_peer": 0,
+    "error_hca": 0,
+    "ctrl_seq": 24290,
+    "spin_limit": 5000000,
+    "stripe_hcas": [
+      0,
+      1
+    ],
+    "threads": 512,
+    "blocks": 8,
+    "kernel_family": "cute",
+    "ops_posted": 24290,
+    "writes_completed": 194320,
+    "last_seq": 24290,
+    "path_slots": 2,
+    "mesh_rotate": 0,
+    "proxy_cpus": [],
+    "proxy_cpu_observed": 15,
+    "writes_completed_per_hca": [
+      48580,
+      48580,
+      48580,
+      48580
+    ],
+    "bytes_posted_per_hca": [
+      23002937168,
+      23002936208,
+      23002937152,
+      23002936192
+    ]
+  },
+  "environment": {
+    "NCCL_ALGO": "Ring",
+    "NCCL_BUFFSIZE": "4194304",
+    "NCCL_COLLNET_ENABLE": "0",
+    "NCCL_CROSS_NIC": "1",
+    "NCCL_CUMEM_ENABLE": "1",
+    "NCCL_CUMEM_HOST_ENABLE": "0",
+    "NCCL_DEBUG": "INFO",
+    "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,NET",
+    "NCCL_GIN_ENABLE": "0",
+    "NCCL_IB_ADDR_FAMILY": "AF_INET",
+    "NCCL_IB_DISABLE": "0",
+    "NCCL_IB_GID_INDEX": "3",
+    "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
+    "NCCL_IB_MERGE_NICS": "1",
+    "NCCL_IB_ROCE_VERSION_NUM": "2",
+    "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
+    "NCCL_IB_SUBNET_PREFIX_LEN": "24",
+    "NCCL_IGNORE_CPU_AFFINITY": "1",
+    "NCCL_LL128_BUFFSIZE": "262144",
+    "NCCL_MAX_NCHANNELS": "4",
+    "NCCL_MIN_NCHANNELS": "4",
+    "NCCL_MIN_TRAFFIC_PER_CHANNEL": "512",
+    "NCCL_MNNVL_ENABLE": "0",
+    "NCCL_NET": "IB",
+    "NCCL_NET_PLUGIN": "none",
+    "NCCL_NVLS_ENABLE": "0",
+    "NCCL_P2P_DISABLE": "1",
+    "NCCL_PAT_ENABLE": "0",
+    "NCCL_PROTO": "^LL128",
+    "NCCL_RMA_DISABLE": "1",
+    "NCCL_RUNTIME_CONNECT": "1",
+    "NCCL_SHM_DISABLE": "1",
+    "NCCL_SOCKET_IFNAME": "enP7s7",
+    "NCCL_SWITCHLESS_BIDIRECTIONAL": "2",
+    "NCCL_THREAD_THRESHOLDS": "-2 -2 -2 1 1 1",
+    "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "2097152",
+    "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152",
+    "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "2097152",
+    "SPARKNET_ROCE_CACHE_DIR": "/opt/sparknet/roce",
+    "SPARKNET_ROCE_GID_INDEX": "3",
+    "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"2\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
+    "SPARKNET_ROCE_SPIN_LIMIT": "5000000",
+    "SPARKNET_ROCE_TOPOLOGY": "ring4"
+  },
+  "passed": true,
+  "checks": [
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 17,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1024,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048568,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048584,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 2097152,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 17,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1024,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 524284,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 524288,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 524292,
+      "eager": true,
+      "graph_replays": 4
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 2097152,
+      "eager": true,
+      "graph_replays": 4
+    }
+  ],
+  "numerical_checks": [],
+  "timings": [
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 245760,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        92.79012680053711,
+        95.47825157642365,
+        94.4487527012825,
+        95.95612436532974,
+        95.29637545347214
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 245760,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        104.42549735307693,
+        103.23837399482727,
+        103.59050333499908,
+        103.83675247430801,
+        108.80837589502335
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 245760,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        165.7552570104599,
+        163.5608822107315,
+        158.51974487304688,
+        160.26200354099274,
+        152.86999940872192
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 327680,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        119.65562403202057,
+        118.52700263261795,
+        114.58375304937363,
+        116.5468767285347,
+        120.24837732315063
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 327680,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        129.26112115383148,
+        129.35787439346313,
+        128.28387320041656,
+        129.93863224983215,
+        127.077117562294
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 327680,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        191.18249416351318,
+        188.45787644386292,
+        184.86900627613068,
+        184.67925488948822,
+        183.17975103855133
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 491520,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        159.3921184539795,
+        154.33362126350403,
+        156.7578762769699,
+        156.51187300682068,
+        155.78524768352509
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 491520,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        174.24286901950836,
+        177.99200117588043,
+        177.12774872779846,
+        173.22038114070892,
+        179.44225668907166
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 491520,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        231.76175355911255,
+        229.0828824043274,
+        231.90388083457947,
+        228.71200740337372,
+        228.900745511055
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 655360,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        205.68324625492096,
+        210.9491229057312,
+        218.17849576473236,
+        209.2067450284958,
+        216.2407487630844
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 655360,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        240.46263098716736,
+        241.19912087917328,
+        240.5606210231781,
+        240.36262929439545,
+        243.68725717067719
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 655360,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        278.93200516700745,
+        273.8688886165619,
+        270.1471149921417,
+        271.68774604797363,
+        276.98537707328796
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 786432,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        251.9691288471222,
+        253.07437777519226,
+        257.0846378803253,
+        277.96024084091187,
+        256.0727596282959
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 786432,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        275.865375995636,
+        277.4471342563629,
+        280.2097499370575,
+        281.96948766708374,
+        280.51987290382385
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 786432,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        311.67861819267273,
+        300.3707528114319,
+        300.3333806991577,
+        301.76275968551636,
+        294.9296236038208
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        303.45648527145386,
+        303.85899543762207,
+        304.20973896980286,
+        316.6206181049347,
+        319.4853663444519
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        360.3793680667877,
+        359.03748869895935,
+        352.1566390991211,
+        350.6021201610565,
+        360.5267405509949
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "elements_per_rank": 1048576,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        361.63800954818726,
+        358.7850034236908,
+        369.04236674308777,
+        358.4013879299164,
+        361.1203730106354
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 245760,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        157.70524740219116,
+        159.20062363147736,
+        157.39187598228455,
+        162.44100034236908,
+        159.5151275396347
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 245760,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        177.49474942684174,
+        174.54150319099426,
+        178.43274772167206,
+        176.76325142383575,
+        175.90224742889404
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 245760,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        229.22837734222412,
+        226.39437019824982,
+        223.27400743961334,
+        222.40687906742096,
+        229.15586829185486
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 327680,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        205.38824796676636,
+        201.46700739860535,
+        209.44750308990479,
+        209.42699909210205,
+        208.95275473594666
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 327680,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        241.04300141334534,
+        236.62987351417542,
+        235.87049543857574,
+        237.59375512599945,
+        238.0412518978119
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 327680,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        276.2686312198639,
+        268.3037519454956,
+        264.3984854221344,
+        266.87511801719666,
+        270.17873525619507
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 491520,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        292.8966283798218,
+        290.81276059150696,
+        295.52412033081055,
+        300.1931309700012,
+        300.48274993896484
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 491520,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        332.9690098762512,
+        333.71976017951965,
+        339.30888772010803,
+        338.60713243484497,
+        340.8607542514801
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 491520,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        347.8938639163971,
+        343.5738682746887,
+        344.0666198730469,
+        346.564382314682,
+        347.01499342918396
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 655360,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        295.929491519928,
+        292.6994860172272,
+        294.89976167678833,
+        294.442743062973,
+        293.0682599544525
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 655360,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        551.8090128898621,
+        543.5417294502258,
+        555.1042556762695,
+        549.0278601646423,
+        547.8771328926086
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 655360,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        423.8196313381195,
+        417.19850897789,
+        438.61448764801025,
+        423.40975999832153,
+        435.40436029434204
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 786432,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        332.335501909256,
+        340.11200070381165,
+        330.5110037326813,
+        336.96988224983215,
+        327.6602625846863
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 786432,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        634.672224521637,
+        634.0333819389343,
+        636.0958814620972,
+        635.2882385253906,
+        634.9777579307556
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 786432,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        478.3792495727539,
+        479.7338843345642,
+        484.17913913726807,
+        484.9010109901428,
+        482.3218882083893
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1048576,
+      "operation": "all_reduce",
+      "microseconds_per_call": [
+        398.92861247062683,
+        402.62675285339355,
+        405.46324849128723,
+        399.7708857059479,
+        399.958997964859
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1048576,
+      "operation": "all_gather",
+      "microseconds_per_call": [
+        877.9214024543762,
+        869.1703677177429,
+        855.3213477134705,
+        859.2029809951782,
+        863.5038733482361
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    },
+    {
+      "dtype": "torch.float32",
+      "elements_per_rank": 1048576,
+      "operation": "reduce_scatter",
+      "microseconds_per_call": [
+        629.1822791099548,
+        626.4756321907043,
+        625.339150428772,
+        622.7563619613647,
+        624.4051456451416
+      ],
+      "calls_per_graph": 16,
+      "replays_per_sample": 16
+    }
+  ]
+}

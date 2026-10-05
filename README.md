@@ -136,8 +136,10 @@ CuTe DSL kernels and a TileLang port (`SPARKNET_ROCE_KERNELS=tilelang`) that
 generates CUDA source with the protocol's device side in one header. The
 GPU suite shows the two bit-identical on the pair and the ring; latencies
 are equal within noise, with TileLang 3 to 5 percent faster at 480 KiB.
-The default stays `cute` until serving has been benchmarked on TileLang;
-after that the CuTe family and the `nvidia-cutlass-dsl` pin go.
+Serving was benchmarked on both (2026-10-05, [docs/oneshot.md](docs/oneshot.md)):
+TileLang is 0.6 to 1.2 percent slower per decode step in the lean screen,
+equal elsewhere, so by the promotion rule (measurably better in serving) the
+default stays `cute` while the cause is found.
 
 **Not yet.** The switched profiles reuse the triangle's settings and say so
 in their status. The GPU-initiated transport is staged, not implemented;

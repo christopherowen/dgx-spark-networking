@@ -8,6 +8,13 @@
   fabric; the two-Spark pair measured for the first time; receipts under
   `evidence/2026-10-05-tilelang-port`. `scripts/gpu-test-fleet.sh` runs the
   GPU suite on every node of a map.
+- Serving benchmark of both kernel families and of proxy pinning on the TP4
+  recipe, a one-shot latency benchmark on the pair (TileLang's eager launch
+  is 15 us cheaper, graph latency equal), and a crossover sweep that places
+  the ring's all-reduce cut between 1.25 and 1.5 MiB and finds the pair's
+  cut capacity-bound; receipts under `evidence/2026-10-05-tilelang-port`.
+  Neither family change nor pinning is promoted. The probe's default sizes
+  gain the 960 KiB point (TP4's largest decode capture).
 - Both kernel families launch from one `Launch` description; the TileLang
   kernels take the input, output, pinned region and counters as buffer
   arguments with their real shapes (which binds the launch to the current

@@ -26,6 +26,13 @@ Three distinct limits (`sparknet.policy.CollectivePolicy`):
   the output is world_size times larger. 4 MiB on three nodes, 2 MiB on four
   (NCCL wins above it there).
 
+Measured 2026-10-05 (`docs/oneshot.md`, Where the NCCL cut is): the ring's
+all-reduce crossover is 1.25 to 1.5 MiB against unbalanced NCCL and lower
+against the balanced policy, so the 1 MiB dispatch holds; the ring's gather
+crossover against the balanced policy is near the 2 MiB shard limit; on a
+pair the one-shot wins through 4 MiB, so `tp2-direct`'s 2 MiB cut is the
+capacity's limit, not the fabric's.
+
 `sparknet policy show --profile tp4-ring` prints the policy and its
 environment; `CollectivePolicy.from_environment` reads the limits in bytes
 or in vLLM's `2MB` syntax; the probe asserts that observed proxy counters

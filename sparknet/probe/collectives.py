@@ -88,7 +88,9 @@ def main(argv=None) -> int:
     parser.add_argument("--benchmark", action="store_true", help="after correctness, screen steady graph collective latency")
     parser.add_argument("--counter-samples", action="store_true", help="record RDMA error deltas around each benchmark case")
     parser.add_argument("--port-samples", action="store_true", help="sample physical NIC bytes and buffer drops around each timed case")
-    parser.add_argument("--lengths", type=int, nargs="+", default=[5120, 30720, 245760, 1048576])
+    # 1, 6, 48 and 96 tokens of a 5,120-wide BF16 residual (10 KiB, 60 KiB, 480 KiB, 960 KiB: a
+    # token, one stream with drafts, the TP3 and the TP4 largest decode captures) and 2 MiB.
+    parser.add_argument("--lengths", type=int, nargs="+", default=[5120, 30720, 245760, 491520, 1048576])
     parser.add_argument("--numerics", action="store_true", help="cancellation-sensitive reduction-order fingerprints")
     parser.add_argument("--output", default="", help="write the JSON result here as well as to stdout")
     parser.add_argument("--runtime-threads", type=int, default=None, help="one-shot launch threads (default: the runtime's)")

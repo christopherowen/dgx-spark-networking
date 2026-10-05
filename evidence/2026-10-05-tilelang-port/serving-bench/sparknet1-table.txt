@@ -1,0 +1,42 @@
+prose-c1
+  cute       tps   62.46 ± 0.7%   step  31.81 ms   accepted/draft 1.065   distinct outputs 1
+  tilelang   tps   62.09 ± 0.1%  -0.6%   step  32.01 ms  +0.6%   accepted/draft 1.065   distinct outputs 1
+  cute-big   tps   62.45 ± 0.4%  -0.0%   step  31.81 ms  -0.0%   accepted/draft 1.065   distinct outputs 1
+  tilelang-big tps   61.78 ± 1.1%  -1.1%   step  32.15 ms  +1.0%   accepted/draft 1.065   distinct outputs 1
+  cute-end   tps   62.40 ± 0.5%  -0.1%   step  31.85 ms  +0.1%   accepted/draft 1.065   distinct outputs 1
+json-nothink-c1
+  cute       tps   99.83 ± 0.1%   step  37.76 ms   accepted/draft 3.000   distinct outputs 1
+  tilelang   tps   98.85 ± 0.3%  -1.0%   step  38.15 ms  +1.0%   accepted/draft 3.000   distinct outputs 1
+  cute-big   tps   99.39 ± 1.1%  -0.4%   step  37.84 ms  +0.2%   accepted/draft 3.000   distinct outputs 1
+  tilelang-big tps   98.64 ± 0.4%  -1.2%   step  38.22 ms  +1.2%   accepted/draft 3.000   distinct outputs 1
+  cute-end   tps   99.36 ± 1.1%  -0.5%   step  37.85 ms  +0.2%   accepted/draft 3.000   distinct outputs 1
+single stream, distinct prompts one at a time (tok/s ±95%)
+  cute         82.40 ±13.2%
+  tilelang     81.57 ±13.0%  -1.0%
+  cute-big     82.24 ±13.1%  -0.2%
+  tilelang-big   81.48 ±12.9%  -1.1%
+  cute-end     82.29 ±13.1%  -0.1%
+cold prefill: tokens/s (TTFT s)
+  cute       1024: 2740 (0.35); 16384: 5667 (2.83)
+  tilelang   1024: 2744 (0.35)  +0.1%; 16384: 5676 (2.82)  +0.1%
+  cute-big   1024: 2719 (0.35)  -0.8%; 16384: 5704 (2.81)  +0.6%
+  tilelang-big 1024: 2745 (0.35)  +0.2%; 16384: 5695 (2.81)  +0.5%
+  cute-end   1024: 2740 (0.35)  -0.0%; 16384: 5714 (2.81)  +0.8%
+eight distinct concurrent prompts (tok/s ±95%)
+  cute        173.89 ±4.6%
+  tilelang    176.60 ±1.6%  +1.6%
+  cute-big    178.33 ±1.2%  +2.6%
+  tilelang-big  175.20 ±0.8%  +0.8%
+  cute-end    174.66 ±3.2%  +0.4%
+short prompts: request time, median over lengths (ms)
+  cute          95.4
+  tilelang      93.9  -1.6%
+  cute-big      93.9  -1.6%
+  tilelang-big    94.5  -1.0%
+  cute-end      93.3  -2.3%
+mixed traffic (means over rounds)
+  cute       short_ttft_median 217.8; long_ttft_mean 772.3; gap_p50 58.6; gap_p95 89.3; gap_p99 604.7; chunks_per_s 15.3
+  tilelang   short_ttft_median 224.9  +3.3%  over; long_ttft_mean 767.3  -0.6%; gap_p50 60.0  +2.4%; gap_p95 89.8  +0.6%; gap_p99 611.3  +1.1%; chunks_per_s 15.1  -1.3%
+  cute-big   short_ttft_median 213.4  -2.0%; long_ttft_mean 760.3  -1.6%; gap_p50 60.2  +2.7%; gap_p95 93.0  +4.1%  over; gap_p99 601.5  -0.5%; chunks_per_s 15.0  -2.0%
+  tilelang-big short_ttft_median 226.5  +4.0%  over; long_ttft_mean 756.5  -2.0%; gap_p50 60.4  +3.1%  over; gap_p95 91.0  +1.9%; gap_p99 605.4  +0.1%; chunks_per_s 15.0  -2.0%
+  cute-end   short_ttft_median 230.4  +5.8%  over; long_ttft_mean 756.1  -2.1%; gap_p50 60.5  +3.2%  over; gap_p95 90.3  +1.1%; gap_p99 594.3  -1.7%; chunks_per_s 15.1  -1.3%

@@ -157,6 +157,68 @@ pending a serving benchmark (the serving process shares those cores). Those
 runs pinned the single top core (cpu19); `big` now confines the thread to the
 whole big-core set, so the scheduler can still move it off a busy core.
 
+### Serving benchmark of the two families (2026-10-05)
+
+spark-ds41f lab run `sparknet1` on the production TP4 recipe (r6 image, this
+checkout mounted over its package; lean profile, one boot per arm, bracket
+control at the end; `evidence/2026-10-05-tilelang-port/serving-bench`):
+
+| Arm | Prose, one stream | JSON, one stream | Eight streams | Cold prefill 16K |
+| --- | ---: | ---: | ---: | ---: |
+| CuTe (control) | 62.46 tok/s, 31.81 ms/step | 99.83 tok/s, 37.76 ms/step | 173.9 tok/s | 5,667 tok/s |
+| TileLang | 62.09 (-0.6%), 32.01 ms (+0.6%) | 98.85 (-1.0%), 38.15 ms (+1.0%) | 176.6 (+1.6%) | 5,676 |
+| CuTe, proxy on big cores | 62.45 (-0.0%), 31.81 ms | 99.39 (-0.4%), 37.84 ms (+0.2%) | 178.3 (+2.6%) | 5,704 |
+| TileLang, proxy on big cores | 61.78 (-1.1%), 32.15 ms (+1.0%) | 98.64 (-1.2%), 38.22 ms (+1.2%) | 175.2 (+0.8%) | 5,695 |
+| CuTe again (bracket) | 62.40 (-0.1%), 31.85 ms (+0.1%) | 99.36 (-0.5%), 37.85 ms (+0.2%) | 174.7 (+0.4%) | 5,714 |
+
+Both TileLang arms are 0.6 to 1.2 percent slower per single-stream decode
+step, beyond the bracket's 0.1 to 0.2 percent drift; eight streams, prefill,
+time to first token and mixed traffic are within noise, and the outputs are
+identical. Proxy pinning has no measurable serving effect in this profile.
+Neither is promoted: the rule is a measurable improvement in serving, and
+the default stays `cute`. The step difference is not explained by the
+collectives in isolation: `benchmarks/benchmark_oneshot.py` on the pair puts
+the graph-replayed latencies equal (TileLang 1 percent faster at 768 KiB and
+1 MiB) and TileLang's eager launch 15 us cheaper per call (27 against 43 us
+at 8 KiB, 80 against 97 us for a 6 by 38,720 gather), so the cause is in the
+serving context and still open.
+
+### Where the NCCL cut is (2026-10-05)
+
+One-shot forced up to the registered capacity against the NCCL-only profile
+of the same fabric, BF16, two runs each (`evidence/2026-10-05-tilelang-port/cut-*`):
+
+| Ring (TP4), all-reduce | One-shot (relay) | NCCL-only control |
+| --- | ---: | ---: |
+| 480 KiB | 94 to 96 us | 173 to 177 us |
+| 640 KiB | 119 to 120 us | 165 to 195 us |
+| 960 KiB | 158 to 162 us | 192 to 209 us |
+| 1.25 MiB | 211 to 219 us | 215 to 223 us |
+| 1.5 MiB | 252 to 259 us | 236 to 240 us |
+| 2 MiB | 307 to 324 us | 270 to 282 us |
+
+The ring's all-reduce crossover lies between 1.25 and 1.5 MiB against this
+control, and the policy's own large-collective path is the balanced
+four-channel NCCL, which is faster still, so the 1 MiB `tp4-ring` dispatch
+holds and is slightly conservative; TP4's largest decode shape (96 tokens,
+960 KiB) stays one-shot. The ring's one-shot all-gather beats the unbalanced
+control through 4 MiB (710 against 914 us) but not the balanced NCCL the
+profile uses (618 us at 4 MiB in `docs/nccl.md`), which puts that crossover
+near 2 MiB, where the shard limit is.
+
+| Pair, one cable | One-shot all-reduce | NCCL | One-shot all-gather | NCCL |
+| --- | ---: | ---: | ---: | ---: |
+| 480 KiB | 42 to 43 us | 114 to 115 us | 46 to 47 us | 111 to 115 us |
+| 2 MiB | 136 to 137 us | 193 to 199 us | 147 to 148 us | 225 to 233 us |
+| 4 MiB | 254 to 255 us | 318 to 329 us | 284 to 286 us | 407 to 409 us |
+
+On a pair the one-shot wins at every size through 4 MiB by a roughly
+constant 60 to 120 us, so the `tp2-direct` cut (dispatch equal to the 2 MiB
+capacity) is too low. Raising it means raising the registered capacity,
+which the vLLM fork also reads as its sequence-parallel threshold, so it is
+a serving change to be measured, not a transport setting to flip. The
+triangle (TP3) was not cabled and is unmeasured.
+
 Streaming the relay in chunks and a shared progress window were measured
 slower than whole-fragment forwarding (`2026-10-03-relay-progress`) and are
 not carried. NIC forwarding (`mesh4`) is carried but not recommended.
