@@ -402,6 +402,11 @@ def test_adapter_path_graph_replay(runtime):
     dist.barrier()
 
 
+# What a fail-stopped rank raises: its own timed-out wait ("poisoned"), or on the ring a
+# relay neighbour's proxy that saw the stopped peer first ("proxy failed").
+FAIL_STOP = "poisoned|proxy failed"
+
+
 def _fresh_runtime(spin_limit: int):
     """A runtime of its own with a short spin limit, for fault injection."""
     from sparknet import oneshot as roce
@@ -446,11 +451,11 @@ def test_fail_stop_on_timeout_eager(runtime):
     )  # enqueue succeeds: the fault is only visible once the kernel waited
     torch.cuda.synchronize()
     if rank != 1:
-        with pytest.raises(RuntimeError, match="poisoned"):
+        with pytest.raises(RuntimeError, match=FAIL_STOP):
             rt.check_health()
         assert rt.poisoned
         assert rt.stats()["epoch"] == epoch_before
-        with pytest.raises(RuntimeError, match="poisoned"):
+        with pytest.raises(RuntimeError, match=FAIL_STOP):
             rt.all_reduce(x)  # fatal, never a fallback
     else:
         rt.check_health()
@@ -458,7 +463,7 @@ def test_fail_stop_on_timeout_eager(runtime):
         torch.testing.assert_close(out, x * world)
         rt.all_reduce(x)
         torch.cuda.synchronize()
-        with pytest.raises(RuntimeError, match="poisoned"):
+        with pytest.raises(RuntimeError, match=FAIL_STOP):
             rt.check_health()
     assert rt.poisoned
     rt.close()  # teardown during failure must not hang
@@ -496,7 +501,7 @@ def test_fail_stop_on_timeout_graph_replay(runtime):
     o3.zero_()
     graph.replay()
     torch.cuda.synchronize()
-    with pytest.raises(RuntimeError, match="poisoned"):
+    with pytest.raises(RuntimeError, match=FAIL_STOP):
         rt.check_health()
     # no rank advanced past the failed sequence by more than the ops that
     # completed on the peers' payloads, and none produced the step's result
