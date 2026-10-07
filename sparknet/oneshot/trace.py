@@ -1,7 +1,7 @@
 """Per-op timing trace of the one-shot all-reduce: file layout, reader and analysis.
 
-Set ``SPARKNET_ROCE_TRACE=1`` before a runtime is created to trace it (CuTe kernel family
-only). The runtime then writes ``/dev/shm/sparknet-trace-r<rank>-p<pid>-<id>.bin``: a
+Set ``SPARKNET_ROCE_TRACE=1`` before a runtime is created to trace it (both kernel
+families). The runtime then writes ``/dev/shm/sparknet-trace-r<rank>-p<pid>-<id>.bin``: a
 4096-byte header, then ``RECORDS`` records of ``RECORD_WORDS`` little-endian u64 words,
 each op's record at its sequence number modulo ``RECORDS``. Tracing selects a separately
 compiled kernel; untraced runtimes run the same code as before and the proxy only tests a
@@ -58,6 +58,22 @@ PROXY_WORDS = ("seen", "posted", "relayed", "drained")
 W_PROXY_SEQ = W_PROXY + len(PROXY_WORDS)
 
 TOPOLOGY_CODES = {"direct": 0, "ring4": 1, "mesh4": 2}
+
+
+def device_defines() -> dict[str, int]:
+    """The record layout as the ``#define`` names the generated (TileLang) kernels use."""
+    return {
+        "ROCE_TRACE_HEADER_BYTES": HEADER_BYTES,
+        "ROCE_TRACE_RECORDS": RECORDS,
+        "ROCE_TRACE_RECORD_BYTES": RECORD_BYTES,
+        "ROCE_TRACE_W_SEQ": W_SEQ,
+        "ROCE_TRACE_W_START": W_START,
+        "ROCE_TRACE_W_DOORBELL": W_DOORBELL,
+        "ROCE_TRACE_W_WAIT_DONE": W_WAIT_DONE,
+        "ROCE_TRACE_W_END": W_END,
+        "ROCE_TRACE_W_META": W_META,
+        "ROCE_TRACE_W_FLAGS": W_FLAGS,
+    }
 _HEADER = struct.Struct("<8sIIIIIIIIqqq64s")
 
 

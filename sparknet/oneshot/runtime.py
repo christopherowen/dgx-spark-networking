@@ -406,8 +406,6 @@ class RoceOneshotAllReduce:
         self._trace_map: Any = None
         self._trace_anchor: Any = None
         self._trace_base = 0
-        if _trace.enabled() and self.kernel_family != "cute":
-            raise ValueError(f"{_trace.ENV_TRACE} is implemented for the cute kernel family only")
         self.hca_names, self.peer_hca_names, self.stripe_count = _resolve_hca_topology(
             world_size=self.world_size,
             rank=self.rank,

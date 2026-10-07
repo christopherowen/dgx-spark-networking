@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import random
+import re
 import struct
 import sys
 import tempfile
@@ -76,7 +77,7 @@ class TraceFormatTest(unittest.TestCase):
         self.assertIn("lib.roce_trace_open", (ROOT / "_proxy.py").read_text())
         runtime = (ROOT / "runtime.py").read_text()
         self.assertIn("_trace.W_PROXY", runtime)
-        self.assertIn("NotImplementedError", (ROOT / "_oneshot_tilelang.py").read_text())
+        self.assertIn("roce_trace_stamp", (ROOT / "_oneshot_tilelang.py").read_text())
 
     def test_untraced_kernels_compile_none_of_the_trace(self) -> None:
         lines = (ROOT / "_oneshot_cute.py").read_text().splitlines()
@@ -94,6 +95,36 @@ class TraceFormatTest(unittest.TestCase):
         self.assertEqual(guards, 5)  # start, doorbell, peer flags, wait done, end
         self.assertTrue(stores)
         self.assertTrue(all(i in guarded for i in stores), "a trace store outside const_expr(self._trace)")
+
+
+    def test_generated_kernels_trace_only_when_traced(self):
+        """In the TileLang all-reduce every trace call sits under an ``if traced:`` block."""
+        for module_name in ("_oneshot_tilelang.py",):
+            lines = (ROOT / module_name).read_text().splitlines()
+            guarded: set[int] = set()
+            for i, line in enumerate(lines):
+                if line.strip() == "if traced:":
+                    indent = len(line) - len(line.lstrip())
+                    j = i + 1
+                    while j < len(lines) and (not lines[j].strip() or len(lines[j]) - len(lines[j].lstrip()) > indent):
+                        guarded.add(j)
+                        j += 1
+            calls = [i for i, line in enumerate(lines) if '"roce_trace_' in line]
+            self.assertTrue(calls, module_name)
+            self.assertTrue(all(i in guarded for i in calls), f"{module_name}: a trace call outside 'if traced:'")
+
+    def test_device_header_uses_only_the_trace_layout(self):
+        spec = importlib.util.spec_from_file_location("sparknet_oneshot_device", ROOT / "_device.py")
+        device = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(device)
+        defines = trace.device_defines()
+        header = device.render_source(world_size=4, rank=0, slots=2, flag_stride=128, hca_count=4, neighbor_lanes=4,
+                                      trace=defines)
+        used = set(re.findall(r"ROCE_TRACE_[A-Z_]+", header))
+        self.assertTrue(used)
+        self.assertLessEqual(used, set(defines), used - set(defines))
+        self.assertIn("#define ROCE_TRACE 1", header)
+        self.assertEqual(defines["ROCE_TRACE_RECORDS"] & (defines["ROCE_TRACE_RECORDS"] - 1), 0)
 
 
 class TraceAnalysisTest(unittest.TestCase):

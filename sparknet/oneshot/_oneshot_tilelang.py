@@ -8,7 +8,9 @@ counters tensor), which bind the launch to the current device and stream,
 plus the pinned region's base address, offsets, indices and sizes as scalars.
 Message size and launch grid are runtime scalars; each power-of-two grid has
 its own staging and tail counters, as in the CuTe kernel. One launcher is
-compiled per dtype and geometry; ``run`` takes the family-neutral ``Launch``.
+compiled per dtype, geometry and trace choice; ``run`` takes the
+family-neutral ``Launch``. The traced kernel writes the CuTe kernels' trace
+words (``sparknet.oneshot.trace``); the untraced one compiles none of it.
 
 Importing this module needs nothing; ``get_launcher`` imports TileLang.
 """
@@ -21,6 +23,7 @@ import logging
 import time
 from typing import Callable
 
+from . import trace as _trace
 from ._device import PACK_BYTES, render_source
 from ._freeze import raise_if_kernel_resolution_frozen
 from ._kernels import Launch
@@ -62,17 +65,19 @@ def _pass_configs():
 
 
 def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int, flag_stride: int,
-           hca_count: int, ring4: bool):
+           hca_count: int, ring4: bool, traced: bool = False):
     """The TileLang program for one specialization."""
     import tilelang
     import tilelang.language as T
 
     lanes, neighbor_lanes = _lanes(hca_count, ring4)
     source = render_source(world_size=world_size, rank=rank, slots=slots, flag_stride=flag_stride,
-                           hca_count=lanes, neighbor_lanes=neighbor_lanes)
+                           hca_count=lanes, neighbor_lanes=neighbor_lanes,
+                           trace=_trace.device_defines() if traced else None)
     reduce_pack = _REDUCE_FUNCTION[dtype_name]
     resident = _resident_blocks(threads)
     pack_words = PACK_BYTES // 4
+    w_doorbell, w_wait_done, w_end = _trace.W_DOORBELL, _trace.W_WAIT_DONE, _trace.W_END
 
     @tilelang.jit(pass_configs=_pass_configs())
     def program():
@@ -96,6 +101,7 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
             poison_index: T.int32,
             spin_limit: T.int32,
             grid_x: T.int32,
+            trace_base: T.int64,
         ):
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
@@ -121,6 +127,11 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                 poisoned = T.alloc_var(T.uint32)
                 poisoned = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
                 if poisoned == T.uint32(0):
+                    if traced:
+                        if bx == 0:
+                            if tx == 0:
+                                T.call_extern("roce_trace_begin", trace_base, seq, T.cast(nbytes, T.uint32),
+                                              T.cast(grid_x, T.uint32), dtype="handle")
                     # 1. stage the input into the pinned send slot
                     count = T.alloc_var(T.int32)
                     count = T.max(0, (size_packs - index + stride - 1) // stride)
@@ -131,12 +142,25 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                     T.sync_threads()
                     # 2. the last block to finish staging rings the proxy doorbell
                     if tx == 0:
-                        T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
-                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype="handle")
+                        rang = T.alloc_var(T.uint32)
+                        rang = T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
+                                             T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype=T.uint32)
+                        if traced:
+                            if rang != T.uint32(0):
+                                T.call_extern("roce_trace_stamp", trace_base, seq, w_doorbell, dtype="handle")
                     # 3. wait for every peer's payload-stripe flags
-                    T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq, T.cast(spin_limit, T.uint32),
-                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[poison_index]), dtype="handle")
+                    if traced:
+                        T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq, T.cast(spin_limit, T.uint32),
+                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[poison_index]),
+                                      T.call_extern("roce_trace_record_if", trace_base, seq, T.cast(bx == 0, T.int32), dtype="handle"), dtype="handle")
+                    else:
+                        T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq, T.cast(spin_limit, T.uint32),
+                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[poison_index]), dtype="handle")
                     T.sync_threads()
+                    if traced:
+                        if bx == 0:
+                            if tx == 0:
+                                T.call_extern("roce_trace_stamp", trace_base, seq, w_wait_done, dtype="handle")
                     # A wait that timed out in this block leaves the peer slot
                     # unreliable: skip the data phase.
                     failed = T.alloc_var(T.uint32)
@@ -152,17 +176,22 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                     T.call_extern("roce_fence_sc_gpu", dtype="handle")
                     T.sync_threads()
                     if tx == 0:
-                        T.call_extern("roce_tail", T.address_of(counters[tail_index]), T.cast(grid_x, T.uint32),
-                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[0]), seq, dtype="handle")
+                        last = T.alloc_var(T.uint32)
+                        last = T.call_extern("roce_tail", T.address_of(counters[tail_index]), T.cast(grid_x, T.uint32),
+                                             T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[0]), seq, dtype=T.uint32)
+                        if traced:
+                            if last != T.uint32(0):
+                                T.call_extern("roce_trace_stamp", trace_base, seq, w_end, dtype="handle")
 
         return oneshot_allreduce
 
     return program
 
 
-def _process_key(dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, device_index, ring4=False):
+def _process_key(dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, device_index, ring4=False,
+                 trace=False):
     return (str(dtype_name), int(world_size), int(rank), int(threads), int(slots), int(flag_stride), int(hca_count),
-            int(device_index), bool(ring4))
+            int(device_index), bool(ring4), bool(trace))
 
 
 def is_launcher_prepared(*key) -> bool:
@@ -184,8 +213,6 @@ def get_launcher(
     trace: bool = False,
 ) -> Callable[[Launch], None]:
     """Compile the launcher for the key once and return it."""
-    if trace:
-        raise NotImplementedError("SPARKNET_ROCE_TRACE is implemented for the cute kernel family only")
     if dtype_name not in _DTYPE_PACK_ELEMS:
         raise ValueError(f"unsupported RoCE one-shot dtype {dtype_name!r}")
     lanes, _ = _lanes(hca_count, ring4)
@@ -194,20 +221,24 @@ def get_launcher(
             "RoCE kernels need threads >= world_size * hca_count (one thread per stripe flag), "
             f"got threads={threads} world_size={world_size} hca_count={lanes}"
         )
-    process_key = _process_key(dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, device_index, ring4)
-    cache_key = process_key[:-2] + (bool(ring4),)
+    if trace and int(world_size) * lanes > _trace.MAX_FLAG_WORDS:
+        raise ValueError(f"the trace record holds {_trace.MAX_FLAG_WORDS} peer lanes, got {int(world_size) * lanes}")
+    process_key = _process_key(dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, device_index, ring4,
+                               trace)
+    cache_key = process_key[:7] + process_key[8:]
     raise_if_kernel_resolution_frozen("tilelang.jit", target="oneshot_allreduce", cache_key=cache_key)
     started = time.monotonic()
-    kernel = _build(dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, ring4)()
+    kernel = _build(dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, ring4, bool(trace))()
     logger.info("compiled tilelang oneshot.allreduce %s in %.1f s", cache_key, time.monotonic() - started)
 
     def run(launch: Launch) -> None:
         """Launch the compiled kernel on the current stream (bound through the tensor arguments)."""
         kernel(
-            launch.input, launch.output, launch.counters, int(launch.region.data_ptr()),
-            int(launch.size_packs), int(launch.nbytes), int(launch.recv_off), int(launch.flag_off), int(launch.send_off),
-            int(launch.ctrl_off), int(launch.slot_bytes), int(launch.stage_index), int(launch.tail_index),
-            int(launch.poison_index), int(launch.spin_limit), int(launch.grid_x),
+            launch.input, launch.output, launch.counters,
+            int(launch.region.data_ptr()), int(launch.size_packs), int(launch.nbytes), int(launch.recv_off),
+            int(launch.flag_off), int(launch.send_off), int(launch.ctrl_off), int(launch.slot_bytes),
+            int(launch.stage_index), int(launch.tail_index), int(launch.poison_index), int(launch.spin_limit),
+            int(launch.grid_x), int(launch.trace_base),
         )
 
     _PREPARED_LAUNCHERS.add(process_key)

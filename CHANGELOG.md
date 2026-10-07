@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Per-op timing trace (`SPARKNET_ROCE_TRACE=1`, `sparknet.oneshot.trace`):
+  the kernels stamp `%globaltimer` at start, doorbell, every peer lane's
+  flag, end of wait and end; the proxy stamps doorbell seen, posts, relay
+  and drain on `CLOCK_MONOTONIC_RAW`, put on the GPU clock by a per-node
+  calibration; the analysis estimates pair clock offsets from the two-way
+  exchanges. Both kernel families; untraced kernels compile none of it.
 - The TileLang kernels declare full residency (`T.annotate_min_blocks_per_sm`
   with the SM's thread limit over the launch's threads: 3 of 512 on the
   GB10), which bounds them to CuTe's 40 registers. Left to nvcc they used 54

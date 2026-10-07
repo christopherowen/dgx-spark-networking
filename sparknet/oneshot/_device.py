@@ -18,6 +18,8 @@ device buffers and with ``roce_ptr`` on the pinned region's base address.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 PACK_BYTES = 16
 
 # Functions the kernels call. Kept in one place so a test can check the
@@ -40,6 +42,12 @@ FUNCTIONS = (
     "roce_reduce_pack_f16",
     "roce_reduce_pack_bf16",
     "roce_gather_pack",
+    "roce_globaltimer",
+    "roce_trace_record",
+    "roce_trace_store",
+    "roce_trace_record_if",
+    "roce_trace_begin",
+    "roce_trace_stamp",
 )
 
 _HEADER = r"""
@@ -83,6 +91,43 @@ __device__ __forceinline__ void roce_st_release_gpu_u32(void *p, roce_u32 x) {
 __device__ __forceinline__ void roce_st_relaxed_sys_u32(void *p, roce_u32 x) {
     asm volatile("st.relaxed.sys.global.u32 [%0], %1;" :: "l"(p), "r"(x) : "memory");
 }
+
+// Trace (SPARKNET_ROCE_TRACE): %globaltimer stamps into the op's record of the
+// pinned trace file, as the CuTe kernels write them (sparknet.oneshot.trace).
+__device__ __forceinline__ unsigned long long roce_globaltimer() {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
+#if ROCE_TRACE
+__device__ __forceinline__ roce_byte *roce_trace_record(long long trace_base, roce_u32 seq) {
+    return roce_ptr(trace_base) + ROCE_TRACE_HEADER_BYTES
+        + (long long)(seq & (roce_u32)(ROCE_TRACE_RECORDS - 1)) * ROCE_TRACE_RECORD_BYTES;
+}
+
+__device__ __forceinline__ void roce_trace_store(roce_byte *record, int word, unsigned long long value) {
+    asm volatile("st.relaxed.sys.global.u64 [%0], %1;" :: "l"(record + 8 * (long long)word), "l"(value) : "memory");
+}
+
+// Block 0's record for the flag arrivals, nothing for the other blocks.
+__device__ __forceinline__ roce_byte *roce_trace_record_if(long long trace_base, roce_u32 seq, int take) {
+    return take ? roce_trace_record(trace_base, seq) : nullptr;
+}
+
+// The op's first words: start time, sequence, and nbytes | grid << 32.
+__device__ __forceinline__ void roce_trace_begin(long long trace_base, roce_u32 seq, roce_u32 nbytes, roce_u32 grid) {
+    roce_byte *record = roce_trace_record(trace_base, seq);
+    roce_trace_store(record, ROCE_TRACE_W_START, roce_globaltimer());
+    roce_trace_store(record, ROCE_TRACE_W_SEQ, (unsigned long long)seq);
+    roce_trace_store(record, ROCE_TRACE_W_META, (unsigned long long)nbytes | ((unsigned long long)grid << 32));
+}
+
+// The current time into one word of the op's record.
+__device__ __forceinline__ void roce_trace_stamp(long long trace_base, roce_u32 seq, int word) {
+    roce_trace_store(roce_trace_record(trace_base, seq), word, roce_globaltimer());
+}
+#endif
 
 __device__ __forceinline__ void roce_fence_sc_sys() { asm volatile("fence.sc.sys;" ::: "memory"); }
 
@@ -159,9 +204,10 @@ __device__ __forceinline__ roce_u32 roce_pack_f32x2_to_f16x2(float lo, float hi)
 }
 
 // Phase 2: the last block to finish staging publishes nbytes (per slot) and
-// then seq in the control record the proxy thread polls.
-__device__ __forceinline__ void roce_doorbell(void *stage_counter, roce_u32 grid, roce_byte *ctrl,
-                                              roce_u32 nbytes, roce_u32 seq) {
+// then seq in the control record the proxy thread polls; returns 1 in that
+// block.
+__device__ __forceinline__ roce_u32 roce_doorbell(void *stage_counter, roce_u32 grid, roce_byte *ctrl,
+                                                  roce_u32 nbytes, roce_u32 seq) {
     roce_fence_sc_sys();
     roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(stage_counter, 1u);
     if ((prior + 1u) % grid == 0u) {
@@ -170,14 +216,17 @@ __device__ __forceinline__ void roce_doorbell(void *stage_counter, roce_u32 grid
         roce_st_relaxed_sys_u32(ctrl + 16 + slot * 4, nbytes);
         roce_fence_sc_sys();
         roce_st_relaxed_sys_u32(ctrl, seq);
+        return 1u;
     }
+    return 0u;
 }
 
 // Phase 3: one thread per (peer, flag lane) waits for that lane's flag. A
 // timeout records seq, the peer and the lane in the control record and
-// poisons the runtime.
+// poisons the runtime. A traced kernel passes block 0's trace record, which
+// gets every lane's arrival time.
 __device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags, roce_u32 seq, roce_u32 spin_limit,
-                                                roce_byte *ctrl, void *poison) {
+                                                roce_byte *ctrl, void *poison, roce_byte *trace_record = nullptr) {
     if (tidx < ROCE_WORLD * ROCE_HCA_COUNT) {
         int peer = tidx / ROCE_HCA_COUNT;
         int hca = tidx - peer * ROCE_HCA_COUNT;
@@ -189,6 +238,11 @@ __device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags
             long long slot = (long long)(seq & 1u);
             const roce_byte *flag = flags + (((long long)peer * ROCE_SLOTS + slot) * ROCE_HCA_COUNT + hca) * ROCE_FLAG_STRIDE;
             roce_u32 timed_out = roce_spin_until_eq_acquire_sys(flag, seq, spin_limit);
+#if ROCE_TRACE
+            if (trace_record != nullptr && timed_out == 0u) {
+                roce_trace_store(trace_record, ROCE_TRACE_W_FLAGS + peer * ROCE_HCA_COUNT + hca, roce_globaltimer());
+            }
+#endif
             if (timed_out != 0u) {
                 roce_st_relaxed_sys_u32(ctrl + 12, (roce_u32)peer);
                 roce_st_relaxed_sys_u32(ctrl + 24, (roce_u32)hca);
@@ -200,16 +254,19 @@ __device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags
 }
 
 // Phase 5: the last block to finish publishes the next epoch, unless a
-// timeout was recorded (a failed sequence keeps the epoch).
-__device__ __forceinline__ void roce_tail(void *tail_counter, roce_u32 grid, const roce_byte *ctrl,
-                                          void *epoch, roce_u32 seq) {
+// timeout was recorded (a failed sequence keeps the epoch); returns 1 in that
+// block.
+__device__ __forceinline__ roce_u32 roce_tail(void *tail_counter, roce_u32 grid, const roce_byte *ctrl,
+                                              void *epoch, roce_u32 seq) {
     roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(tail_counter, 1u);
     if ((prior + 1u) % grid == 0u) {
         roce_fence_sc_gpu();
         if (roce_ld_relaxed_sys_u32(ctrl + 8) == 0u) {
             roce_st_release_gpu_u32(epoch, seq);
         }
+        return 1u;
     }
+    return 0u;
 }
 
 // The pack at byte offset ``offset`` of ``source``: the local input, or the peer's receive slot.
@@ -324,8 +381,13 @@ __device__ __forceinline__ void roce_gather_pack(const void *input, const void *
 """
 
 
-def render_source(*, world_size: int, rank: int, slots: int, flag_stride: int, hca_count: int, neighbor_lanes: int) -> str:
-    """The header for one launcher specialization, constants first."""
+def render_source(*, world_size: int, rank: int, slots: int, flag_stride: int, hca_count: int, neighbor_lanes: int,
+                  trace: Mapping[str, int] | None = None) -> str:
+    """The header for one launcher specialization, constants first.
+
+    ``trace`` is the trace record layout (``sparknet.oneshot.trace.device_defines()``)
+    for a traced kernel.
+    """
     defines = {
         "ROCE_WORLD": int(world_size),
         "ROCE_RANK": int(rank),
@@ -333,7 +395,10 @@ def render_source(*, world_size: int, rank: int, slots: int, flag_stride: int, h
         "ROCE_FLAG_STRIDE": int(flag_stride),
         "ROCE_HCA_COUNT": int(hca_count),
         "ROCE_NEIGHBOR_LANES": int(neighbor_lanes),
+        "ROCE_TRACE": 1 if trace else 0,
     }
+    if trace:
+        defines.update({name: int(value) for name, value in trace.items()})
     return "".join(f"#define {name} {value}\n" for name, value in defines.items()) + _HEADER
 
 

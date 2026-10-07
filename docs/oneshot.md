@@ -82,6 +82,7 @@ traffic class fall back to NCCL's own settings.
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
 | `SPARKNET_ROCE_KERNELS` | kernel family, `cute` (default) or `tilelang`; see Kernel families below |
+| `SPARKNET_ROCE_TRACE` | `1`: per-op timing trace of the all-reduce (both families), see `sparknet.oneshot.trace` |
 | `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it to that core; `big` confines it to the big-core cluster, the cores above the midpoint between the smallest and largest `cpu_capacity` (GB10: the ten Cortex-X925 at 997 to 1024, excluding the ten Cortex-A725 at 718 to 731). `stats()` reports `proxy_cpus` and `proxy_cpu_observed`. Measured on the probe (see below), a candidate for the recipe environment pending a serving benchmark |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
