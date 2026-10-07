@@ -123,6 +123,14 @@ class FleetTest(unittest.TestCase):
         self.assertEqual(by_ip[1].target, "me@192.0.2.2")
         self.assertEqual(fleet.ssh_command(plans[0], ("ssh",))[:2], ["ssh", "spark@dgx1"])
 
+    def test_bootstrap_warns_without_a_gloo_interface(self):
+        warnings = fleet.bootstrap_warnings(self.nodes, self.environments)
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("management_interface", warnings[0])
+        rendered = {name: dict(env, GLOO_SOCKET_IFNAME="enP7s7") for name, env in self.environments.items()}
+        self.assertEqual(fleet.bootstrap_warnings(self.nodes, rendered), [])
+        self.assertEqual(fleet.bootstrap_warnings(self.nodes, self.environments, {"GLOO_SOCKET_IFNAME": "eth0"}), [])
+
     def test_run_collects_receipts_and_reports_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "fake_ssh.py"

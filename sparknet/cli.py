@@ -280,8 +280,11 @@ def cmd_probe_fleet(args) -> int:
     errors = _profile_errors(args, nodes)
     if errors:
         return _report(errors, args.nodes)
+    environments = _fleet_environments(args, nodes)
+    for warning in fleet.bootstrap_warnings(nodes, environments, _extra_env(args.env)):
+        print(f"warning: {warning}", file=sys.stderr)
     plans = fleet.plan(
-        nodes, _fleet_environments(args, nodes), transport=args.transport, image=args.image, port=args.port,
+        nodes, environments, transport=args.transport, image=args.image, port=args.port,
         probe_args=tuple(args.probe_args or ()), probe_source=args.probe_source, package_source=args.package_source,
         extra_env=_extra_env(args.env), ssh_user=args.ssh_user, target_field=args.target,
     )

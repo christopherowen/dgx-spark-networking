@@ -77,6 +77,27 @@ def plan(
     return plans
 
 
+def bootstrap_warnings(nodes: dict, environments: dict[str, dict[str, str]],
+                       extra_env: dict[str, str] | None = None) -> list[str]:
+    """Ranks whose Gloo bootstrap would bind to the address their hostname resolves to.
+
+    Without ``GLOO_SOCKET_IFNAME`` (rendered from the map's ``management_interface``),
+    Gloo binds to the hostname's address, which many hosts map to 127.0.0.1; the
+    peers then cannot connect and the probe times out in its process group setup.
+    """
+    warnings = []
+    for node in sorted(nodes["nodes"], key=lambda n: n["rank"]):
+        env = dict(environments.get(node["name"], {}))
+        env.update(extra_env or {})
+        if "GLOO_SOCKET_IFNAME" not in env:
+            warnings.append(
+                f"{node['name']}: no GLOO_SOCKET_IFNAME (the map has no management_interface); the probe's Gloo "
+                "bootstrap binds to the hostname's address, which is loopback on many hosts; add "
+                "management_interface to the map or pass --env GLOO_SOCKET_IFNAME=<interface>"
+            )
+    return warnings
+
+
 def ssh_command(item: RankPlan, ssh: tuple[str, ...] = DEFAULT_SSH) -> list[str]:
     return [*ssh, item.target, shlex.join(item.command)]
 
