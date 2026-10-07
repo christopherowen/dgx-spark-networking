@@ -181,8 +181,11 @@ def get_launcher(
     hca_count: int,
     device_index: int,
     ring4: bool = False,
+    trace: bool = False,
 ) -> Callable[[Launch], None]:
     """Compile the launcher for the key once and return it."""
+    if trace:
+        raise NotImplementedError("SPARKNET_ROCE_TRACE is implemented for the cute kernel family only")
     if dtype_name not in _DTYPE_PACK_ELEMS:
         raise ValueError(f"unsupported RoCE one-shot dtype {dtype_name!r}")
     lanes, _ = _lanes(hca_count, ring4)

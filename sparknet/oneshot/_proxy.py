@@ -146,6 +146,8 @@ def load() -> ctypes.CDLL:
         lib.roce_hca_stat.argtypes = [p, ctypes.c_int, ctypes.c_int]
         lib.roce_proxy_cpus.restype = ctypes.c_int
         lib.roce_proxy_cpus.argtypes = [p, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+        lib.roce_trace_open.restype = ctypes.c_int
+        lib.roce_trace_open.argtypes = [p, ctypes.c_char_p, u64, u64, u64, u64]
         lib.roce_destroy.restype = None
         lib.roce_destroy.argtypes = [p]
         if lib.roce_abi_version() != 10:
@@ -262,6 +264,13 @@ class Proxy:
         buf = ctypes.create_string_buffer(joined, len(joined))
         if self._lib.roce_connect(self._ctx, buf, len(joined)) != 0:
             raise RuntimeError(f"RoCE queue-pair connect failed: {self.error()}")
+
+    def trace_open(self, path: str, header_bytes: int, records: int, record_bytes: int, proxy_word: int) -> None:
+        """Map a trace file so the proxy thread records its per-op times in it; before ``start``."""
+        if self._lib.roce_trace_open(
+            self._ctx, os.fsencode(path), int(header_bytes), int(records), int(record_bytes), int(proxy_word)
+        ) != 0:
+            raise RuntimeError(f"RoCE proxy trace: {self.error()}")
 
     def start(self) -> None:
         """Start the proxy thread; a restart resumes from the last posted sequence."""

@@ -51,6 +51,7 @@ class Launch:
     spin_limit: int
     grid_x: int
     row_packs: int = 0  # all-gather only: packs per row of the shard (dim-0 gathers: the shard's packs)
+    trace_base: int = 0  # all-reduce trace file address (pinned, device-visible), 0 when untraced
 
 
 def family(explicit: str | None = None) -> str:

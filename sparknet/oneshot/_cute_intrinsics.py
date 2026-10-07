@@ -104,6 +104,25 @@ def st_relaxed_sys_u32(addr: Int64, value: Uint32, *, loc=None, ip=None) -> None
 
 
 @dsl_user_op
+def st_relaxed_sys_u64(addr: Int64, value: Int64, *, loc=None, ip=None) -> None:
+    """System-scope relaxed 64-bit store (trace records in pinned host memory)."""
+    _asm(
+        None,
+        [Int64(addr).ir_value(loc=loc, ip=ip), Int64(value).ir_value(loc=loc, ip=ip)],
+        "st.relaxed.sys.global.u64 [$0], $1;",
+        "l,l",
+        loc=loc,
+        ip=ip,
+    )
+
+
+@dsl_user_op
+def globaltimer(*, loc=None, ip=None) -> Int64:
+    """The GPU's global nanosecond timer (``%globaltimer``)."""
+    return Int64(_asm(T.i64(), [], "mov.u64 $0, %globaltimer;", "=l", loc=loc, ip=ip))
+
+
+@dsl_user_op
 def fence_sc_sys(*, loc=None, ip=None) -> None:
     """Sequentially consistent system-scope fence."""
     _asm(None, [], "fence.sc.sys;", "", loc=loc, ip=ip)

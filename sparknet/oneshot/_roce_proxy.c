@@ -31,6 +31,7 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <infiniband/verbs.h>
 #include <pthread.h>
 #include <sched.h>
@@ -39,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -121,6 +123,16 @@ typedef struct {
     uint64_t proxy_cpu_mask[ROCE_CPU_WORDS];
     int proxy_cpu_count;
     int proxy_cpu_observed_plus1;
+    // Optional per-op trace (SPARKNET_ROCE_TRACE): CLOCK_MONOTONIC_RAW times of
+    // the doorbell seen, the direct posts done, the ring relay done and the
+    // completions drained, written by sequence into the runtime's shared trace
+    // file beside the kernel's GPU timestamps. NULL when tracing is off.
+    uint8_t *trace;
+    size_t trace_bytes;
+    uint64_t trace_header_bytes;
+    uint64_t trace_records;
+    uint64_t trace_record_bytes;
+    uint64_t trace_proxy_word;
     char err[512];
 } roce_ctx_t;
 
@@ -131,6 +143,21 @@ static void set_err(roce_ctx_t *c, const char *what, int e) {
 }
 
 int roce_abi_version(void) { return ROCE_ABI_VERSION; }
+
+// Trace marks, by the index of the proxy word they fill in a record.
+enum { TRACE_SEEN = 0, TRACE_POSTED = 1, TRACE_RELAYED = 2, TRACE_DRAINED = 3 };
+
+static inline void trace_mark(roce_ctx_t *c, uint32_t seq, int which) {
+    if (c->trace == NULL) {
+        return;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+    uint64_t *record = (uint64_t *)(c->trace + c->trace_header_bytes +
+                                    (size_t)(seq % c->trace_records) * c->trace_record_bytes);
+    __atomic_store_n(&record[c->trace_proxy_word + (uint64_t)which],
+                     (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec, __ATOMIC_RELAXED);
+}
 
 static void mask_set(uint64_t *mask, long cpu) { mask[cpu / 64] |= (uint64_t)1 << (cpu % 64); }
 
@@ -846,8 +873,10 @@ static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
             post_peer(c, seq, nbytes, c->rank, p, send) != 0) return -1;
     }
     }
+    trace_mark(c, seq, TRACE_POSTED);
     if (c->ring4 == 1) {
         if (relay_both_directions(c, seq, nbytes) != 0) return -1;
+        trace_mark(c, seq, TRACE_RELAYED);
     }
     c->ops_posted += 1;
     for (int h = 0; h < c->n_hca; h++) {
@@ -855,6 +884,7 @@ static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
             return -1;
         }
     }
+    trace_mark(c, seq, TRACE_DRAINED);
     return 0;
 }
 
@@ -904,6 +934,7 @@ static void *proxy_main(void *arg) {
             return NULL;
         }
         for (uint32_t s = c->last_seq + 1; pending > 0; s++, pending--) {
+            trace_mark(c, s, TRACE_SEEN);
             uint32_t nbytes = ctrl[4 + (s & 1u)];
             if (post_op(c, s, nbytes) != 0) {
                 atomic_store(&c->failed, 1);
@@ -913,6 +944,39 @@ static void *proxy_main(void *arg) {
         }
     }
     return NULL;
+}
+
+// Map the runtime's trace file (header, then records of record_bytes) so the
+// proxy thread can fill its words of each op's record. Call before roce_start.
+int roce_trace_open(roce_ctx_t *c, const char *path, uint64_t header_bytes, uint64_t records,
+                    uint64_t record_bytes, uint64_t proxy_word) {
+    uint64_t bytes;
+    if (c->trace != NULL || atomic_load(&c->running) || records == 0 || record_bytes % 8 != 0 ||
+        (proxy_word + 4) * 8 > record_bytes ||
+        __builtin_mul_overflow(records, record_bytes, &bytes) ||
+        __builtin_add_overflow(bytes, header_bytes, &bytes)) {
+        snprintf(c->err, sizeof(c->err), "invalid trace geometry or proxy already running");
+        return -1;
+    }
+    int fd = open(path, O_RDWR);
+    if (fd < 0) {
+        set_err(c, "open trace file", errno);
+        return -1;
+    }
+    void *map = mmap(NULL, (size_t)bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int saved = errno;
+    close(fd);
+    if (map == MAP_FAILED) {
+        set_err(c, "mmap trace file", saved);
+        return -1;
+    }
+    c->trace = (uint8_t *)map;
+    c->trace_bytes = (size_t)bytes;
+    c->trace_header_bytes = header_bytes;
+    c->trace_records = records;
+    c->trace_record_bytes = record_bytes;
+    c->trace_proxy_word = proxy_word;
+    return 0;
 }
 
 int roce_start(roce_ctx_t *c) {
@@ -998,6 +1062,9 @@ void roce_destroy(roce_ctx_t *c) {
         return;
     }
     roce_stop(c);
+    if (c->trace != NULL) {
+        munmap(c->trace, c->trace_bytes);
+    }
     for (int h = 0; h < ROCE_MAX_LOCAL_HCAS; h++) {
         roce_hca_t *hca = &c->hca[h];
         for (int p = 0; p < ROCE_MAX_PEERS; p++) {

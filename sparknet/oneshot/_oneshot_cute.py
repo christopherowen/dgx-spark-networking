@@ -51,6 +51,7 @@ from ._cute_intrinsics import (
     f32_as_u32,
     fence_sc_gpu,
     fence_sc_sys,
+    globaltimer,
     ld_global_v4_u32,
     ld_relaxed_gpu_u32,
     ld_relaxed_sys_u32,
@@ -61,10 +62,13 @@ from ._cute_intrinsics import (
     st_global_v4_u32,
     st_release_gpu_u32,
     st_relaxed_sys_u32,
+    st_relaxed_sys_u64,
     u32_as_f32,
     unpack_bf16x2,
     unpack_f16x2,
 )
+
+from . import trace as _trace
 
 PACK_BYTES = 16
 _DTYPE_PACK_ELEMS = {"float32": 4, "float16": 8, "bfloat16": 8}
@@ -82,8 +86,12 @@ class _RoceOneshotLaunch:
         flag_stride: int,
         hca_count: int,
         ring4: bool = False,
+        trace: bool = False,
     ) -> None:
-        """Bind one kernel specialization: dtype, world size, rank, and layout constants."""
+        """Bind one kernel specialization: dtype, world size, rank, and layout constants.
+
+        ``trace`` compiles the timestamp writes of ``sparknet.oneshot.trace``; without it
+        none of them exists in the kernel."""
         if dtype_name not in _DTYPE_PACK_ELEMS:
             raise ValueError(f"unsupported RoCE one-shot dtype {dtype_name!r}")
         neighbor_lanes = int(hca_count) if ring4 else (2 if hca_count == 4 else int(hca_count))
@@ -103,6 +111,10 @@ class _RoceOneshotLaunch:
         self._flag_stride = int(flag_stride)
         self._hca_count = int(hca_count)
         self._neighbor_lanes = neighbor_lanes
+        self._trace = bool(trace)
+        if self._trace and self._world_size * self._hca_count > _trace.MAX_FLAG_WORDS:
+            raise ValueError("SPARKNET_ROCE_TRACE records at most "
+                             f"{_trace.MAX_FLAG_WORDS} peer lanes, got {self._world_size * self._hca_count}")
 
     @cute.jit
     def _accumulate_words(
@@ -169,6 +181,7 @@ class _RoceOneshotLaunch:
         stage_counter_ptr: Int64,
         tail_counter_ptr: Int64,
         poison_ptr: Int64,
+        trace_base: Int64,
         spin_limit: Uint32,
         grid_x: Int32,
         stream: cuda.CUstream,
@@ -188,6 +201,7 @@ class _RoceOneshotLaunch:
             stage_counter_ptr,
             tail_counter_ptr,
             poison_ptr,
+            trace_base,
             spin_limit,
         ).launch(
             grid=(grid_x, 1, 1),
@@ -212,6 +226,7 @@ class _RoceOneshotLaunch:
         stage_counter_ptr: Int64,
         tail_counter_ptr: Int64,
         poison_ptr: Int64,
+        trace_base: Int64,
         spin_limit: Uint32,
     ) -> None:
         """Device kernel: stage, doorbell, wait for peer flags, reduce, advance the epoch."""
@@ -237,6 +252,18 @@ class _RoceOneshotLaunch:
         # the failed sequence, so a cheap GPU-scope load is enough here.
         poisoned = ld_relaxed_gpu_u32(poison_ptr)
         if poisoned == Uint32(0):
+            if cutlass.const_expr(self._trace):
+                record = trace_base + Int64(_trace.HEADER_BYTES) + Int64(
+                    seq & Uint32(_trace.RECORDS - 1)
+                ) * Int64(_trace.RECORD_BYTES)
+                if Int32(bidx) == Int32(0):
+                    if Int32(tidx) == Int32(0):
+                        st_relaxed_sys_u64(record + Int64(8 * _trace.W_START), globaltimer())
+                        st_relaxed_sys_u64(record + Int64(8 * _trace.W_SEQ), Int64(seq))
+                        st_relaxed_sys_u64(
+                            record + Int64(8 * _trace.W_META),
+                            Int64(nbytes) + Int64(gdim) * Int64(1 << 32),
+                        )
             # 1. stage the input into the pinned send slot
             stage_index = index
             while stage_index < size_packs:
@@ -264,6 +291,8 @@ class _RoceOneshotLaunch:
                     )
                     fence_sc_sys()
                     st_relaxed_sys_u32(ctrl_base, seq)
+                    if cutlass.const_expr(self._trace):
+                        st_relaxed_sys_u64(record + Int64(8 * _trace.W_DOORBELL), globaltimer())
 
             # 3. wait for every peer's payload-stripe flags
             if Int32(tidx) < Int32(self._world_size * self._hca_count):
@@ -279,12 +308,25 @@ class _RoceOneshotLaunch:
                         + Int64(hca)
                     ) * Int64(self._flag_stride)
                     timed_out = spin_until_eq_acquire_sys(flag_addr, seq, spin_limit)
+                    if cutlass.const_expr(self._trace):
+                        if Int32(bidx) == Int32(0):
+                            if timed_out == Uint32(0):
+                                st_relaxed_sys_u64(
+                                    record
+                                    + Int64(8 * _trace.W_FLAGS)
+                                    + Int64(8) * Int64(peer * Int32(self._hca_count) + hca),
+                                    globaltimer(),
+                                )
                     if timed_out != Uint32(0):
                         st_relaxed_sys_u32(ctrl_base + Int64(12), Uint32(peer))
                         st_relaxed_sys_u32(ctrl_base + Int64(24), Uint32(hca))
                         st_relaxed_sys_u32(ctrl_base + Int64(8), seq)
                         st_release_gpu_u32(poison_ptr, seq)
             cute.arch.sync_threads()
+            if cutlass.const_expr(self._trace):
+                if Int32(bidx) == Int32(0):
+                    if Int32(tidx) == Int32(0):
+                        st_relaxed_sys_u64(record + Int64(8 * _trace.W_WAIT_DONE), globaltimer())
             # A wait that timed out in this block leaves the peer slot unreliable:
             # skip the data phase so nothing derived from it is stored.
             failed = ld_relaxed_gpu_u32(poison_ptr)
@@ -317,6 +359,8 @@ class _RoceOneshotLaunch:
                 prior = atomic_add_relaxed_gpu_u32(tail_counter_ptr, Uint32(1))
                 if (prior + Uint32(1)) % Uint32(gdim) == Uint32(0):
                     fence_sc_gpu()
+                    if cutlass.const_expr(self._trace):
+                        st_relaxed_sys_u64(record + Int64(8 * _trace.W_END), globaltimer())
                     # Every block's timeout store precedes its tail arrival, so the
                     # error word is final here.  A failed sequence keeps the epoch,
                     # which makes every later launch a no-op until the host raises.
@@ -339,6 +383,7 @@ def _process_key(
     hca_count: int,
     device_index: int,
     ring4: bool = False,
+    trace: bool = False,
 ) -> tuple[object, ...]:
     """Cache key of one compiled launcher specialization."""
     return (
@@ -351,6 +396,7 @@ def _process_key(
         int(hca_count),
         int(device_index),
         bool(ring4),
+        bool(trace),
     )
 
 
@@ -371,6 +417,7 @@ def get_launcher(
     hca_count: int,
     device_index: int,
     ring4: bool = False,
+    trace: bool = False,
 ) -> Callable[..., None]:
     """Compile the launcher for ``key`` once and return it."""
     process_key = _process_key(
@@ -383,10 +430,11 @@ def get_launcher(
         hca_count,
         device_index,
         ring4,
+        trace,
     )
     del device_index  # retained in the functools and preparation keys only
     launch = _RoceOneshotLaunch(
-        dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, ring4
+        dtype_name, world_size, rank, threads, slots, flag_stride, hca_count, ring4, trace
     )
     cache_key = (
         str(dtype_name),
@@ -397,6 +445,7 @@ def get_launcher(
         int(flag_stride),
         int(hca_count),
         bool(ring4),
+        bool(trace),
     )
     raise_if_kernel_resolution_frozen(
         "cute.compile", target=launch, cache_key=cache_key
@@ -412,6 +461,7 @@ def get_launcher(
         16,
         16,
         4096,
+        16,
         16,
         16,
         16,
@@ -440,6 +490,7 @@ def get_launcher(
             counters + 4 * launch.stage_index,
             counters + 4 * launch.tail_index,
             counters + 4 * launch.poison_index,
+            int(launch.trace_base),
             int(launch.spin_limit),
             int(launch.grid_x),
             current_cuda_stream(),

@@ -37,6 +37,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 
+from . import trace as _trace
 from ._kernels import PACK_BYTES, Launch, family as _kernel_family, gather_launcher, reduce_launcher
 from ._proxy import Layout, Proxy, load as _load_proxy_library
 
@@ -399,6 +400,14 @@ class RoceOneshotAllReduce:
             raise ValueError(f"unknown RoCE topology {self.topology!r}; choose one of {TOPOLOGIES}")
         self._transport_factory = transport if transport is not None else Proxy
         self.kernel_family = _kernel_family(kernels)
+        # Optional per-op timing trace (sparknet.oneshot.trace): a separately compiled
+        # kernel and a shared file the proxy thread also writes. Off unless asked for.
+        self._trace_path: Optional[str] = None
+        self._trace_map: Any = None
+        self._trace_anchor: Any = None
+        self._trace_base = 0
+        if _trace.enabled() and self.kernel_family != "cute":
+            raise ValueError(f"{_trace.ENV_TRACE} is implemented for the cute kernel family only")
         self.hca_names, self.peer_hca_names, self.stripe_count = _resolve_hca_topology(
             world_size=self.world_size,
             rank=self.rank,
@@ -439,6 +448,8 @@ class RoceOneshotAllReduce:
                 "RoCE all-reduce needs host pointers that are directly device "
                 "accessible (integrated GPU with unified addressing)"
             )
+        if _trace.enabled():
+            self._open_trace()
         self._recv_base = host_ptr + self._layout.recv_off
         self._flag_base = host_ptr + self._layout.flag_off
         self._send_base = host_ptr + self._layout.send_off
@@ -475,6 +486,9 @@ class RoceOneshotAllReduce:
                 slot_bytes=slot_bytes,
                 topology=self.topology,
             )
+            if self._trace_path is not None and hasattr(self._proxy, "trace_open"):
+                self._proxy.trace_open(self._trace_path, _trace.HEADER_BYTES, _trace.RECORDS,
+                                       _trace.RECORD_BYTES, _trace.W_PROXY)
             blob = self._proxy.local_blob()
         except Exception as exc:  # noqa: BLE001 - reported collectively below
             error = str(exc)
@@ -556,6 +570,40 @@ class RoceOneshotAllReduce:
                 self.max_size,
                 self._proxy.traffic_class,
             )
+
+    def _open_trace(self) -> None:
+        """Create, pin and head this runtime's trace file in /dev/shm (see ``sparknet.oneshot.trace``)."""
+        import ctypes
+        import mmap
+        import time as _time
+        import uuid
+
+        from cuda.bindings import runtime as cudart
+
+        from ._trace_clock import calibrate
+
+        path = f"/dev/shm/sparknet-trace-r{self.rank}-p{os.getpid()}-{uuid.uuid4().hex[:8]}.bin"
+        size = _trace.file_bytes()
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.ftruncate(fd, size)
+            mapping = mmap.mmap(fd, size)
+        finally:
+            os.close(fd)
+        anchor = ctypes.c_char.from_buffer(mapping)
+        address = ctypes.addressof(anchor)
+        (err,) = cudart.cudaHostRegister(address, size, cudart.cudaHostRegisterPortable)
+        if err != cudart.cudaError_t.cudaSuccess:
+            raise RuntimeError(f"cudaHostRegister of the trace file failed: {err}")
+        if self._device_pointer(address) != address:
+            raise RuntimeError("the trace file is not directly device accessible")
+        offset, halfwidth = calibrate(self.device)
+        lanes = self.stripe_count * (2 if self.topology == "ring4" else 1)
+        mapping[: _trace.HEADER_BYTES] = _trace.pack_header(
+            world=self.world_size, rank=self.rank, lanes=lanes, topology=self.topology,
+            clock_offset_ns=offset, clock_halfwidth_ns=halfwidth, created_ns=_time.time_ns())
+        self._trace_path, self._trace_map, self._trace_anchor, self._trace_base = path, mapping, anchor, address
+        logger.info("one-shot trace %s (clock offset %d ns +- %d ns)", path, offset, halfwidth)
 
     @staticmethod
     def _device_pointer(host_ptr: int) -> int:
@@ -665,6 +713,7 @@ class RoceOneshotAllReduce:
             self.stripe_count,
             self.device.index,
             self.topology == "ring4",
+            bool(self._trace_base),
         )
 
     def _gather_launcher_key(self) -> tuple[object, ...]:
@@ -703,7 +752,7 @@ class RoceOneshotAllReduce:
             region=self._region, recv_off=self._layout.recv_off, flag_off=self._layout.flag_off,
             send_off=self._layout.send_off, ctrl_off=self._layout.ctrl_off, slot_bytes=self._slot_bytes,
             counters=self._counters, stage_index=stage_index, tail_index=tail_index, poison_index=self._poison_index,
-            spin_limit=self.spin_limit, grid_x=grid_blocks, row_packs=row_packs,
+            spin_limit=self.spin_limit, grid_x=grid_blocks, row_packs=row_packs, trace_base=self._trace_base,
         )
 
     def prepare(
@@ -1130,6 +1179,16 @@ class RoceOneshotAllReduce:
             if self._proxy is not None:
                 self._proxy.close()
                 self._proxy = None
+            if self._trace_map is not None:
+                # The file stays in /dev/shm for collection; only the mapping goes.
+                from cuda.bindings import runtime as cudart
+
+                with contextlib.suppress(Exception):
+                    cudart.cudaHostUnregister(self._trace_base)
+                self._trace_anchor = None
+                with contextlib.suppress(Exception):
+                    self._trace_map.close()
+                self._trace_map = None
 
     def __del__(self) -> None:  # pragma: no cover - defensive teardown
         """Release the transport if ``close`` was never called."""
