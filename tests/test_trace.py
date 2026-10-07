@@ -70,6 +70,8 @@ class TraceFormatTest(unittest.TestCase):
         proxy = (ROOT / "_roce_proxy.c").read_text()
         for index, name in enumerate(trace.PROXY_WORDS):
             self.assertIn(f"TRACE_{name.upper()} = {index}", proxy)
+        self.assertIn(f"TRACE_SEQ = {trace.W_PROXY_SEQ - trace.W_PROXY}", proxy)
+        self.assertLess(trace.W_PROXY_SEQ, trace.RECORD_WORDS)
         self.assertIn("#define ROCE_ABI_VERSION 10", proxy)  # wire ABI unchanged: tracing is local
         self.assertIn("lib.roce_trace_open", (ROOT / "_proxy.py").read_text())
         runtime = (ROOT / "runtime.py").read_text()
@@ -134,6 +136,14 @@ class TraceAnalysisTest(unittest.TestCase):
         self.assertAlmostEqual(pair["doorbell_b_minus_a"]["p50_us"], 0.5, delta=0.5)
         summary = trace.summarize([b, a])
         self.assertEqual([p["ranks"] for p in summary["pairs"]], [[0, 1]])
+
+    def test_proxy_words_of_another_op_are_ignored(self) -> None:
+        r = row(7, start=1, doorbell=10, wait_done=20, end=30, flags={}, cpu={"seen": 15})
+        t = trace.Trace(2, 0, 1, "direct", 0, 0, "h", [r])
+        r[trace.W_PROXY_SEQ] = 7
+        self.assertEqual(trace.phases(t)["proxy_wake"]["p50_us"], 0.01)
+        r[trace.W_PROXY_SEQ] = 7 + trace.RECORDS  # an all-gather reused the slot
+        self.assertIsNone(trace.phases(t)["proxy_wake"])
 
     def test_select_keeps_a_sequence_range_and_size(self) -> None:
         rows = [row(s, start=1, doorbell=2, wait_done=3, end=4, flags={}, cpu={}) for s in range(1, 11)]

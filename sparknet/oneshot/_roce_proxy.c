@@ -144,8 +144,10 @@ static void set_err(roce_ctx_t *c, const char *what, int e) {
 
 int roce_abi_version(void) { return ROCE_ABI_VERSION; }
 
-// Trace marks, by the index of the proxy word they fill in a record.
-enum { TRACE_SEEN = 0, TRACE_POSTED = 1, TRACE_RELAYED = 2, TRACE_DRAINED = 3 };
+// Trace marks, by the index of the proxy word they fill in a record. The word after
+// them holds the sequence the proxy marked: all-gathers share the doorbell but run an
+// untraced kernel, so a record's proxy words can belong to a later op than its kernel words.
+enum { TRACE_SEEN = 0, TRACE_POSTED = 1, TRACE_RELAYED = 2, TRACE_DRAINED = 3, TRACE_SEQ = 4 };
 
 static inline void trace_mark(roce_ctx_t *c, uint32_t seq, int which) {
     if (c->trace == NULL) {
@@ -155,6 +157,9 @@ static inline void trace_mark(roce_ctx_t *c, uint32_t seq, int which) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &now);
     uint64_t *record = (uint64_t *)(c->trace + c->trace_header_bytes +
                                     (size_t)(seq % c->trace_records) * c->trace_record_bytes);
+    if (which == TRACE_SEEN) {
+        __atomic_store_n(&record[c->trace_proxy_word + TRACE_SEQ], (uint64_t)seq, __ATOMIC_RELAXED);
+    }
     __atomic_store_n(&record[c->trace_proxy_word + (uint64_t)which],
                      (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec, __ATOMIC_RELAXED);
 }
@@ -952,7 +957,7 @@ int roce_trace_open(roce_ctx_t *c, const char *path, uint64_t header_bytes, uint
                     uint64_t record_bytes, uint64_t proxy_word) {
     uint64_t bytes;
     if (c->trace != NULL || atomic_load(&c->running) || records == 0 || record_bytes % 8 != 0 ||
-        (proxy_word + 4) * 8 > record_bytes ||
+        (proxy_word + 5) * 8 > record_bytes ||
         __builtin_mul_overflow(records, record_bytes, &bytes) ||
         __builtin_add_overflow(bytes, header_bytes, &bytes)) {
         snprintf(c->err, sizeof(c->err), "invalid trace geometry or proxy already running");

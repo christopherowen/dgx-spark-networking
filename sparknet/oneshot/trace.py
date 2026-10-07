@@ -53,6 +53,9 @@ MAX_FLAG_WORDS = 16
 # Proxy words (CLOCK_MONOTONIC_RAW, ns), in the C proxy's TRACE_* order.
 W_PROXY = W_FLAGS + MAX_FLAG_WORDS
 PROXY_WORDS = ("seen", "posted", "relayed", "drained")
+# The sequence the proxy marked. All-gathers share the doorbell but run an untraced kernel,
+# so proxy words are used only when this matches the kernel's sequence (0: older traces).
+W_PROXY_SEQ = W_PROXY + len(PROXY_WORDS)
 
 TOPOLOGY_CODES = {"direct": 0, "ring4": 1, "mesh4": 2}
 _HEADER = struct.Struct("<8sIIIIIIIIqqq64s")
@@ -146,6 +149,10 @@ def _delta(later, earlier):
 
 
 def _proxy(row, trace: Trace, which: str):
+    """A proxy time of this record's op on the GPU clock, or 0 (unset, or another op's)."""
+    marked = int(row[W_PROXY_SEQ])
+    if marked and marked != int(row[W_SEQ]):
+        return 0
     value = int(row[W_PROXY + PROXY_WORDS.index(which)])
     return value + trace.clock_offset_ns if value else 0
 
@@ -213,6 +220,12 @@ def pair_clock(a: Trace, b: Trace) -> dict | None:
         if not (post_a and post_b and seen_a and seen_b):
             continue
         samples.append((seen_b - post_a, seen_a - post_b, int(row_a[W_DOORBELL]), int(row_b[W_DOORBELL])))
+    # Records written before the proxy stamped its sequence can pair one op's kernel times
+    # with another op's proxy times; those lie far from the bulk, so drop anything more than
+    # a millisecond from the median in either direction.
+    mid_ab = _median([s[0] for s in samples]) if samples else 0
+    mid_ba = _median([s[1] for s in samples]) if samples else 0
+    samples = [s for s in samples if abs(s[0] - mid_ab) < 1_000_000 and abs(s[1] - mid_ba) < 1_000_000]
     if len(samples) < 10:
         return None
     cutoff = _percentile(sorted(d_ab + d_ba for d_ab, d_ba, _, _ in samples), 10)
