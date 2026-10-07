@@ -19,6 +19,12 @@ g = rt.all_gather(x, dim=-1)
 with rt.capture(stream=s): ...  # inside torch.cuda.graph; one stream per capture
 rt.check_health()             # after each step's own device-to-host sync
 rt.stats(); rt.poisoned; rt.close()
+
+# Fused halves (reference kernels: TileLang family):
+rt.send(x); y = rt.receive()  # the all-reduce in two halves
+args = rt.fused_send(nbytes, dtype)  # a producer kernel of yours runs the send half
+args = rt.fused_receive()     # a consumer kernel of yours runs the receive half
+src = rt.device_header()      # the CUDA functions those kernels call
 ```
 
 Constructor keywords: `topology` (`direct`, `ring4`, `mesh4`; default from
@@ -64,6 +70,63 @@ padded-gather scratch.
 **No JIT in a step.** `prepare` compiles the launchers in process; a dtype
 not prepared before a capture raises. Serving images warm the CuTe DSL cache
 at build time and call `freeze_kernel_resolution()` after warm-up.
+
+## Fused halves
+
+The all-reduce kernel stages its input into the pinned send slot, rings the
+proxy's doorbell, waits for the peers' payloads and reduces them. The halves
+let other kernels do the first two or the last two steps themselves: a
+producer writes its output straight into the send slot and rings the
+doorbell, a consumer waits and takes the reduced values into its own
+registers. That removes the staging copy and a kernel boundary from the
+critical path, which only a kernel generated with the protocol functions can
+do. The result is bit-identical to the standalone all-reduce.
+
+`device_header()` is CUDA source (TileLang: `T.import_source`; CUDA C++: a
+header) with this rank's constants and the `roce_fused_*` functions; compile
+it per rank. `FusedArgs` carries the counters tensor, the pinned region's
+address, the payload size and the trace file's address.
+
+Producer kernel (send half), launched right after `fused_send(nbytes, dtype)`
+on the same stream:
+
+```c
+roce_u32 seq = roce_fused_seq(counters);
+if (!roce_fused_poisoned(counters)) {
+    // write the payload, 16-byte packs in the dtype's layout, to
+    // roce_fused_send_slot(region_base, seq) + offset (or roce_fused_send_slot_at)
+    __syncthreads();
+    if (threadIdx.x == 0) roce_fused_send_commit(counters, gridDim.x, region_base, nbytes, seq);
+}
+```
+
+Consumer kernel (receive half), launched right after `fused_receive()` on the
+send's stream, with at least `world_size x lanes` threads per block:
+
+```c
+roce_u32 seq = roce_fused_seq(counters);
+if (!roce_fused_poisoned(counters)) {
+    roce_fused_wait(threadIdx.x, region_base, seq, counters);
+    __syncthreads();
+    if (!roce_fused_poisoned(counters)) {
+        roce_pack p = roce_fused_sum_pack_bf16(region_base, seq, offset);  // or _f32, _f16
+        // ... use p (the standalone kernel's output bits at offset) ...
+    }
+    roce_fence_sc_gpu();
+    __syncthreads();
+    if (threadIdx.x == 0) roce_fused_receive_tail(counters, gridDim.x, region_base, seq);
+}
+```
+
+Rules: between the halves nothing else of this runtime runs (the runtime
+raises on every rank before enqueueing anything); every block of a half calls
+its commit or tail exactly once, and the halves' counters reset themselves,
+so any grid size works; a poisoned runtime turns both halves into no-ops that
+the host check reports. `send`/`receive` are the reference kernels for each
+half (`_fused_tilelang.py`), and any pairing of them with your kernels holds.
+`prepare(fused=True)` compiles them before a capture. A traced runtime renders the header with the
+trace layout (`roce_trace_begin`, `roce_trace_stamp`), which the reference
+kernels use to fill the same trace words as the standalone kernel.
 
 ## Environment
 

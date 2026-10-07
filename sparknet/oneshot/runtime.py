@@ -20,6 +20,11 @@ Runtime constraints:
 * every peer payload is striped across the HCAs routed to that peer, with a
   completion flag per stripe so the GPU consumes the slot only after every
   route lane delivered.
+
+The all-reduce also runs as two halves (``send``/``receive`` with the
+reference kernels, or ``fused_send``/``fused_receive`` for kernels that call
+the ``device_header()`` functions themselves), so a producer kernel can stage
+its own output and a consumer kernel can reduce into its own registers.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import logging
 import os
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -38,7 +44,9 @@ import torch.distributed as dist
 from torch.distributed import ProcessGroup
 
 from . import trace as _trace
+from ._device import render_source
 from ._kernels import PACK_BYTES, Launch, family as _kernel_family, gather_launcher, reduce_launcher
+from ._oneshot_tilelang import _lanes
 from ._proxy import Layout, Proxy, load as _load_proxy_library
 
 logger = logging.getLogger(__name__)
@@ -64,6 +72,32 @@ _DTYPE_NAMES = {
     torch.bfloat16: "bfloat16",
     torch.float32: "float32",
 }
+
+
+@dataclass(frozen=True)
+class FusedArgs:
+    """What a kernel running one fused half passes to the ``device_header()`` functions.
+
+    ``counters`` is the device counter tensor (pass its address as the ``counters``
+    pointer), ``region_base`` the pinned region's address (``long long region_base``),
+    ``nbytes`` the payload size (the send half's doorbell carries it), and
+    ``trace_base`` the trace file's address or 0.
+    """
+
+    counters: torch.Tensor
+    region_base: int
+    nbytes: int
+    trace_base: int
+
+
+@dataclass(frozen=True)
+class _PendingSend:
+    """The send half the runtime waits to see received: its size, dtype, shape and stream."""
+
+    nbytes: int
+    dtype: torch.dtype
+    shape: torch.Size
+    stream: Optional[torch.cuda.Stream]
 
 
 def _env_list(*names: str) -> tuple[str, ...]:
@@ -373,6 +407,11 @@ class RoceOneshotAllReduce:
         self._last_stream: Optional[torch.cuda.Stream] = None
         self._capture_stream: Optional[torch.cuda.Stream] = None
         self._capture_id = 0
+        self._pending: Optional[_PendingSend] = None
+        # A consumer kernel's receive is launched after fused_receive() returns,
+        # so its ordering event is recorded when the next collective arrives.
+        self._event_deferred = False
+        self._fused_launchers: dict[tuple[object, ...], Callable[..., None]] = {}
         if self.world_size not in SUPPORTED_WORLD_SIZES:
             raise ValueError(
                 f"unsupported RoCE all-reduce world size {self.world_size}; "
@@ -433,9 +472,11 @@ class RoceOneshotAllReduce:
             )
             # Epoch and poison are global. Stage and tail arrivals are separate
             # for every power-of-two grid size because their free-running
-            # counters use the launch grid as their modulus.
+            # counters use the launch grid as their modulus. The fused halves'
+            # stage and tail counters (after the poison word) reset themselves,
+            # so one pair serves any grid.
             self._counters = torch.zeros(
-                2 + 2 * self._counter_classes,
+                4 + 2 * self._counter_classes,
                 dtype=torch.int32,
                 device=self.device,
             )
@@ -736,6 +777,14 @@ class RoceOneshotAllReduce:
     def _poison_index(self) -> int:
         return 1 + 2 * self._counter_classes
 
+    @property
+    def _fused_stage_index(self) -> int:
+        return 2 + 2 * self._counter_classes
+
+    @property
+    def _fused_tail_index(self) -> int:
+        return 3 + 2 * self._counter_classes
+
     @staticmethod
     def _words(tensor: torch.Tensor) -> torch.Tensor:
         """A flat ``int32`` view of a contiguous, 16-byte-aligned tensor's bytes."""
@@ -758,6 +807,7 @@ class RoceOneshotAllReduce:
         dtypes: Sequence[torch.dtype] = (torch.bfloat16,),
         *,
         padded_gather: bool = False,
+        fused: bool = False,
     ) -> None:
         """Compile the launchers for ``dtypes`` and allocate scratch ahead of capture.
 
@@ -765,7 +815,9 @@ class RoceOneshotAllReduce:
         all-gather scratch (``max_gather_bytes`` plus ``world_size`` times that)
         is allocated only with ``padded_gather=True`` or on first eager use, so
         a workload whose shards have 16-byte rows never pays for it.
-        Compilation and allocation are refused inside a capture.
+        ``fused=True`` also compiles the reference send and receive kernels
+        (the TileLang family). Compilation and allocation are refused inside a
+        capture.
         """
 
         if torch.cuda.is_current_stream_capturing():
@@ -773,6 +825,9 @@ class RoceOneshotAllReduce:
         with torch.cuda.device(self.device):
             for dtype in dtypes:
                 self._reduce_launcher(dtype, capturing=False)
+                if fused:
+                    self._fused_launcher("send", dtype, capturing=False)
+                    self._fused_launcher("receive", dtype, capturing=False)
             self._resolve_gather_launcher(capturing=False)
             self._aligned_scratch(0, self._region[:PACK_BYTES])
             if padded_gather:
@@ -790,6 +845,60 @@ class RoceOneshotAllReduce:
                 raise ValueError(f"unsupported RoCE all-reduce dtype {dtype}")
             launcher = reduce_launcher(self.kernel_family, *self._launcher_key(dtype))
             self._launchers[dtype] = launcher
+        return launcher
+
+    def _require_tilelang(self, what: str) -> None:
+        if self.kernel_family != "tilelang":
+            raise NotImplementedError(f"{what} is implemented for the tilelang kernel family only")
+
+    def _fused_constants(self) -> dict[str, int]:
+        return {
+            "ROCE_SEND_OFF": self._layout.send_off,
+            "ROCE_RECV_OFF": self._layout.recv_off,
+            "ROCE_FLAG_OFF": self._layout.flag_off,
+            "ROCE_CTRL_OFF": self._layout.ctrl_off,
+            "ROCE_SLOT_BYTES": self._slot_bytes,
+            "ROCE_POISON_INDEX": self._poison_index,
+            "ROCE_FUSED_STAGE_INDEX": self._fused_stage_index,
+            "ROCE_FUSED_TAIL_INDEX": self._fused_tail_index,
+            "ROCE_SPIN_LIMIT": self.spin_limit,
+        }
+
+    def device_header(self) -> str:
+        """CUDA source of the protocol functions with this runtime's constants and the fused halves.
+
+        A producer or consumer kernel includes it (``T.import_source`` in TileLang,
+        or as a header in CUDA C++) and calls the ``roce_fused_*`` functions with
+        the ``FusedArgs`` of ``fused_send()`` and ``fused_receive()``; see
+        ``docs/oneshot.md``. The constants are this rank's, so compile per rank.
+        """
+        lanes, neighbor_lanes = _lanes(self.stripe_count, self.topology == "ring4")
+        return render_source(
+            world_size=self.world_size, rank=self.rank, slots=self._layout.slots,
+            flag_stride=self._layout.flag_stride, hca_count=lanes, neighbor_lanes=neighbor_lanes,
+            trace=_trace.device_defines() if self._trace_base else None, fused=self._fused_constants(),
+        )
+
+    def _fused_launcher(self, half: str, dtype: torch.dtype, capturing: bool) -> Callable[..., None]:
+        """The compiled reference send or receive launcher for ``dtype``; compiled on first eager use only."""
+        key = (half, dtype)
+        launcher = self._fused_launchers.get(key)
+        if launcher is None:
+            if capturing:
+                raise RuntimeError(
+                    f"RoCE fused {half} kernel was not prepared before CUDA graph capture; call prepare(fused=True)"
+                )
+            if dtype not in SUPPORTED_DTYPES:
+                raise ValueError(f"unsupported RoCE all-reduce dtype {dtype}")
+            self._require_tilelang("the reference send and receive kernels")
+            from . import _fused_tilelang
+
+            header, trace = self.device_header(), bool(self._trace_base)
+            if half == "send":
+                launcher = _fused_tilelang.get_send_launcher(_DTYPE_NAMES[dtype], header, self._threads, trace)
+            else:
+                launcher = _fused_tilelang.get_receive_launcher(_DTYPE_NAMES[dtype], header, self._threads, trace)
+            self._fused_launchers[key] = launcher
         return launcher
 
     def _resolve_gather_launcher(self, capturing: bool) -> Callable[..., None]:
@@ -828,6 +937,7 @@ class RoceOneshotAllReduce:
         del channel_id, peer_input_ptrs
         with self._lock:
             self.check_health()
+            self._refuse_while_pending("all_reduce")
             if not self._accepts_allreduce(inp, self.max_size):
                 raise ValueError(
                     "input is not eligible for the RoCE one-shot all-reduce"
@@ -865,6 +975,120 @@ class RoceOneshotAllReduce:
                 if dst is not out:
                     out.copy_(dst)
                 self._mark_stream(capturing)
+        if not capturing:
+            self.check_health()
+        return out
+
+    def _refuse_while_pending(self, what: str) -> None:
+        if self._pending is not None:
+            raise RuntimeError(
+                f"RoCE {what} while a fused send awaits its receive; the next collective must be receive()"
+            )
+
+    # -- fused halves -------------------------------------------------------------
+
+    def fused_send(self, nbytes: int, dtype: torch.dtype = torch.bfloat16, *, shape: Optional[Sequence[int]] = None,
+                   stream: object = None) -> FusedArgs:
+        """Open a fused all-reduce whose send half a producer kernel runs; returns its arguments.
+
+        The producer, launched next on the current (or ``stream``'s) stream, writes
+        ``nbytes`` of ``dtype`` into ``roce_fused_send_slot`` and commits with
+        ``roce_fused_send_commit``; ``device_header()`` defines both. The next
+        collective of this runtime must be ``receive`` or ``fused_receive``.
+        """
+        with self._lock:
+            self.check_health()
+            self._refuse_while_pending("fused_send")
+            nbytes = int(nbytes)
+            if dtype not in SUPPORTED_DTYPES or not (0 < nbytes <= self.max_size) or nbytes % PACK_BYTES:
+                raise ValueError("fused send needs a supported dtype and a 16-byte multiple within the capacity")
+            element = torch.tensor([], dtype=dtype).element_size()
+            shape = torch.Size(shape if shape is not None else (nbytes // element,))
+            if shape.numel() * element != nbytes:
+                raise ValueError("shape does not match nbytes")
+            context = torch.cuda.stream(stream) if stream is not None else _nullcontext()
+            with torch.cuda.device(self.device), context:
+                capturing = torch.cuda.is_current_stream_capturing()
+                self._order_stream(capturing)
+                self._pending = _PendingSend(nbytes, dtype, shape, torch.cuda.current_stream(self.device))
+            return FusedArgs(self._counters, self._region.data_ptr(), nbytes, self._trace_base)
+
+    def fused_receive(self, *, stream: object = None) -> FusedArgs:
+        """Close the open fused all-reduce with a consumer kernel's receive half; returns its arguments.
+
+        The consumer, launched next on the send's stream, waits with
+        ``roce_fused_wait``, reads ``roce_fused_sum_pack_*`` and ends with
+        ``roce_fused_receive_tail`` in every block.
+        """
+        with self._lock:
+            pending = self._take_pending(stream)
+            context = torch.cuda.stream(stream) if stream is not None else _nullcontext()
+            with torch.cuda.device(self.device), context:
+                if not torch.cuda.is_current_stream_capturing():
+                    self._last_stream = torch.cuda.current_stream(self.device)
+                    self._event_deferred = True
+            return FusedArgs(self._counters, self._region.data_ptr(), pending.nbytes, self._trace_base)
+
+    def _take_pending(self, stream: object) -> _PendingSend:
+        pending = self._pending
+        if pending is None:
+            raise RuntimeError("RoCE receive without an open fused send")
+        with torch.cuda.device(self.device):
+            current = stream if stream is not None else torch.cuda.current_stream(self.device)
+            if current != pending.stream:
+                raise RuntimeError("RoCE receive must run on the stream of its send")
+        self._pending = None
+        return pending
+
+    def send(self, inp: torch.Tensor, *, stream: object = None) -> None:
+        """Run the send half with the reference kernel: stage ``inp`` and ring the doorbell.
+
+        The next collective must be ``receive`` (or a consumer's ``fused_receive``).
+        Prepare with ``prepare(fused=True)`` before a capture (TileLang family).
+        """
+        self._refuse_while_pending("send")
+        if not self._accepts_allreduce(inp, self.max_size):
+            raise ValueError("input is not eligible for the RoCE one-shot all-reduce")
+        nbytes = inp.numel() * inp.element_size()
+        context = torch.cuda.stream(stream) if stream is not None else _nullcontext()
+        with torch.cuda.device(self.device), context:
+            capturing = torch.cuda.is_current_stream_capturing()
+            src = inp
+            if inp.data_ptr() % PACK_BYTES != 0:
+                src = self._aligned_scratch(0, inp)
+                src.copy_(inp)
+            launcher = self._fused_launcher("send", inp.dtype, capturing)
+            args = self.fused_send(nbytes, inp.dtype, shape=inp.shape)
+            grid = _grid_blocks(nbytes // PACK_BYTES, self._threads, self._blocks)
+            launcher(self._words(src), args.counters, args.region_base, nbytes // PACK_BYTES, nbytes, grid,
+                     args.trace_base)
+
+    def receive(self, out: Optional[torch.Tensor] = None, *, stream: object = None) -> torch.Tensor:
+        """Run the receive half with the reference kernel: wait, reduce into ``out``, advance the epoch.
+
+        ``out`` defaults to a new tensor shaped like the send's input.
+        """
+        pending = self._pending
+        if pending is None:
+            raise RuntimeError("RoCE receive without an open fused send")
+        if out is not None and (out.dtype != pending.dtype or out.numel() * out.element_size() != pending.nbytes
+                                or out.device != self.device or not out.is_contiguous()):
+            raise ValueError("out must be a contiguous tensor of the send's dtype and size on the runtime's device")
+        context = torch.cuda.stream(stream) if stream is not None else _nullcontext()
+        with torch.cuda.device(self.device), context:
+            capturing = torch.cuda.is_current_stream_capturing()
+            launcher = self._fused_launcher("receive", pending.dtype, capturing)
+            if out is None:
+                out = torch.empty(pending.shape, dtype=pending.dtype, device=self.device)
+            dst = out if out.data_ptr() % PACK_BYTES == 0 else self._aligned_scratch(1, out)
+            with self._lock:
+                self._take_pending(stream)
+            grid = _grid_blocks(pending.nbytes // PACK_BYTES, self._threads, self._blocks)
+            launcher(self._words(dst), self._counters, self._region.data_ptr(), pending.nbytes // PACK_BYTES, grid,
+                     self._trace_base)
+            if dst is not out:
+                out.copy_(dst)
+            self._mark_stream(capturing)
         if not capturing:
             self.check_health()
         return out
@@ -910,6 +1134,11 @@ class RoceOneshotAllReduce:
                     "RoCE collectives must all be captured on one stream"
                 )
             return
+        if self._event_deferred:
+            # The last collective was a consumer's receive half, launched after
+            # fused_receive() returned: record its event now, behind it.
+            self._stream_event.record(self._last_stream)
+            self._event_deferred = False
         if self._last_stream is not None and current != self._last_stream:
             current.wait_event(self._stream_event)
 
@@ -921,6 +1150,7 @@ class RoceOneshotAllReduce:
         current = torch.cuda.current_stream(self.device)
         self._stream_event.record(current)
         self._last_stream = current
+        self._event_deferred = False
 
     def check_health(self) -> None:
         """Raise if the proxy thread died or a kernel wait timed out.
@@ -1005,6 +1235,7 @@ class RoceOneshotAllReduce:
         """
         with self._lock:
             self.check_health()
+            self._refuse_while_pending("all_gather")
             if not self.should_all_gather(inp, dim):
                 raise ValueError("input is not eligible for the RoCE all-gather")
             dim = self._normalize_dim(inp, dim)

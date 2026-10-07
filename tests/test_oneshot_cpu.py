@@ -98,15 +98,56 @@ class KernelFamilyTest(unittest.TestCase):
             self.assertIn(ptx, source, ptx)
             self.assertIn(ptx, intrinsics, ptx)
         # Every extern the TileLang kernels name exists in the header.
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+        known = device.FUNCTIONS + device.FUSED_FUNCTIONS
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_fused_tilelang.py"):
             text = (ROCE / module_name).read_text()
             for name in sorted(set(re.findall(r'T\.call_extern\("(roce_[a-z0-9_]+)"', text))):
-                self.assertIn(name, device.FUNCTIONS, (module_name, name))
-            for name in sorted(set(re.findall(r'"(roce_reduce_pack_[a-z0-9]+)"', text))):
-                self.assertIn(name, device.FUNCTIONS, (module_name, name))
+                self.assertIn(name, known, (module_name, name))
+            for name in sorted(set(re.findall(r'"(roce_(?:fused_)?reduce_pack_[a-z0-9]+)"', text))):
+                self.assertIn(name, known, (module_name, name))
+
+    def test_fused_header_carries_the_runtime_layout(self):
+        device = _module(ROCE / "_device.py")
+        plain = device.render_source(world_size=4, rank=1, slots=2, flag_stride=128, hca_count=4, neighbor_lanes=2)
+        self.assertIn("#define ROCE_TRACE 0", plain)
+        self.assertNotIn("#define ROCE_FUSED", plain)
+        constants = {name: 1000 + index for index, name in enumerate(device.FUSED_CONSTANTS)}
+        fused = device.render_source(world_size=4, rank=1, slots=2, flag_stride=128, hca_count=4, neighbor_lanes=2,
+                                     fused=constants)
+        self.assertIn("#define ROCE_FUSED 1", fused)
+        for name, value in constants.items():
+            self.assertIn(f"#define {name} {value}", fused)
+        for name in device.FUSED_FUNCTIONS:
+            self.assertRegex(fused, rf"[ *]{name}\(", name)
+        # The fused functions sit inside the #ifdef ROCE_FUSED section.
+        section = fused[fused.index("#ifdef ROCE_FUSED"):]
+        section = section[:section.index("#endif")]
+        for name in device.FUSED_FUNCTIONS:
+            self.assertRegex(section, rf"[ *]{name}\(", name)
+        with self.assertRaises(ValueError):
+            device.render_source(world_size=4, rank=1, slots=2, flag_stride=128, hca_count=4, neighbor_lanes=2,
+                                 fused={"ROCE_SEND_OFF": 0})
+        # The fused counters reset themselves, so any grid size works.
+        arrive = section[section.index("roce_fused_arrive_last("):]
+        self.assertIn("prior + 1u == grid", arrive[:400])
+        self.assertIn("roce_st_relaxed_gpu_u32(counter, 0u)", arrive[:400])
+
+    def test_runtime_reserves_the_fused_counters_after_the_poison_word(self):
+        runtime = (ROCE / "runtime.py").read_text()
+        self.assertIn("4 + 2 * self._counter_classes", runtime)
+        self.assertIn("return 1 + 2 * self._counter_classes", runtime)  # poison
+        self.assertIn("return 2 + 2 * self._counter_classes", runtime)  # fused stage
+        self.assertIn("return 3 + 2 * self._counter_classes", runtime)  # fused tail
+        for name in ("ROCE_POISON_INDEX", "ROCE_FUSED_STAGE_INDEX", "ROCE_FUSED_TAIL_INDEX", "ROCE_SPIN_LIMIT"):
+            self.assertIn(f'"{name}"', runtime)
+        # Every other collective refuses to run between the halves.
+        for call in ('_refuse_while_pending("all_reduce")', '_refuse_while_pending("all_gather")',
+                     '_refuse_while_pending("send")', '_refuse_while_pending("fused_send")'):
+            self.assertIn(call, runtime)
 
     def test_tilelang_modules_import_without_a_gpu_stack(self):
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_kernels.py", "_device.py", "_freeze.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_fused_tilelang.py", "_kernels.py",
+                            "_device.py", "_freeze.py"):
             tree = ast.parse((ROCE / module_name).read_text())
             top_level = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
             top_level |= {(node.module or "").split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom) and node.level == 0}
@@ -121,9 +162,9 @@ class KernelFamilyTest(unittest.TestCase):
     def test_tilelang_kernels_declare_full_residency(self):
         # Without a minimum blocks-per-SM bound nvcc spends 54 to 56 registers and the
         # all-reduce loses ~15 us per launch in a decode step (2026-10-05 profiles).
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_fused_tilelang.py"):
             text = (ROCE / module_name).read_text()
-            self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
+            self.assertEqual(text.count("T.annotate_min_blocks_per_sm(resident)"), text.count("T.Kernel("), module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
 
     def test_runtime_routes_launchers_through_the_family(self):

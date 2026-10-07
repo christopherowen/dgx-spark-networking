@@ -77,7 +77,9 @@ class TraceFormatTest(unittest.TestCase):
         self.assertIn("lib.roce_trace_open", (ROOT / "_proxy.py").read_text())
         runtime = (ROOT / "runtime.py").read_text()
         self.assertIn("_trace.W_PROXY", runtime)
-        self.assertIn("roce_trace_stamp", (ROOT / "_oneshot_tilelang.py").read_text())
+        for module_name in ("_oneshot_tilelang.py", "_fused_tilelang.py"):
+            text = (ROOT / module_name).read_text()
+            self.assertIn("roce_trace_stamp", text, module_name)
 
     def test_untraced_kernels_compile_none_of_the_trace(self) -> None:
         lines = (ROOT / "_oneshot_cute.py").read_text().splitlines()
@@ -98,8 +100,8 @@ class TraceFormatTest(unittest.TestCase):
 
 
     def test_generated_kernels_trace_only_when_traced(self):
-        """In the TileLang all-reduce every trace call sits under an ``if traced:`` block."""
-        for module_name in ("_oneshot_tilelang.py",):
+        """In the TileLang modules every trace call sits under an ``if traced:`` block."""
+        for module_name in ("_oneshot_tilelang.py", "_fused_tilelang.py"):
             lines = (ROOT / module_name).read_text().splitlines()
             guarded: set[int] = set()
             for i, line in enumerate(lines):

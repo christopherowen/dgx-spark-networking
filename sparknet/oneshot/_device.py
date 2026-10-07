@@ -14,6 +14,13 @@ Everything that is a compile-time constant of one launcher specialization
 ``#define`` by ``render_source`` so the source loops unroll. The functions
 take pointers: the TileLang kernels obtain them with ``T.address_of`` on their
 device buffers and with ``roce_ptr`` on the pinned region's base address.
+
+``render_source(fused=...)`` adds the fused halves (``roce_fused_*``): the
+send half (stage into the send slot, ring the doorbell) for a producer kernel
+and the receive half (wait, reduce, advance the epoch) for a consumer kernel,
+with one runtime's region layout and counter indices as constants. The
+runtime's ``device_header()`` renders it; ``docs/oneshot.md`` gives the
+calling contract.
 """
 
 from __future__ import annotations
@@ -48,6 +55,37 @@ FUNCTIONS = (
     "roce_trace_record_if",
     "roce_trace_begin",
     "roce_trace_stamp",
+)
+
+# The fused halves, present only in a header rendered with ``fused=``.
+FUSED_FUNCTIONS = (
+    "roce_fused_seq",
+    "roce_fused_poisoned",
+    "roce_fused_send_slot",
+    "roce_fused_send_slot_at",
+    "roce_fused_arrive_last",
+    "roce_fused_send_commit",
+    "roce_fused_wait",
+    "roce_fused_sum_pack_f32",
+    "roce_fused_sum_pack_f16",
+    "roce_fused_sum_pack_bf16",
+    "roce_fused_reduce_pack_f32",
+    "roce_fused_reduce_pack_f16",
+    "roce_fused_reduce_pack_bf16",
+    "roce_fused_receive_tail",
+)
+
+# The constants ``fused=`` must carry: the runtime's region layout and counter indices.
+FUSED_CONSTANTS = (
+    "ROCE_SEND_OFF",
+    "ROCE_RECV_OFF",
+    "ROCE_FLAG_OFF",
+    "ROCE_CTRL_OFF",
+    "ROCE_SLOT_BYTES",
+    "ROCE_POISON_INDEX",
+    "ROCE_FUSED_STAGE_INDEX",
+    "ROCE_FUSED_TAIL_INDEX",
+    "ROCE_SPIN_LIMIT",
 )
 
 _HEADER = r"""
@@ -90,6 +128,10 @@ __device__ __forceinline__ void roce_st_release_gpu_u32(void *p, roce_u32 x) {
 
 __device__ __forceinline__ void roce_st_relaxed_sys_u32(void *p, roce_u32 x) {
     asm volatile("st.relaxed.sys.global.u32 [%0], %1;" :: "l"(p), "r"(x) : "memory");
+}
+
+__device__ __forceinline__ void roce_st_relaxed_gpu_u32(void *p, roce_u32 x) {
+    asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" :: "l"(p), "r"(x) : "memory");
 }
 
 // Trace (SPARKNET_ROCE_TRACE): %globaltimer stamps into the op's record of the
@@ -203,19 +245,24 @@ __device__ __forceinline__ roce_u32 roce_pack_f32x2_to_f16x2(float lo, float hi)
     return w;
 }
 
-// Phase 2: the last block to finish staging publishes nbytes (per slot) and
-// then seq in the control record the proxy thread polls; returns 1 in that
-// block.
+// The doorbell itself: nbytes (per slot), then seq, in the control record the
+// proxy thread polls.
+__device__ __forceinline__ void roce_ring(roce_byte *ctrl, roce_u32 nbytes, roce_u32 seq) {
+    long long slot = (long long)(seq & 1u);
+    roce_st_relaxed_sys_u32(ctrl + 4, nbytes);
+    roce_st_relaxed_sys_u32(ctrl + 16 + slot * 4, nbytes);
+    roce_fence_sc_sys();
+    roce_st_relaxed_sys_u32(ctrl, seq);
+}
+
+// Phase 2: the last block to finish staging rings the doorbell; returns 1 in
+// that block.
 __device__ __forceinline__ roce_u32 roce_doorbell(void *stage_counter, roce_u32 grid, roce_byte *ctrl,
                                                   roce_u32 nbytes, roce_u32 seq) {
     roce_fence_sc_sys();
     roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(stage_counter, 1u);
     if ((prior + 1u) % grid == 0u) {
-        long long slot = (long long)(seq & 1u);
-        roce_st_relaxed_sys_u32(ctrl + 4, nbytes);
-        roce_st_relaxed_sys_u32(ctrl + 16 + slot * 4, nbytes);
-        roce_fence_sc_sys();
-        roce_st_relaxed_sys_u32(ctrl, seq);
+        roce_ring(ctrl, nbytes, seq);
         return 1u;
     }
     return 0u;
@@ -253,17 +300,22 @@ __device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags
     }
 }
 
+// The epoch advance: every block's timeout store precedes its tail arrival,
+// so the error word is final here, and a failed sequence keeps the epoch.
+__device__ __forceinline__ void roce_publish_epoch(const roce_byte *ctrl, void *epoch, roce_u32 seq) {
+    roce_fence_sc_gpu();
+    if (roce_ld_relaxed_sys_u32(ctrl + 8) == 0u) {
+        roce_st_release_gpu_u32(epoch, seq);
+    }
+}
+
 // Phase 5: the last block to finish publishes the next epoch, unless a
-// timeout was recorded (a failed sequence keeps the epoch); returns 1 in that
-// block.
+// timeout was recorded; returns 1 in that block.
 __device__ __forceinline__ roce_u32 roce_tail(void *tail_counter, roce_u32 grid, const roce_byte *ctrl,
                                               void *epoch, roce_u32 seq) {
     roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(tail_counter, 1u);
     if ((prior + 1u) % grid == 0u) {
-        roce_fence_sc_gpu();
-        if (roce_ld_relaxed_sys_u32(ctrl + 8) == 0u) {
-            roce_st_release_gpu_u32(epoch, seq);
-        }
+        roce_publish_epoch(ctrl, epoch, seq);
         return 1u;
     }
     return 0u;
@@ -280,9 +332,10 @@ __device__ __forceinline__ roce_pack roce_source_pack(int source, const void *in
 }
 
 // Phase 4 (all-reduce): sum the local input and every peer slot in fixed rank
-// order with float32 accumulation, so every rank stores identical bits.
-__device__ __forceinline__ void roce_reduce_pack_f32(const void *input, const void *recv, long long slot_bytes,
-                                                     roce_u32 seq, void *output, long long offset) {
+// order with float32 accumulation, so every rank stores identical bits. The
+// sum functions return the reduced pack; the reduce functions store it.
+__device__ __forceinline__ roce_pack roce_sum_pack_f32(const void *input, const void *recv, long long slot_bytes,
+                                                       roce_u32 seq, long long offset) {
     float acc[4];
 #pragma unroll
     for (int source = 0; source < ROCE_WORLD; source++) {
@@ -302,13 +355,13 @@ __device__ __forceinline__ void roce_reduce_pack_f32(const void *input, const vo
     for (int w = 0; w < 4; w++) {
         out.w[w] = roce_f32_as_u32(acc[w]);
     }
-    roce_st_global_pack((roce_byte *)output + offset, out);
+    return out;
 }
 
 // Phase 4 (all-reduce, float16): the same fixed-order float32 accumulation
 // on pairs of 16-bit values.
-__device__ __forceinline__ void roce_reduce_pack_f16(const void *input, const void *recv, long long slot_bytes,
-                                       roce_u32 seq, void *output, long long offset) {
+__device__ __forceinline__ roce_pack roce_sum_pack_f16(const void *input, const void *recv, long long slot_bytes,
+                                                       roce_u32 seq, long long offset) {
     float acc[8];
 #pragma unroll
     for (int source = 0; source < ROCE_WORLD; source++) {
@@ -331,13 +384,13 @@ __device__ __forceinline__ void roce_reduce_pack_f16(const void *input, const vo
     for (int w = 0; w < 4; w++) {
         out.w[w] = roce_pack_f32x2_to_f16x2(acc[2 * w], acc[2 * w + 1]);
     }
-    roce_st_global_pack((roce_byte *)output + offset, out);
+    return out;
 }
 
 // Phase 4 (all-reduce, bfloat16): the same fixed-order float32 accumulation
 // on pairs of 16-bit values.
-__device__ __forceinline__ void roce_reduce_pack_bf16(const void *input, const void *recv, long long slot_bytes,
-                                       roce_u32 seq, void *output, long long offset) {
+__device__ __forceinline__ roce_pack roce_sum_pack_bf16(const void *input, const void *recv, long long slot_bytes,
+                                                        roce_u32 seq, long long offset) {
     float acc[8];
 #pragma unroll
     for (int source = 0; source < ROCE_WORLD; source++) {
@@ -360,7 +413,22 @@ __device__ __forceinline__ void roce_reduce_pack_bf16(const void *input, const v
     for (int w = 0; w < 4; w++) {
         out.w[w] = roce_pack_f32x2_to_bf16x2(acc[2 * w], acc[2 * w + 1]);
     }
-    roce_st_global_pack((roce_byte *)output + offset, out);
+    return out;
+}
+
+__device__ __forceinline__ void roce_reduce_pack_f32(const void *input, const void *recv, long long slot_bytes,
+                                                     roce_u32 seq, void *output, long long offset) {
+    roce_st_global_pack((roce_byte *)output + offset, roce_sum_pack_f32(input, recv, slot_bytes, seq, offset));
+}
+
+__device__ __forceinline__ void roce_reduce_pack_f16(const void *input, const void *recv, long long slot_bytes,
+                                                     roce_u32 seq, void *output, long long offset) {
+    roce_st_global_pack((roce_byte *)output + offset, roce_sum_pack_f16(input, recv, slot_bytes, seq, offset));
+}
+
+__device__ __forceinline__ void roce_reduce_pack_bf16(const void *input, const void *recv, long long slot_bytes,
+                                                      roce_u32 seq, void *output, long long offset) {
+    roce_st_global_pack((roce_byte *)output + offset, roce_sum_pack_bf16(input, recv, slot_bytes, seq, offset));
 }
 
 // Phase 4 (all-gather): shard s of pack copy_index lands at column block s of
@@ -378,15 +446,126 @@ __device__ __forceinline__ void roce_gather_pack(const void *input, const void *
         roce_st_global_pack(dest, p);
     }
 }
+
+#ifdef ROCE_FUSED
+// Fused halves of the one-shot all-reduce, for kernels outside sparknet. A
+// producer kernel runs the send half in place of the standalone kernel's
+// staging; a consumer kernel runs the receive half in place of its wait and
+// reduce. Between the two halves no other collective of this runtime runs:
+// the runtime's fused_send()/receive() enforce that on the host. Both halves
+// take the sequence from the epoch, which only the receive half advances.
+// Their arrival counters reset themselves, so any grid size works.
+
+// This op's sequence number (the epoch is the last completed one).
+__device__ __forceinline__ roce_u32 roce_fused_seq(const void *counters) {
+    return roce_ld_relaxed_gpu_u32(counters) + 1u;
+}
+
+// 1 once a wait timed out anywhere in this runtime. Both halves then skip the
+// protocol; the host raises at its next check.
+__device__ __forceinline__ roce_u32 roce_fused_poisoned(const void *counters) {
+    return roce_ld_relaxed_gpu_u32((const roce_u32 *)counters + ROCE_POISON_INDEX) != 0u ? 1u : 0u;
+}
+
+// Where the producer writes the op's payload (16-byte aligned), in the input
+// dtype's layout: the bytes the standalone kernel would have staged.
+__device__ __forceinline__ roce_byte *roce_fused_send_slot(long long region_base, roce_u32 seq) {
+    return roce_ptr(region_base) + ROCE_SEND_OFF + (long long)(seq & 1u) * ROCE_SLOT_BYTES;
+}
+
+// The send slot at byte offset ``offset``, for generators without pointer arithmetic.
+__device__ __forceinline__ roce_byte *roce_fused_send_slot_at(long long region_base, roce_u32 seq, long long offset) {
+    return roce_fused_send_slot(region_base, seq) + offset;
+}
+
+// One block's arrival at a self-resetting counter: the last of grid blocks
+// resets it and gets 1. Stream order separates one op's arrivals from the next.
+__device__ __forceinline__ roce_u32 roce_fused_arrive_last(void *counter, roce_u32 grid) {
+    roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(counter, 1u);
+    if (prior + 1u == grid) {
+        roce_st_relaxed_gpu_u32(counter, 0u);
+        return 1u;
+    }
+    return 0u;
+}
+
+// Send half: one thread of every producer block, after a __syncthreads() that
+// follows the block's last store into the send slot. The last block rings the
+// doorbell and gets 1.
+__device__ __forceinline__ roce_u32 roce_fused_send_commit(void *counters, roce_u32 grid, long long region_base,
+                                                          roce_u32 nbytes, roce_u32 seq) {
+    roce_fence_sc_sys();
+    if (roce_fused_arrive_last((roce_u32 *)counters + ROCE_FUSED_STAGE_INDEX, grid)) {
+        roce_ring(roce_ptr(region_base) + ROCE_CTRL_OFF, nbytes, seq);
+        return 1u;
+    }
+    return 0u;
+}
+
+// Receive half, wait: every thread of every consumer block, then
+// __syncthreads(). A block that then sees roce_fused_poisoned() skips the
+// slots (its output is garbage; the host raises).
+__device__ __forceinline__ void roce_fused_wait(int tidx, long long region_base, roce_u32 seq, void *counters,
+                                                roce_byte *trace_record = nullptr) {
+    roce_wait_flags(tidx, roce_ptr(region_base) + ROCE_FLAG_OFF, seq, (roce_u32)ROCE_SPIN_LIMIT,
+                    roce_ptr(region_base) + ROCE_CTRL_OFF, (roce_u32 *)counters + ROCE_POISON_INDEX, trace_record);
+}
+
+// Receive half, reduce: the all-reduced pack at byte offset ``offset``, summed
+// in fixed rank order and rounded to the dtype: the bits the standalone
+// all-reduce stores there. Use it in registers or store it.
+__device__ __forceinline__ roce_pack roce_fused_sum_pack_f32(long long region_base, roce_u32 seq, long long offset) {
+    return roce_sum_pack_f32(roce_fused_send_slot(region_base, seq), roce_ptr(region_base) + ROCE_RECV_OFF,
+                             ROCE_SLOT_BYTES, seq, offset);
+}
+
+__device__ __forceinline__ roce_pack roce_fused_sum_pack_f16(long long region_base, roce_u32 seq, long long offset) {
+    return roce_sum_pack_f16(roce_fused_send_slot(region_base, seq), roce_ptr(region_base) + ROCE_RECV_OFF,
+                             ROCE_SLOT_BYTES, seq, offset);
+}
+
+__device__ __forceinline__ roce_pack roce_fused_sum_pack_bf16(long long region_base, roce_u32 seq, long long offset) {
+    return roce_sum_pack_bf16(roce_fused_send_slot(region_base, seq), roce_ptr(region_base) + ROCE_RECV_OFF,
+                              ROCE_SLOT_BYTES, seq, offset);
+}
+
+__device__ __forceinline__ void roce_fused_reduce_pack_f32(long long region_base, roce_u32 seq, void *output,
+                                                           long long offset) {
+    roce_st_global_pack((roce_byte *)output + offset, roce_fused_sum_pack_f32(region_base, seq, offset));
+}
+
+__device__ __forceinline__ void roce_fused_reduce_pack_f16(long long region_base, roce_u32 seq, void *output,
+                                                           long long offset) {
+    roce_st_global_pack((roce_byte *)output + offset, roce_fused_sum_pack_f16(region_base, seq, offset));
+}
+
+__device__ __forceinline__ void roce_fused_reduce_pack_bf16(long long region_base, roce_u32 seq, void *output,
+                                                            long long offset) {
+    roce_st_global_pack((roce_byte *)output + offset, roce_fused_sum_pack_bf16(region_base, seq, offset));
+}
+
+// Receive half, tail: one thread of every consumer block after the block's
+// last read of the slots, a roce_fence_sc_gpu() and a __syncthreads(). The
+// last block advances the epoch (unless a wait timed out) and gets 1.
+__device__ __forceinline__ roce_u32 roce_fused_receive_tail(void *counters, roce_u32 grid, long long region_base,
+                                                           roce_u32 seq) {
+    if (roce_fused_arrive_last((roce_u32 *)counters + ROCE_FUSED_TAIL_INDEX, grid)) {
+        roce_publish_epoch(roce_ptr(region_base) + ROCE_CTRL_OFF, counters, seq);
+        return 1u;
+    }
+    return 0u;
+}
+#endif
 """
 
 
 def render_source(*, world_size: int, rank: int, slots: int, flag_stride: int, hca_count: int, neighbor_lanes: int,
-                  trace: Mapping[str, int] | None = None) -> str:
+                  trace: Mapping[str, int] | None = None, fused: Mapping[str, int] | None = None) -> str:
     """The header for one launcher specialization, constants first.
 
     ``trace`` is the trace record layout (``sparknet.oneshot.trace.device_defines()``)
-    for a traced kernel.
+    for a traced kernel; ``fused`` carries every name of ``FUSED_CONSTANTS`` and
+    adds the fused halves.
     """
     defines = {
         "ROCE_WORLD": int(world_size),
@@ -399,7 +578,13 @@ def render_source(*, world_size: int, rank: int, slots: int, flag_stride: int, h
     }
     if trace:
         defines.update({name: int(value) for name, value in trace.items()})
+    if fused is not None:
+        missing = [name for name in FUSED_CONSTANTS if name not in fused]
+        if missing:
+            raise ValueError(f"fused header constants missing: {missing}")
+        defines["ROCE_FUSED"] = 1
+        defines.update({name: int(fused[name]) for name in FUSED_CONSTANTS})
     return "".join(f"#define {name} {value}\n" for name, value in defines.items()) + _HEADER
 
 
-__all__ = ["FUNCTIONS", "PACK_BYTES", "render_source"]
+__all__ = ["FUNCTIONS", "FUSED_CONSTANTS", "FUSED_FUNCTIONS", "PACK_BYTES", "render_source"]

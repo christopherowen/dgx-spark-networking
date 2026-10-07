@@ -407,7 +407,7 @@ def test_adapter_path_graph_replay(runtime):
 FAIL_STOP = "poisoned|proxy failed"
 
 
-def _fresh_runtime(spin_limit: int):
+def _fresh_runtime(spin_limit: int, kernels=None):
     """A runtime of its own with a short spin limit, for fault injection."""
     from sparknet import oneshot as roce
 
@@ -418,13 +418,14 @@ def _fresh_runtime(spin_limit: int):
             exchange_group=dist.group.WORLD,
             device=torch.device("cuda", 0),
             max_size=1 << 20,
+            kernels=kernels,
         )
     finally:
         if previous is None:
             del os.environ["SPARKNET_ROCE_SPIN_LIMIT"]
         else:
             os.environ["SPARKNET_ROCE_SPIN_LIMIT"] = previous
-    rt.prepare((torch.bfloat16,))
+    rt.prepare((torch.bfloat16,), fused=rt.kernel_family == "tilelang")
     return rt
 
 
@@ -798,4 +799,137 @@ def test_kernel_families_graph_replay_agree(runtime, other_runtime):
     for (ya, za), (yb, zb) in zip(results["cute"], results["tilelang"], strict=True):
         assert torch.equal(ya, yb)
         assert torch.equal(za, zb)
+    dist.barrier()
+
+
+# -- fused halves (reference kernels: TileLang family) ---------------------------------
+
+
+@pytest.fixture(scope="module")
+def tl_runtime(runtime, other_runtime):
+    """The TileLang runtime of the pair, prepared for the reference halves."""
+    rt = runtime if runtime.kernel_family == "tilelang" else other_runtime
+    rt.prepare((torch.float16, torch.bfloat16, torch.float32), padded_gather=True, fused=True)
+    return rt
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float16])
+@pytest.mark.parametrize("numel_bytes", [16, 4096, 61440, 256 * 1024, 1 << 20])
+def test_send_and_receive_match_the_all_reduce(tl_runtime, dtype, numel_bytes):
+    """The reference send and receive halves store the standalone all-reduce's bits."""
+    rank = dist.get_rank()
+    numel = numel_bytes // torch.tensor([], dtype=dtype).element_size()
+    epoch = tl_runtime.stats()["epoch"]
+    for trial in range(3):
+        torch.manual_seed(15000 * trial + rank)
+        a = torch.randn(numel, dtype=dtype, device=tl_runtime.device)
+        tl_runtime.send(a)
+        halves = tl_runtime.receive()
+        whole = tl_runtime.all_reduce(a)
+        torch.cuda.synchronize()
+        assert halves.shape == a.shape and halves.dtype == dtype
+        assert torch.equal(halves, whole)
+    assert tl_runtime.stats()["epoch"] == epoch + 6
+    dist.barrier()
+
+
+def test_an_open_send_admits_only_its_receive(tl_runtime):
+    """Between the halves every other collective raises on every rank, before anything is enqueued."""
+    x = torch.ones(4096, dtype=torch.bfloat16, device=tl_runtime.device)
+    with pytest.raises(RuntimeError, match="without an open fused send"):
+        tl_runtime.receive()
+    tl_runtime.send(x)
+    for call in (lambda: tl_runtime.all_reduce(x), lambda: tl_runtime.all_gather(x),
+                 lambda: tl_runtime.send(x), lambda: tl_runtime.fused_send(8192)):
+        with pytest.raises(RuntimeError, match="awaits its receive"):
+            call()
+    out = tl_runtime.receive()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x * dist.get_world_size())
+    dist.barrier()
+
+
+def test_fused_halves_in_graph_replay_beside_the_collectives(tl_runtime):
+    """Halves, all-reduce and all-gather in one captured graph, replayed with changing inputs."""
+    rank = dist.get_rank()
+    device = tl_runtime.device
+    torch.manual_seed(16000 + rank)
+    x = torch.randn(30720, dtype=torch.bfloat16, device=device)
+    z = torch.randn(81920, dtype=torch.bfloat16, device=device)
+    g = torch.randn(6, 8192, dtype=torch.bfloat16, device=device)
+    stream = torch.cuda.Stream(device=device)
+    stream.wait_stream(torch.cuda.current_stream())
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream), tl_runtime.capture(stream=stream):
+        r1 = tl_runtime.all_reduce(x)
+        tl_runtime.send(x)
+        r2 = tl_runtime.receive()
+        gathered = tl_runtime.all_gather(g, dim=-1)
+        tl_runtime.send(z)
+        r3 = tl_runtime.receive()
+    for _ in range(4):
+        x.add_(0.5)
+        z.add_(0.25)
+        g.add_(1.0)
+        graph.replay()
+        torch.cuda.synchronize()
+        tl_runtime.check_health()
+        e1 = tl_runtime.all_reduce(x)
+        e3 = tl_runtime.all_reduce(z)
+        eg = tl_runtime.all_gather(g, dim=-1)
+        torch.cuda.synchronize()
+        assert torch.equal(r1, e1)
+        assert torch.equal(r2, e1)
+        assert torch.equal(r3, e3)
+        assert torch.equal(gathered, eg)
+    del graph
+    dist.barrier()
+
+
+def test_fused_args_and_header_describe_the_runtime(tl_runtime):
+    """fused_send/fused_receive hand out the runtime's buffers; the header carries its layout."""
+    header = tl_runtime.device_header()
+    for name in ("ROCE_FUSED 1", f"ROCE_RANK {dist.get_rank()}", f"ROCE_WORLD {dist.get_world_size()}",
+                 f"ROCE_SPIN_LIMIT {tl_runtime.spin_limit}"):
+        assert f"#define {name}" in header, name
+    x = torch.ones(1024, dtype=torch.float32, device=tl_runtime.device)
+    args = tl_runtime.fused_send(x.numel() * 4, torch.float32)
+    assert args.nbytes == 4096 and args.counters is tl_runtime._counters
+    assert args.region_base == tl_runtime._region.data_ptr()
+    # An outside producer: the reference send kernel launched with the handed-out arguments, one block.
+    producer = tl_runtime._fused_launcher("send", torch.float32, capturing=False)
+    producer(x.view(torch.int32), args.counters, args.region_base, x.numel() * 4 // 16, args.nbytes, 1, args.trace_base)
+    out = tl_runtime.receive()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, x * dist.get_world_size())
+    dist.barrier()
+
+
+def test_fail_stop_in_the_receive_half():
+    """A receive whose peer never sent times out, poisons, and every later half is a no-op that raises."""
+    rank = dist.get_rank()
+    rt = _fresh_runtime(2_000_000, kernels="tilelang")
+    epoch_before = rt.stats()["epoch"]
+    dist.barrier()
+    if rank == 1:
+        rt._proxy.stop()
+    x = torch.ones(4096, dtype=torch.bfloat16, device=rt.device)
+    rt.send(x)
+    rt.receive()
+    torch.cuda.synchronize()
+    if rank != 1:
+        with pytest.raises(RuntimeError, match=FAIL_STOP):
+            rt.check_health()
+        assert rt.stats()["epoch"] == epoch_before
+        with pytest.raises(RuntimeError, match=FAIL_STOP):
+            rt.send(x)
+    else:
+        rt.check_health()
+        rt.send(x)
+        rt.receive()
+        torch.cuda.synchronize()
+        with pytest.raises(RuntimeError, match=FAIL_STOP):
+            rt.check_health()
+    assert rt.poisoned
+    rt.close()
     dist.barrier()

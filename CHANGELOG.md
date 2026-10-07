@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fused halves of the all-reduce for kernels generated with the protocol
+  functions (`device_header()`, `fused_send()`, `fused_receive()`, `FusedArgs`):
+  a producer kernel stages its own output into the send slot and rings the
+  doorbell, a consumer kernel waits and reduces into its own registers, with
+  the bits of the standalone all-reduce. `send()`/`receive()` run the halves
+  with reference TileLang kernels. Between the halves every other collective
+  raises before enqueueing; the halves' arrival counters reset themselves, so
+  any grid size works. The wire protocol and proxy ABI are unchanged.
 - Per-op timing trace (`SPARKNET_ROCE_TRACE=1`, `sparknet.oneshot.trace`):
   the kernels stamp `%globaltimer` at start, doorbell, every peer lane's
   flag, end of wait and end; the proxy stamps doorbell seen, posts, relay

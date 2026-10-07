@@ -9,7 +9,10 @@ host proxy later.
 
 ``AllReduce`` is the runtime (``from_exchange_group``, ``prepare``,
 ``should_allreduce``, ``all_reduce``, ``should_all_gather``, ``all_gather``,
-``capture``, ``check_health``, ``poisoned``, ``stats``, ``close``).
+``capture``, ``check_health``, ``poisoned``, ``stats``, ``close``), with the
+all-reduce's fused halves for kernels that stage or reduce in place
+(``device_header``, ``fused_send``, ``fused_receive``, ``send``, ``receive``;
+``FusedArgs`` carries a half's arguments).
 See ``runtime.py`` for the protocol and the contract, and ``docs/oneshot.md``.
 
 Importing this package imports torch. The kernel family (``cute``, the vendored
@@ -33,6 +36,7 @@ from .runtime import (
     SUPPORTED_DTYPES,
     SUPPORTED_WORLD_SIZES,
     TOPOLOGIES,
+    FusedArgs,
     RoceOneshotAllReduce as AllReduce,
     default_gid_index,
     discover_hcas,
@@ -45,6 +49,7 @@ __all__ = [
     "DEFAULT_KERNEL_FAMILY",
     "DEFAULT_MAX_GATHER_BYTES",
     "DEFAULT_MAX_SIZE",
+    "FusedArgs",
     "KERNEL_FAMILIES",
     "KernelResolutionFrozenError",
     "SUPPORTED_DTYPES",
