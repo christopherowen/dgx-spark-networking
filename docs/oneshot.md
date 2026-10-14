@@ -62,8 +62,8 @@ allocates two `max_size` alignment buffers and, with `padded_gather`, the
 padded-gather scratch.
 
 **No JIT in a step.** `prepare` compiles the launchers in process; a dtype
-not prepared before a capture raises. Serving images warm the CuTe DSL cache
-at build time and call `freeze_kernel_resolution()` after warm-up.
+not prepared before a capture raises. Serving images warm the TileLang cache
+(`TILELANG_CACHE_DIR`) at build time and call `freeze_kernel_resolution()` after warm-up.
 
 ## Environment
 
@@ -81,8 +81,8 @@ traffic class fall back to NCCL's own settings.
 | `SPARKNET_ROCE_TRAFFIC_CLASS` | DSCP/ECN byte for every QP (falls back to `NCCL_IB_TC`, default 0) |
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
-| `SPARKNET_ROCE_KERNELS` | kernel family, `cute` (default) or `tilelang`; see Kernel families below |
-| `SPARKNET_ROCE_TRACE` | `1`: per-op timing trace of the all-reduce (both families), see `sparknet.oneshot.trace` |
+| `SPARKNET_ROCE_KERNELS` | removed in 0.4.0 and refused: the TileLang kernels are the only family (see Kernels below) |
+| `SPARKNET_ROCE_TRACE` | `1`: per-op timing trace of the all-reduce, see `sparknet.oneshot.trace` |
 | `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it to that core; `big` confines it to the big-core cluster, the cores above the midpoint between the smallest and largest `cpu_capacity` (GB10: the ten Cortex-X925 at 997 to 1024, excluding the ten Cortex-A725 at 718 to 731). `stats()` reports `proxy_cpus` and `proxy_cpu_observed`. Measured on the probe (see below), a candidate for the recipe environment pending a serving benchmark |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
@@ -222,7 +222,8 @@ The serving benchmark with the 40-register header-loop variant
 bracket) puts the two families level: single-stream step +0.1 percent (prose)
 and +0.3 percent (JSON) against a bracket of 0.0 and +0.2 percent, eight
 streams and prefill within noise. TileLang no longer loses, but it is not
-measurably better, so the default stays `cute`.
+measurably better, so the default stayed `cute` at the time. 0.4.0 retired the
+CuTe pair instead (see Kernels below).
 
 ### Where the NCCL cut is (2026-10-05)
 
@@ -264,31 +265,30 @@ Streaming the relay in chunks and a shared progress window were measured
 slower than whole-fragment forwarding (`2026-10-03-relay-progress`) and are
 not carried. NIC forwarding (`mesh4`) is carried but not recommended.
 
-## Kernel families
+## Kernels
 
-Two kernel families carry the protocol over the same pinned region, proxy,
-launcher signature and runtime. ``cute`` is the vendored CuTe DSL pair
-(`_oneshot_cute.py`, `_allgather_cute.py`, intrinsics in
-`_cute_intrinsics.py`); ``tilelang`` is the TileLang pair
-(`_oneshot_tilelang.py`, `_allgather_tilelang.py`), generated as CUDA source
-with the protocol steps in `_device.py`: the same PTX for every system-scope
-load, store and fence, the same spin, the same float32 accumulation in
-fixed rank order and the same conversions, so the two families are meant to
-be bit-identical and the GPU test checks it (`test_kernel_families_*`).
-`SPARKNET_ROCE_KERNELS` selects the family for a process, the runtime's
-`kernels` keyword (and the probe's `--kernels`) for one runtime; every rank
-must agree, which the setup handshake enforces. The TileLang family passed the GPU suite and the probe on the pair and the
-ring on 2026-10-05 (see Measured through this package); the default stays
-`cute` until the deployment repository has benchmarked serving with
-`SPARKNET_ROCE_KERNELS=tilelang`, which is the promotion gate. The TileLang
-family needs `tilelang` (the image's) and compiles with nvcc on first
-`prepare`, in well under a second per launcher, into TileLang's own cache.
+The TileLang kernels (`_oneshot_tilelang.py`, `_allgather_tilelang.py`) carry
+the protocol, generated as CUDA source with the protocol steps in
+`_device.py`: inline PTX for every system-scope load, store and fence, the
+float32 accumulation in fixed rank order and the conversions. They need
+`tilelang` and compile with nvcc on the first `prepare`, in well under a
+second per launcher, into TileLang's own cache; they use no tensor-core
+instructions.
+
+Until 0.4.0 a vendored CuTe DSL pair (derived from b12x's RoCEnante, see
+docs/provenance.md) carried the same protocol, selected with
+`SPARKNET_ROCE_KERNELS`. The two were bit-identical on the pair and the ring
+and level in serving once the TileLang kernels declared full residency
+(2026-10-05, above). 0.4.0 keeps one family: every protocol change was
+written and qualified twice, and a family that production does not run is
+an untested path. `SPARKNET_ROCE_KERNELS` and the runtime's `kernels`
+keyword are refused.
 
 ## Tests
 
 - `tests/test_oneshot_cpu.py`: the production C proxy under a fake verbs
   layer with sanitizers (26,000 collectives), the topology resolver, the
-  kernels' flag selection.
+  flag selection of the generated header, compiled on the host.
 - `tests/gpu/test_oneshot_gpu.py` (torchrun, 2 or more nodes): NCCL
   parity, bit-identical ranks, eligibility and unaligned staging, dim-0,
   last-dim and padded gathers, graph replay mixing both collectives, the

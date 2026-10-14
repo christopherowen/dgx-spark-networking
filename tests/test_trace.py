@@ -79,24 +79,6 @@ class TraceFormatTest(unittest.TestCase):
         self.assertIn("_trace.W_PROXY", runtime)
         self.assertIn("roce_trace_stamp", (ROOT / "_oneshot_tilelang.py").read_text())
 
-    def test_untraced_kernels_compile_none_of_the_trace(self) -> None:
-        lines = (ROOT / "_oneshot_cute.py").read_text().splitlines()
-        guarded: set[int] = set()
-        guards = 0
-        for i, line in enumerate(lines):
-            if line.strip() == "if cutlass.const_expr(self._trace):":
-                guards += 1
-                indent = len(line) - len(line.lstrip())
-                j = i + 1
-                while j < len(lines) and (not lines[j].strip() or len(lines[j]) - len(lines[j].lstrip()) > indent):
-                    guarded.add(j)
-                    j += 1
-        stores = [i for i, line in enumerate(lines) if "st_relaxed_sys_u64(" in line and "import" not in line]
-        self.assertEqual(guards, 5)  # start, doorbell, peer flags, wait done, end
-        self.assertTrue(stores)
-        self.assertTrue(all(i in guarded for i in stores), "a trace store outside const_expr(self._trace)")
-
-
     def test_generated_kernels_trace_only_when_traced(self):
         """In the TileLang all-reduce every trace call sits under an ``if traced:`` block."""
         for module_name in ("_oneshot_tilelang.py",):

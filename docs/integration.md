@@ -27,16 +27,16 @@ On the build host and in the serving image:
 
 ```sh
 pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0                 # CPU tooling: topology, nccl, policy, probe planning
-pip install 'dgx-spark-networking[runtime] @ git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0'  # on the nodes: torch, cuda-python, nvidia-cutlass-dsl 4.7.1
+pip install 'dgx-spark-networking[runtime] @ git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0'  # on the nodes: torch, cuda-python, tilelang
 ```
 
 The package itself has no dependencies, and the NCCL patch series ships in
 it (`sparknet nccl patches --export DIR`), so an image build needs no
 checkout of this repository.
 
-The `runtime` extra pins the CuTe DSL to the version the vLLM nightly base
-image installs; keep it at whatever your base image ships (the kernels need
-4.7.x) and install the package with `--no-deps` inside such an image.
+The `runtime` extra asks for TileLang 0.1.15 or later (qualified with
+spark-ds41f's build of 0.1.15); inside an image that already ships TileLang,
+install the package with `--no-deps`.
 
 ### 2.2 Describe the fabric
 
@@ -160,11 +160,9 @@ SPARKNET_ROCE_CACHE_DIR=/opt/sparknet/roce python3 -c \
   'from sparknet.oneshot._proxy import load; print("proxy ABI", load().roce_abi_version())'
 ```
 
-**The kernels.** Both families compile on the first `prepare` on a GPU and
-cache on disk through their toolchains' own variables: the CuTe DSL under
-`CUTE_DSL_CACHE_DIR`, TileLang under `TILELANG_CACHE_DIR` (default
-`~/.tilelang/cache`). Those caches are shared with every other kernel of
-the same toolchain in the serving process, so the recipe, not this library,
+**The kernels.** They compile on the first `prepare` on a GPU and cache on
+disk under `TILELANG_CACHE_DIR` (default `~/.tilelang/cache`). That cache is
+shared with every other TileLang kernel in the serving process, so the recipe, not this library,
 places them with its other JIT caches on a mounted volume (spark-ds41f uses
 `/cache/kkref/jit/<toolchain>`). Either warm that cache on each
 node once (a `prepare` for every dtype the engine reduces, which the probe

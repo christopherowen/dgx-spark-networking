@@ -2,9 +2,9 @@
 
 Same transport and protocol as the all-reduce with the reduction replaced by
 a strided copy that writes the concatenated output directly (dim-0 and
-last-dim concatenation; see ``_allgather_cute.py``). Generated as CUDA source
-by TileLang with the protocol steps in ``_device.py``; the buffers are the
-kernel's arguments and ``run`` takes the family-neutral ``Launch``.
+last-dim concatenation). Generated as CUDA source by TileLang with the
+protocol steps in ``_device.py``; the buffers are the kernel's arguments and
+``run`` takes a ``Launch``.
 """
 
 # No postponed annotations: TileLang evaluates the prim_func's annotations

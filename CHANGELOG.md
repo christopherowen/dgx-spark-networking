@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **One kernel family: TileLang.** The vendored CuTe DSL kernels
+  (`_oneshot_cute.py`, `_allgather_cute.py`, `_cute_intrinsics.py`,
+  `_compile.py`) are retired; the TileLang kernels they were bit-identical to
+  (2026-10-05 qualification) are the only ones. Every protocol change had to be
+  written and qualified twice, and a family production does not run is an
+  untested path. `SPARKNET_ROCE_KERNELS`, the runtime's `kernels` keyword and
+  the probe's `--kernels` are refused or removed; the `runtime` extra needs
+  `tilelang` instead of `nvidia-cutlass-dsl`. The trace's clock calibration
+  kernel is TileLang too. The CPU test compiles the generated header's
+  flag selection with the host compiler instead of executing the CuTe
+  kernel's Python expressions.
+
 - Per-op timing trace (`SPARKNET_ROCE_TRACE=1`, `sparknet.oneshot.trace`):
   the kernels stamp `%globaltimer` at start, doorbell, every peer lane's
   flag, end of wait and end; the proxy stamps doorbell seen, posts, relay

@@ -1,24 +1,19 @@
-"""Kernel family selection: which generated kernels carry the one-shot protocol.
+"""The kernels that carry the one-shot protocol.
 
-Two families implement the same protocol over the same pinned region, proxy
-and launcher signature: the vendored CuTe DSL kernels (``cute``) and the
-TileLang kernels (``tilelang``), which inject ``_device.py``. They are meant
-to be bit-identical; the GPU test checks it. ``SPARKNET_ROCE_KERNELS``
-selects the family for a process, the runtime's ``kernels`` keyword for one
-runtime, and every rank of a group must agree (the setup handshake checks).
+TileLang programs (``_oneshot_tilelang.py``, ``_allgather_tilelang.py``)
+generated as CUDA with the protocol steps of ``_device.py``. Until 0.4.0 a
+vendored CuTe DSL pair carried the same protocol bit for bit; one family is
+qualified, maintained and run (``SPARKNET_ROCE_KERNELS`` is refused).
 """
 
 from __future__ import annotations
 
-import importlib
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
-ENV_KERNELS = "SPARKNET_ROCE_KERNELS"
-FAMILIES = ("cute", "tilelang")
-DEFAULT_FAMILY = "cute"
 PACK_BYTES = 16
+REMOVED_KERNEL_SETTING = "SPARKNET_ROCE_KERNELS"
 
 
 @dataclass(frozen=True)
@@ -30,8 +25,7 @@ class Launch:
     and the offsets locate its receive slots, flags, send slots and control
     record; ``counters`` is the device-resident epoch, staging and tail
     counters and the poison word, addressed by index. A TileLang kernel takes
-    the tensors as buffers (which also binds its device and stream); the CuTe
-    launcher reads their addresses.
+    the tensors as buffers (which also binds its device and stream).
     """
 
     input: Any
@@ -54,22 +48,27 @@ class Launch:
     trace_base: int = 0  # all-reduce trace file address (pinned, device-visible), 0 when untraced
 
 
-def family(explicit: str | None = None) -> str:
-    """The selected family: the explicit choice, else ``SPARKNET_ROCE_KERNELS``, else ``cute``."""
-    chosen = explicit or os.environ.get(ENV_KERNELS) or DEFAULT_FAMILY
-    if chosen not in FAMILIES:
-        raise ValueError(f"unknown one-shot kernel family {chosen!r}; choose one of {FAMILIES}")
-    return chosen
+def kernel_setting_problems(environ: Mapping[str, str]) -> list[str]:
+    """The family switch is gone: one message when it is still set."""
+    if environ.get(REMOVED_KERNEL_SETTING):
+        return [f"{REMOVED_KERNEL_SETTING} is no longer read: sparknet 0.4.0 runs only the TileLang "
+                "kernels (the CuTe DSL pair they were bit-identical to is retired); unset it"]
+    return []
 
 
-def reduce_launcher(kernels: str, *key) -> Callable[..., None]:
-    """The compiled all-reduce launcher of ``kernels`` for ``key`` (dtype, world, rank, geometry)."""
-    return importlib.import_module(f"sparknet.oneshot._oneshot_{kernels}").get_launcher(*key)
+def reduce_launcher(*key) -> Callable[..., None]:
+    """The compiled all-reduce launcher for ``key`` (dtype, world, rank, geometry)."""
+    from ._oneshot_tilelang import get_launcher
+
+    return get_launcher(*key)
 
 
-def gather_launcher(kernels: str, *key) -> Callable[..., None]:
-    """The compiled all-gather launcher of ``kernels`` for ``key`` (world, rank, geometry)."""
-    return importlib.import_module(f"sparknet.oneshot._allgather_{kernels}").get_launcher(*key)
+def gather_launcher(*key) -> Callable[..., None]:
+    """The compiled all-gather launcher for ``key`` (world, rank, geometry)."""
+    from ._allgather_tilelang import get_launcher
+
+    return get_launcher(*key)
 
 
-__all__ = ["DEFAULT_FAMILY", "ENV_KERNELS", "FAMILIES", "Launch", "PACK_BYTES", "family", "gather_launcher", "reduce_launcher"]
+__all__ = ["Launch", "PACK_BYTES", "REMOVED_KERNEL_SETTING", "gather_launcher", "kernel_setting_problems",
+           "reduce_launcher"]

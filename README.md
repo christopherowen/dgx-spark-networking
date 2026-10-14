@@ -131,18 +131,14 @@ pair was measured for the first time (`tp2-direct` keeps the triangle's
 settings and is now measured, not tuned), and the receipts are under
 `evidence/2026-10-05-tilelang-port`.
 
-**Two kernel families.** The one-shot kernels now exist twice: the vendored
-CuTe DSL kernels and a TileLang port (`SPARKNET_ROCE_KERNELS=tilelang`) that
+**TileLang kernels.** The one-shot kernels are a TileLang port that
 generates CUDA source with the protocol's device side in one header. The
-GPU suite shows the two bit-identical on the pair and the ring; latencies
-are equal within noise, with TileLang 3 to 5 percent faster at 480 KiB.
-Serving was benchmarked on both (2026-10-05, [docs/oneshot.md](docs/oneshot.md)).
-The first TileLang build was 0.6 to 1.2 percent slower per decode step;
-per-kernel decode profiles traced it to the kernel's register footprint (56
-against 40 per thread), which cost about 15 µs per all-reduce beside the
-model's L2 prefetch. With the kernels declaring full residency the two
-families are level in serving, so by the promotion rule (measurably better)
-the default stays `cute`.
+GPU suite showed them bit-identical to the vendored CuTe DSL kernels on the
+pair and the ring, latencies equal within noise, and, once they declared
+full residency (the first build spent 56 registers against 40 and lost
+about 15 µs per all-reduce beside the model's L2 prefetch), level in serving
+(2026-10-05, [docs/oneshot.md](docs/oneshot.md)). 0.4.0 retired the CuTe
+pair: one family to write, qualify and run.
 
 **Not yet.** The switched profiles reuse the triangle's settings and say so
 in their status. The GPU-initiated transport is staged, not implemented;
@@ -156,8 +152,8 @@ pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0
 
 The package has no dependencies: the CLI and the topology, profile, policy
 and probe-planning modules run on any machine. On the nodes, the one-shot
-runtime and the collective probe need torch, cuda-python and the CuTe DSL
-pinned by the `runtime` extra (`pip install 'dgx-spark-networking[runtime] @ git+...'`);
+runtime and the collective probe need torch, cuda-python and TileLang
+(the `runtime` extra) (`pip install 'dgx-spark-networking[runtime] @ git+...'`);
 inside a vLLM image that already ships them, install with `--no-deps`.
 
 ## Quick start
@@ -284,7 +280,7 @@ The full plan with acceptance criteria is
 
 ```text
 sparknet/              the library (CPU-only subpackages never import torch)
-sparknet/oneshot/      the runtime, the proxy, and both kernel families (CuTe DSL and TileLang)
+sparknet/oneshot/      the runtime, the proxy, and the TileLang kernels
 sparknet/nccl/patches/ NCCL 2.30.7 patch series and README, shipped in the wheel
 native/gpunetio/       DOCA GPUNetIO pin, Spark patches and build script
 recipes/               rendered environments for the named profiles

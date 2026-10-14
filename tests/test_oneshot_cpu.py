@@ -2,8 +2,9 @@
 
 The simulator in ``tests/oneshot_sim`` includes the real ``_roce_proxy.c``
 and replaces only libibverbs and the GPU endpoint. The Python checks execute
-the production topology resolver and the kernels' flag-selection expressions
-in isolation, because importing the runtime needs torch and the CuTe DSL.
+the production topology resolver in isolation, and compile the generated
+header's flag-selection code with the host compiler, because importing the
+runtime needs torch and TileLang.
 """
 
 import ast
@@ -13,7 +14,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import types
 import typing
 import unittest
 import unittest.mock
@@ -68,17 +68,15 @@ def _module(path: Path):
 
 
 class KernelFamilyTest(unittest.TestCase):
-    def test_family_selection(self):
+    def test_the_family_switch_is_refused(self):
+        """One kernel family since 0.4.0: the retired switch is an error, not a no-op."""
         kernels = _module(ROCE / "_kernels.py")
-        with unittest.mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(kernels.family(), "cute")
-            self.assertEqual(kernels.family("tilelang"), "tilelang")
-        with unittest.mock.patch.dict(os.environ, {"SPARKNET_ROCE_KERNELS": "tilelang"}):
-            self.assertEqual(kernels.family(), "tilelang")
-            self.assertEqual(kernels.family("cute"), "cute")
-        with self.assertRaises(ValueError):
-            kernels.family("triton")
-        self.assertEqual(kernels.FAMILIES, ("cute", "tilelang"))
+        self.assertEqual(kernels.kernel_setting_problems({}), [])
+        for value in ("cute", "tilelang"):
+            [message] = kernels.kernel_setting_problems({"SPARKNET_ROCE_KERNELS": value})
+            self.assertIn("unset it", message)
+        for retired in ("_oneshot_cute.py", "_allgather_cute.py", "_cute_intrinsics.py", "_compile.py"):
+            self.assertFalse((ROCE / retired).exists(), retired)
 
     def test_device_header_defines_every_function_the_kernels_call(self):
         device = _module(ROCE / "_device.py")
@@ -89,14 +87,12 @@ class KernelFamilyTest(unittest.TestCase):
                        "#define ROCE_FLAG_STRIDE 128", "#define ROCE_HCA_COUNT 4", "#define ROCE_NEIGHBOR_LANES 2"):
             self.assertIn(define, source)
         self.assertEqual(source.count("{"), source.count("}"), "unbalanced braces in the device header")
-        # The same PTX as the CuTe intrinsics, so both families order memory and round the same way.
-        intrinsics = (ROCE / "_cute_intrinsics.py").read_text()
+        # The protocol's memory ordering and rounding, as the qualified kernels spell them.
         for ptx in ("ld.relaxed.gpu.global.u32", "ld.relaxed.sys.global.u32", "atom.relaxed.gpu.global.add.u32",
                     "st.release.gpu.global.u32", "st.relaxed.sys.global.u32", "fence.sc.sys;", "fence.sc.gpu;",
                     "ld.acquire.sys.global.u32", "ld.relaxed.sys.global.v4.u32", "ld.global.v4.u32", "st.global.v4.u32",
                     "cvt.f32.bf16", "cvt.f32.f16", "cvt.rn.bf16.f32", "cvt.rn.f16x2.f32"):
             self.assertIn(ptx, source, ptx)
-            self.assertIn(ptx, intrinsics, ptx)
         # Every extern the TileLang kernels name exists in the header.
         for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
             text = (ROCE / module_name).read_text()
@@ -126,12 +122,16 @@ class KernelFamilyTest(unittest.TestCase):
             self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
 
-    def test_runtime_routes_launchers_through_the_family(self):
+    def test_runtime_routes_launchers_to_the_tilelang_kernels(self):
         runtime = (ROCE / "runtime.py").read_text()
-        self.assertIn("reduce_launcher(self.kernel_family,", runtime)
-        self.assertIn("gather_launcher(self.kernel_family,", runtime)
-        self.assertIn('"kernel_family": self.kernel_family', runtime)
-        self.assertNotIn("_oneshot_cute import", runtime)
+        self.assertIn("reduce_launcher(*self._launcher_key(dtype))", runtime)
+        self.assertIn("gather_launcher(*self._gather_launcher_key())", runtime)
+        self.assertIn("kernel_setting_problems(os.environ)", runtime)
+        self.assertIn('if "kernels" in _ignored:', runtime)
+        self.assertNotIn("kernel_family", runtime)
+        kernels = (ROCE / "_kernels.py").read_text()
+        self.assertIn("from ._oneshot_tilelang import get_launcher", kernels)
+        self.assertIn("from ._allgather_tilelang import get_launcher", kernels)
 
 
 class TopologyResolverTest(unittest.TestCase):
@@ -191,38 +191,42 @@ class TopologyResolverTest(unittest.TestCase):
 class LauncherGeometryTest(unittest.TestCase):
     """Execute the kernels' actual flag-selection expressions against the simulator's geometry."""
 
+    @unittest.skipUnless(shutil.which(os.environ.get("CC", "cc")), "needs a C compiler")
     def test_launchers_wait_on_the_relay_flags(self):
-        for module, class_name in (("_oneshot_cute.py", "_RoceOneshotLaunch"), ("_allgather_cute.py", "_RoceAllGatherLaunch")):
-            source = ROCE / module
-            tree = ast.parse(source.read_text())
-            cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
-            kernel = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "kernel")
-            cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"]
-            key = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_process_key")
-            namespace = {"_DTYPE_PACK_ELEMS": {"bfloat16": 8}}
-            exec(compile(ast.Module(body=[cls, key], type_ignores=[]), str(source), "exec"), namespace)
-            prefix = ("bfloat16",) if module == "_oneshot_cute.py" else ()
-            wait = next(n for n in ast.walk(kernel) if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
-                        and "self._world_size * self._hca_count" in ast.unparse(n.test))
-            select = ast.Module(body=wait.body[:4], type_ignores=[])
-            for width in (1, 2):
+        """Compile the generated header's own flag selection for every rank and lane geometry
+        and check which (peer, lane) flags a launch waits on."""
+        device = _module(ROCE / "_device.py")
+        lanes = _functions(ROCE / "_oneshot_tilelang.py", {"_lanes"}, {})["_lanes"]
+        for ring4, widths in ((True, (1, 2)), (False, (1, 2, 4))):
+            for width in widths:
+                hca_count, neighbor_lanes = lanes(width, ring4)
+                if ring4:
+                    self.assertEqual((hca_count, neighbor_lanes), (2 * width, width))
+                else:
+                    self.assertEqual((hca_count, neighbor_lanes), (width, 2 if width == 4 else width))
                 for rank in range(4):
-                    args = prefix + (4, rank, 128, 2, 64, width)
-                    launch = namespace[class_name](*args, True)
-                    self.assertEqual((launch._hca_count, launch._neighbor_lanes), (2 * width, width))
-                    self.assertNotEqual(namespace["_process_key"](*args, 0, True), namespace["_process_key"](*args, 0, False))
-                    selected = []
-                    for tid in range(4 * 2 * width):
-                        env = dict(self=launch, tidx=tid, Int32=int, cutlass=types.SimpleNamespace(const_expr=lambda x: x))
-                        exec(compile(select, str(source), "exec"), env)
-                        if env["active"]:
-                            selected.append((env["peer"], env["hca"]))
-                    expected = [(p, lane) for p in range(4) if p != rank for lane in range(2 * width if p == (rank + 2) % 4 else width)]
-                    self.assertEqual(selected, expected)
-            for width in (1, 2, 4):
-                launch = namespace[class_name](*(prefix + (4, 0, 128, 2, 64, width)))
-                self.assertEqual(launch._hca_count, width)
-                self.assertEqual(launch._neighbor_lanes, 2 if width == 4 else width)
+                    header = device.render_source(world_size=4, rank=rank, slots=2, flag_stride=128,
+                                                  hca_count=hca_count, neighbor_lanes=neighbor_lanes)
+                    wait = header[header.index("__device__ __forceinline__ void roce_wait_flags("):]
+                    select = wait[wait.index("int peer = tidx / ROCE_HCA_COUNT;"):wait.index("if (active) {")]
+                    defines = "".join(line + "\n" for line in header.splitlines()
+                                      if line.startswith("#define ROCE_") and "(" not in line.split()[1])
+                    program = (f"#include <stdbool.h>\n#include <stdio.h>\n{defines}"
+                               "int main(void) {\n"
+                               "    for (int tidx = 0; tidx < ROCE_WORLD * ROCE_HCA_COUNT; tidx++) {\n"
+                               f"        {select}\n"
+                               "        if (active) printf(\"%d %d\\n\", peer, hca);\n"
+                               "    }\n    return 0;\n}\n")
+                    with tempfile.TemporaryDirectory() as tmp:
+                        (Path(tmp) / "select.c").write_text(program)
+                        subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Werror", "-o",
+                                        str(Path(tmp) / "select"), str(Path(tmp) / "select.c")], check=True)
+                        out = subprocess.run([str(Path(tmp) / "select")], check=True, capture_output=True, text=True).stdout
+                    selected = [tuple(map(int, line.split())) for line in out.splitlines()]
+                    # The opposite rank on every lane, the neighbours on their own lanes.
+                    expected = [(p, lane) for p in range(4) if p != rank
+                                for lane in range(hca_count if p == (rank + 2) % 4 else neighbor_lanes)]
+                    self.assertEqual(selected, expected, (ring4, width, rank))
 
     def test_runtime_launcher_keys_carry_the_relay_mode(self):
         source = (ROCE / "runtime.py").read_text()

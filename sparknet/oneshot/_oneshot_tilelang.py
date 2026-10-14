@@ -1,16 +1,17 @@
 """TileLang kernel for the RoCE one-shot all-reduce.
 
-The same five phases as ``_oneshot_cute.py`` (stage, doorbell, wait, reduce
-in fixed rank order, advance the epoch), generated as CUDA source by
+Five phases (stage, doorbell, wait, reduce in fixed rank order, advance the
+epoch), generated as CUDA source by
 TileLang with the protocol steps in ``_device.py``. The kernel's arguments
 are the device buffers (the input and output as 4-byte words, the
 counters tensor), which bind the launch to the current device and stream,
 plus the pinned region's base address, offsets, indices and sizes as scalars.
 Message size and launch grid are runtime scalars; each power-of-two grid has
-its own staging and tail counters, as in the CuTe kernel. One launcher is
-compiled per dtype, geometry and trace choice; ``run`` takes the
-family-neutral ``Launch``. The traced kernel writes the CuTe kernels' trace
-words (``sparknet.oneshot.trace``); the untraced one compiles none of it.
+its own staging and tail counters. One launcher is compiled per dtype,
+geometry and trace choice; ``run`` takes a ``Launch``. The traced kernel writes
+the trace words of ``sparknet.oneshot.trace``; the untraced one compiles none
+of it. Until 0.4.0 a vendored CuTe DSL kernel ran the same protocol, bit for
+bit (receipts in evidence/2026-10-05-tilelang-port).
 
 Importing this module needs nothing; ``get_launcher`` imports TileLang.
 """
@@ -46,7 +47,7 @@ def _resident_blocks(threads: int) -> int:
 
     The kernels declare this as their minimum blocks per SM, which bounds the
     compiler's register budget to the full-occupancy figure (40 registers at 512
-    threads, as the CuTe kernels compile). Left to itself nvcc spent 54 to 56
+    threads, as the retired CuTe kernels compiled). Left to itself nvcc spent 54 to 56
     registers, which halves the blocks per SM, and in a decode step, beside the
     model's L2 prefetch and kernels, every launch then took about 15 us longer
     (2026-10-05 decode profiles, docs/oneshot.md); in isolation the two were equal.

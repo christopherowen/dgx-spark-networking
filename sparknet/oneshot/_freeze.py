@@ -1,4 +1,4 @@
-"""Process-wide kernel-resolution freeze, shared by every kernel family.
+"""Process-wide kernel-resolution freeze, shared by every launcher.
 
 Once a serving engine has warmed every launcher it needs, any further
 compilation is a bug and raises instead of stalling a step. This module has

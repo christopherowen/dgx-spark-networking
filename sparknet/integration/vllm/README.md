@@ -33,7 +33,7 @@ and `SPARKNET_ROCE_ALLGATHER_MAX_BYTES` for its limits, and the runtime's
 complete environment). One-shot has no enable switch: an engine that serves a
 one-shot fabric constructs the adapter, and the adapter is on.
 
-Serving images must build the proxy and warm the CuTe kernels at image build
+Serving images must build the proxy and warm the TileLang kernels at image build
 time (one import plus `prepare` in a build step), then call
 `sparknet.oneshot.freeze_kernel_resolution()` after the engine warm-up so
 no compilation can happen inside a step.

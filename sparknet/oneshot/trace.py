@@ -1,7 +1,7 @@
 """Per-op timing trace of the one-shot all-reduce: file layout, reader and analysis.
 
 Set ``SPARKNET_ROCE_TRACE=1`` before a runtime is created to trace it (both kernel
-families). The runtime then writes ``/dev/shm/sparknet-trace-r<rank>-p<pid>-<id>.bin``: a
+the TileLang kernels). The runtime then writes ``/dev/shm/sparknet-trace-r<rank>-p<pid>-<id>.bin``: a
 4096-byte header, then ``RECORDS`` records of ``RECORD_WORDS`` little-endian u64 words,
 each op's record at its sequence number modulo ``RECORDS``. Tracing selects a separately
 compiled kernel; untraced runtimes run the same code as before and the proxy only tests a

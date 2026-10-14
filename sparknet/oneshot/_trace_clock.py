@@ -13,48 +13,56 @@ from __future__ import annotations
 import functools
 import time
 
-import cuda.bindings.driver as cuda
-import cutlass.cute as cute
 import numpy as np
 import torch
-from cutlass import Int32, Int64, Uint32
-
-from ._compile import compile_kernel
-from ._cute_intrinsics import globaltimer, ld_relaxed_sys_u32, st_relaxed_sys_u64
 
 ROUNDS = 400
 SPIN_LIMIT = 50_000_000
 
-
-class _ClockProbe:
-    @cute.jit
-    def __call__(self, base: Int64, rounds: Int32, spin_limit: Int32, stream: cuda.CUstream) -> None:
-        self.kernel(base, rounds, spin_limit).launch(grid=(1, 1, 1), block=[32, 1, 1], cluster=(1, 1, 1),
-                                                     stream=stream)
-
-    @cute.kernel
-    def kernel(self, base: Int64, rounds: Int32, spin_limit: Int32) -> None:
-        tidx, _, _ = cute.arch.thread_idx()
-        if Int32(tidx) == Int32(0):
-            round_ = Int32(1)
-            while round_ <= rounds:
-                polls = Int32(0)
-                waiting = Int32(1)
-                while waiting == Int32(1):
-                    if ld_relaxed_sys_u32(base) == Uint32(round_):
-                        waiting = Int32(0)
-                    else:
-                        polls = polls + Int32(1)
-                        if polls > spin_limit:
-                            waiting = Int32(0)
-                st_relaxed_sys_u64(base + Int64(8) * Int64(round_), globaltimer())
-                round_ = round_ + Int32(1)
+# One thread answers the host's rounds: wait (bounded) for round i in the first
+# word, then store %globaltimer in word i, all at system scope on pinned memory.
+_SOURCE = r"""
+__device__ __forceinline__ void roce_clock_probe(long long base, int rounds, int spin_limit) {
+    for (int round = 1; round <= rounds; round++) {
+        for (int polls = 0; polls <= spin_limit; polls++) {
+            unsigned int seen;
+            asm volatile("ld.relaxed.sys.global.u32 %0, [%1];" : "=r"(seen) : "l"(base) : "memory");
+            if (seen == (unsigned int)round) {
+                break;
+            }
+        }
+        unsigned long long now;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+        asm volatile("st.relaxed.sys.global.u64 [%0], %1;" :: "l"(base + 8LL * round), "l"(now) : "memory");
+    }
+}
+"""
 
 
 @functools.cache
 def _launcher():
-    stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
-    return compile_kernel(_ClockProbe(), 16, 1, 1, stream, name="oneshot.trace_clock", cache_key=("trace_clock",))
+    """The probe kernel: thread 0 of one block runs ``roce_clock_probe``. A small CUDA
+    tensor binds the launch to the current device and stream."""
+    import tilelang
+    import tilelang.language as T
+
+    from ._oneshot_tilelang import _pass_configs
+
+    @tilelang.jit(pass_configs=_pass_configs())
+    def program():
+        n = T.dynamic("n")
+
+        @T.prim_func
+        def clock_probe(anchor: T.Tensor((n,), T.int32), base: T.int64, rounds: T.int32, spin_limit: T.int32):
+            with T.Kernel(1, threads=32):
+                T.import_source(_SOURCE)
+                tx = T.get_thread_binding()
+                if tx == 0:
+                    T.call_extern("roce_clock_probe", base, rounds, spin_limit, dtype="handle")
+
+        return clock_probe
+
+    return program()
 
 
 def calibrate(device: torch.device, rounds: int = ROUNDS) -> tuple[int, int]:
@@ -64,8 +72,10 @@ def calibrate(device: torch.device, rounds: int = ROUNDS) -> tuple[int, int]:
         words32 = buffer.numpy().view(np.uint32)
         words64 = buffer.numpy().view(np.uint64)
         launcher = _launcher()
+        anchor = torch.zeros(1, dtype=torch.int32, device=device)
         stream = torch.cuda.Stream(device)
-        launcher(buffer.data_ptr(), rounds, SPIN_LIMIT, cuda.CUstream(stream.cuda_stream))
+        with torch.cuda.stream(stream):
+            launcher(anchor, buffer.data_ptr(), rounds, SPIN_LIMIT)
         samples = []
         for round_ in range(1, rounds + 1):
             before = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)

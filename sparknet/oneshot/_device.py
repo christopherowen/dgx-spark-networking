@@ -1,11 +1,11 @@
 """The one-shot protocol's device side as CUDA C, for kernels that are generated as CUDA source.
 
 The TileLang kernels (``_oneshot_tilelang``, ``_allgather_tilelang``) inject
-this header with ``T.import_source`` and call its functions by name. It is
-the CuTe DSL intrinsics of ``_cute_intrinsics.py`` spelled as inline PTX in
-C, plus the five protocol phases, so that the two kernel families execute
-the same memory-ordering instructions and the same fixed-order float32
-accumulation and produce bit-identical output. The GPU posting of RDMA work
+this header with ``T.import_source`` and call its functions by name: the
+protocol's memory-ordering instructions as inline PTX, its fixed-order float32
+accumulation and conversions, and the five protocol phases. (Until 0.4.0 a
+vendored CuTe DSL pair executed the same instructions bit for bit.) The GPU
+posting of RDMA work
 (the roadmap's stage 1) goes into this header too, called from the doorbell
 phase.
 
@@ -93,7 +93,7 @@ __device__ __forceinline__ void roce_st_relaxed_sys_u32(void *p, roce_u32 x) {
 }
 
 // Trace (SPARKNET_ROCE_TRACE): %globaltimer stamps into the op's record of the
-// pinned trace file, as the CuTe kernels write them (sparknet.oneshot.trace).
+// pinned trace file (sparknet.oneshot.trace).
 __device__ __forceinline__ unsigned long long roce_globaltimer() {
     unsigned long long t;
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
@@ -175,8 +175,7 @@ __device__ __forceinline__ void roce_copy_pack(const void *src, void *dst) {
     roce_st_global_pack(dst, roce_ld_global_pack(src));
 }
 
-// Conversions spelled exactly as the CuTe DSL kernels spell them, so both
-// families round the same way.
+// Conversions: round-to-nearest-even packing of the float32 sums.
 __device__ __forceinline__ float roce_u32_as_f32(roce_u32 w) { return __uint_as_float(w); }
 __device__ __forceinline__ roce_u32 roce_f32_as_u32(float f) { return __float_as_uint(f); }
 

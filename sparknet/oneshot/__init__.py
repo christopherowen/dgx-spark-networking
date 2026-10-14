@@ -12,9 +12,8 @@ host proxy later.
 ``capture``, ``check_health``, ``poisoned``, ``stats``, ``close``).
 See ``runtime.py`` for the protocol and the contract, and ``docs/oneshot.md``.
 
-Importing this package imports torch. The kernel family (``cute``, the vendored
-CuTe DSL kernels, or ``tilelang``) is imported when launchers are prepared;
-``SPARKNET_ROCE_KERNELS`` or the ``kernels`` keyword selects it.
+Importing this package imports torch. The TileLang kernels are compiled when
+launchers are prepared.
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ from ._freeze import (
     kernel_resolution_frozen,
     thaw_kernel_resolution,
 )
-from ._kernels import DEFAULT_FAMILY as DEFAULT_KERNEL_FAMILY, FAMILIES as KERNEL_FAMILIES
 from .runtime import (
     API_VERSION,
     DEFAULT_MAX_GATHER_BYTES,
@@ -42,10 +40,8 @@ from .runtime import (
 __all__ = [
     "API_VERSION",
     "AllReduce",
-    "DEFAULT_KERNEL_FAMILY",
     "DEFAULT_MAX_GATHER_BYTES",
     "DEFAULT_MAX_SIZE",
-    "KERNEL_FAMILIES",
     "KernelResolutionFrozenError",
     "SUPPORTED_DTYPES",
     "SUPPORTED_WORLD_SIZES",

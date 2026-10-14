@@ -33,7 +33,10 @@ freeze flag); the b12x preparation plan (`plan=` argument,
 environment names (the `B12X_ROCE_*` names are not read); a `transport`
 factory and `topology`
 keyword; `make_ptr` from `cutlass.cute.runtime`; the launchers' `run` take an
-ignored keyword `anchor` so both kernel families share one call. The C proxy differs from
+ignored keyword `anchor` so both kernel families share one call. 0.4.0 retired
+the vendored CuTe DSL kernels; the TileLang kernels that replace them were
+ported from them (same protocol phases and PTX, bit-identical output), so this
+provenance and its attribution still apply. The C proxy differs from
 the vendored file only in two comment lines and the `MESH_ROTATE`
 environment name lookup. Verify with `diff` against the tree named in
 `upstreams.lock.json`.

@@ -5,7 +5,7 @@ Import name: ``sparknet``. Subpackages:
 - ``sparknet.topology``: node maps, cabling validation, per-node environment rendering, LLDP discovery.
 - ``sparknet.nccl``: measured NCCL environment profiles and the patch series the ring profiles need.
 - ``sparknet.policy``: the explicit collective policy (which backend carries which collective).
-- ``sparknet.oneshot``: the one-shot RoCE all-reduce and all-gather runtime (needs torch and the CuTe DSL).
+- ``sparknet.oneshot``: the one-shot RoCE all-reduce and all-gather runtime (needs torch and TileLang).
 - ``sparknet.transport``: the RDMA transport boundary, today the host proxy, with the GPU-initiated path staged.
 - ``sparknet.probe``: fabric doctor, collective correctness/latency probe, GPUDirect capability report.
 - ``sparknet.integration.vllm``: the vLLM device-communicator adapter.

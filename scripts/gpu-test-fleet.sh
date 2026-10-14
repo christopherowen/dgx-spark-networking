@@ -8,7 +8,7 @@
 #
 # Environment: SSH_USER (default: the map's ssh_user), CHECKOUT (path of this checkout on the
 # nodes, default ~/sparknet-port), PACKAGE_TARGET (the image's sparknet directory), EXTRA_ENV
-# ("KEY=VALUE KEY2=VALUE2", e.g. SPARKNET_ROCE_KERNELS=tilelang), MASTER_PORT, OUT (log directory).
+# ("KEY=VALUE KEY2=VALUE2", e.g. SPARKNET_ROCE_TRACE=1), MASTER_PORT, OUT (log directory).
 # Each node's output lands in $OUT/<node>.log; the exit status is non-zero if any rank failed.
 set -euo pipefail
 MAP=$1; TRANSPORT=$2; PROFILE=$3; IMAGE=$4; shift 4

@@ -10,12 +10,12 @@ authors = [{ name = "Christopher Owen" }]
 dependencies = []
 
 [project.optional-dependencies]
-# The one-shot runtime and the collective probe. The CuTe DSL pin follows the
-# vLLM nightly base image (nvidia-cutlass-dsl 4.7.1 on CUDA 13).
+# The one-shot runtime and the collective probe. Qualified with TileLang 0.1.15
+# (spark-ds41f's build); the kernels use no tensor-core instructions.
 runtime = [
   "torch>=2.12.0",
   "cuda-python",
-  "nvidia-cutlass-dsl==4.7.1",
+  "tilelang>=0.1.15",
 ]
 dev = ["pytest"]
 
