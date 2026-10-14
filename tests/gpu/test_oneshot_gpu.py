@@ -15,12 +15,10 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import time
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 import torch
@@ -407,21 +405,18 @@ def test_adapter_path_graph_replay(runtime):
     dist.barrier()
 
 
-# A stopped rank's report: its own timed-out wait ("saw nothing from rank N"), and on
-# the ring possibly a relay neighbour's proxy that saw the stopped peer first.
-FAIL_STOP = r"saw nothing from rank \d+|proxy failed"
-
-
 def _fail_stop(scenario: str) -> dict:
-    """Run ``failstop_child.py`` on this rank and return its report.
+    """Run ``sparknet.probe.failstop`` on this rank and return its report.
 
     The scenario stops the child's GPU, so it gets a process (and a gloo group
     on its own port) of its own; this process's runtime is untouched.
     """
-    env = dict(os.environ, FAILSTOP_PORT=str(int(os.environ.get("MASTER_PORT", "29650")) + 7))
+    port = int(os.environ.get("MASTER_PORT", "29650")) + 7
     child = subprocess.run(
-        [sys.executable, str(Path(__file__).with_name("failstop_child.py")), scenario],
-        env=env, capture_output=True, text=True, timeout=300,
+        [sys.executable, "-m", "sparknet.probe.failstop", scenario,
+         "--rank", os.environ["RANK"], "--world-size", os.environ["WORLD_SIZE"],
+         "--master-addr", os.environ["MASTER_ADDR"], "--master-port", str(port)],
+        capture_output=True, text=True, timeout=300,
     )
     lines = [line for line in child.stdout.splitlines() if line.startswith("{")]
     assert lines, f"no report (exit {child.returncode}): {child.stderr[-2000:]}"
@@ -429,14 +424,7 @@ def _fail_stop(scenario: str) -> dict:
 
 
 def _assert_stopped(report: dict) -> None:
-    timeout_s = report["timeout_ms"] / 1000
-    assert report["healthy_before"], report
-    assert report["error"] is not None, report  # the GPU stopped instead of computing on
-    assert re.search(FAIL_STOP, report["failure"] or ""), report
-    # Detected within the timeout of the stalled wait, not a poll-count guess:
-    # one timeout for a rank waiting on the stopped one, two for a rank that
-    # first completed on the others' payloads.
-    assert 0.9 * timeout_s <= report["seconds"] <= 3 * timeout_s + 2, report
+    assert report["passed"], report
 
 
 def test_fail_stop_on_timeout_eager(runtime):
