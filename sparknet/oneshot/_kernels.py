@@ -18,13 +18,13 @@ REMOVED_KERNEL_SETTING = "SPARKNET_ROCE_KERNELS"
 
 @dataclass(frozen=True)
 class Launch:
-    """One collective launch, in the terms both kernel families take.
+    """One collective launch, in the terms the kernels take.
 
     ``input`` and ``output`` are flat ``int32`` views of the 16-byte-aligned
     input and output bytes; ``region`` is the pinned host region (``uint8``)
     and the offsets locate its receive slots, flags, send slots and control
     record; ``counters`` is the device-resident epoch, staging and tail
-    counters and the poison word, addressed by index. A TileLang kernel takes
+    counters, addressed by index. A TileLang kernel takes
     the tensors as buffers (which also binds its device and stream).
     """
 
@@ -41,8 +41,6 @@ class Launch:
     counters: Any
     stage_index: int
     tail_index: int
-    poison_index: int
-    spin_limit: int
     grid_x: int
     row_packs: int = 0  # all-gather only: packs per row of the shard (dim-0 gathers: the shard's packs)
     trace_base: int = 0  # all-reduce trace file address (pinned, device-visible), 0 when untraced

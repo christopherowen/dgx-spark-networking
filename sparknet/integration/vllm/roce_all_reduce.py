@@ -39,7 +39,7 @@ from torch.distributed import ProcessGroup
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_API_VERSION = 1
+REQUIRED_API_VERSION = 2
 ENV_ALLREDUCE_LIMIT = ("SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES",)
 ENV_ALLGATHER_LIMIT = ("SPARKNET_ROCE_ALLGATHER_MAX_BYTES",)
 
@@ -176,6 +176,13 @@ class SparknetOneShotAllReduce:
     def check_health(self) -> None:
         if not self.disabled and self._runtime is not None:
             self._runtime.check_health()
+
+    def failure(self) -> str | None:
+        """The runtime's failure report, or None. After a CUDA error, it says
+        whether a collective stopped the GPU and which peer it waited for."""
+        if self.disabled or self._runtime is None:
+            return None
+        return self._runtime.failure()
 
     def should_custom_ar(self, inp: torch.Tensor) -> bool:
         return not self.disabled and self._runtime.should_allreduce(inp)

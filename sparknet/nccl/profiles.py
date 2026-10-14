@@ -63,13 +63,13 @@ _DIRECT_ONESHOT = {
     "ALLREDUCE_CAPACITY_BYTES": "2097152",
     "ALLREDUCE_DISPATCH_MAX_BYTES": None,
     "ALLGATHER_MAX_BYTES": "4194304",
-    "SPIN_LIMIT": "5000000",
+    "TIMEOUT_MS": "10000",
 }
 _NO_ONESHOT = {
     "ALLREDUCE_CAPACITY_BYTES": None,
     "ALLREDUCE_DISPATCH_MAX_BYTES": None,
     "ALLGATHER_MAX_BYTES": None,
-    "SPIN_LIMIT": None,
+    "TIMEOUT_MS": None,
 }
 
 PROFILES: dict[str, dict[str, Any]] = {
@@ -116,7 +116,7 @@ PROFILES: dict[str, dict[str, Any]] = {
             "ALLREDUCE_CAPACITY_BYTES": "2097152",
             "ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
             "ALLGATHER_MAX_BYTES": "2097152",
-            "SPIN_LIMIT": "5000000",
+            "TIMEOUT_MS": "10000",
         },
         "evidence": "spark-ds41f experiments/2026-10-03-balanced-policy (decision.md), 2026-10-03-collective-serving, 2026-10-03-tp3-tp4-comparison",
     },
@@ -205,7 +205,7 @@ def environment(name: str) -> dict[str, str]:
             "ALLREDUCE_CAPACITY_BYTES": "ALLREDUCE_CAPACITY_BYTES",
             "ALLREDUCE_DISPATCH_MAX_BYTES": "ALLREDUCE_DISPATCH_MAX_BYTES",
             "ALLGATHER_MAX_BYTES": "ALLGATHER_MAX_BYTES",
-            "SPIN_LIMIT": "SPIN_LIMIT",
+            "TIMEOUT_MS": "TIMEOUT_MS",
         }
         for key, value in roce.items():
             if value is None:
@@ -230,7 +230,7 @@ def problems(env: dict[str, str], *, node_count: int, patched_nccl: bool = True)
     errors: list[str] = []
     for key in ("NCCL_BUFFSIZE", "NCCL_LL128_BUFFSIZE", "NCCL_MIN_TRAFFIC_PER_CHANNEL",
                 "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS",
-                "SPARKNET_ROCE_SPIN_LIMIT"):
+                "SPARKNET_ROCE_TIMEOUT_MS"):
         if key in env and (not str(env[key]).isdigit() or int(env[key]) <= 0):
             errors.append(f"{key} must be a positive integer")
     if "NCCL_MAX_NCHANNELS" in env and env["NCCL_MAX_NCHANNELS"].isdigit():

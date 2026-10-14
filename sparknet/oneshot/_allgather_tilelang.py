@@ -55,8 +55,6 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
             slot_bytes: T.int32,
             stage_index: T.int32,
             tail_index: T.int32,
-            poison_index: T.int32,
-            spin_limit: T.int32,
             grid_x: T.int32,
         ):
             with T.Kernel(grid_x, threads=threads) as bx:
@@ -75,39 +73,33 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 index = bx * threads + tx
                 stride = T.alloc_var(T.int32)
                 stride = grid_x * threads
-                poisoned = T.alloc_var(T.uint32)
-                poisoned = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
-                if poisoned == T.uint32(0):
-                    # 1. stage the local shard into the pinned send slot
-                    count = T.alloc_var(T.int32)
-                    count = T.max(0, (shard_packs - index + stride - 1) // stride)
-                    for i in T.serial(count):
-                        pack = index + i * stride
-                        T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
-                                      T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
-                    T.sync_threads()
-                    # 2. the last block to finish staging rings the proxy doorbell
-                    if tx == 0:
-                        T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
-                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype="handle")
-                    # 3. wait for every peer's payload-stripe flags
-                    T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq, T.cast(spin_limit, T.uint32),
-                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[poison_index]), dtype="handle")
-                    T.sync_threads()
-                    failed = T.alloc_var(T.uint32)
-                    failed = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
-                    if failed == T.uint32(0):
-                        # 4. concatenate: shard s occupies column block s of every output row
-                        for i in T.serial(count):
-                            T.call_extern("roce_gather_pack", T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
-                                          T.cast(slot_bytes, T.int64), seq, index + i * stride, row_packs,
-                                          T.address_of(out[0]), dtype="handle")
-                    # 5. the last block to finish publishes the next epoch
-                    T.call_extern("roce_fence_sc_gpu", dtype="handle")
-                    T.sync_threads()
-                    if tx == 0:
-                        T.call_extern("roce_tail", T.address_of(counters[tail_index]), T.cast(grid_x, T.uint32),
-                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[0]), seq, dtype="handle")
+                # 1. stage the local shard into the pinned send slot
+                count = T.alloc_var(T.int32)
+                count = T.max(0, (shard_packs - index + stride - 1) // stride)
+                for i in T.serial(count):
+                    pack = index + i * stride
+                    T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
+                                  T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
+                T.sync_threads()
+                # 2. the last block to finish staging rings the proxy doorbell
+                if tx == 0:
+                    T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
+                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype="handle")
+                # 3. wait for every peer's payload-stripe flags
+                T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
+                              T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), dtype="handle")
+                T.sync_threads()
+                # 4. concatenate: shard s occupies column block s of every output row
+                for i in T.serial(count):
+                    T.call_extern("roce_gather_pack", T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
+                                  T.cast(slot_bytes, T.int64), seq, index + i * stride, row_packs,
+                                  T.address_of(out[0]), dtype="handle")
+                # 5. the last block to finish publishes the next epoch
+                T.call_extern("roce_fence_sc_gpu", dtype="handle")
+                T.sync_threads()
+                if tx == 0:
+                    T.call_extern("roce_tail", T.address_of(counters[tail_index]), T.cast(grid_x, T.uint32),
+                                  T.address_of(counters[0]), seq, dtype="handle")
 
         return oneshot_allgather
 
@@ -155,7 +147,7 @@ def get_launcher(
             launch.input, launch.output, launch.counters, int(launch.region.data_ptr()),
             int(launch.size_packs), int(launch.nbytes), int(launch.row_packs), int(launch.recv_off), int(launch.flag_off),
             int(launch.send_off), int(launch.ctrl_off), int(launch.slot_bytes), int(launch.stage_index),
-            int(launch.tail_index), int(launch.poison_index), int(launch.spin_limit), int(launch.grid_x),
+            int(launch.tail_index), int(launch.grid_x),
         )
 
     _PREPARED_LAUNCHERS.add(process_key)

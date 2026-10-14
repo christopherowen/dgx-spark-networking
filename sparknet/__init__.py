@@ -18,6 +18,6 @@ runtime is constructed.
 __version__ = "0.3.0"
 
 # Bumped when the runtime surface used by integrations changes incompatibly.
-API_VERSION = 1
+API_VERSION = 2
 
 __all__ = ["API_VERSION", "__version__"]

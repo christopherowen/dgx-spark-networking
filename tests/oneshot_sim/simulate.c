@@ -174,6 +174,8 @@ static void setup(uint32_t seed) {
             if (p!=r && (ring4 != 1 || p!=(r+2)%4)) edge++;
         }
         *(uint32_t *)(c->region+c->ctrl_off)=seed;
+        // The runtime sets the wait timeout before any collective (10 s, in us).
+        ((uint32_t *)(c->region+c->ctrl_off))[ROCE_CTRL_TIMEOUT_WORD]=10000000;
     }
     roce_blob_t blobs[4];
     for(int r=0;r<world;r++) assert(!roce_local_blob(ranks[r], &blobs[r], sizeof(blobs[r])));
@@ -273,7 +275,15 @@ static void failures(void) {
     setup(0); c=ranks[0];
     atomic_store(&c->running,1);
     ctrl=(uint32_t *)(c->region+c->ctrl_off); ctrl[2]=1;
-    assert(relay_both_directions(c,1,16)==-1); atomic_store(&c->running,0); cleanup();
+    assert(relay_both_directions(c,1,16)==-1);
+    assert(strstr(c->err, "this rank's collective at seq 1 timed out"));
+    atomic_store(&c->running,0); cleanup();
+    // A relay waits no longer than the runtime's timeout (here 2 ms).
+    setup(0); c=ranks[0]; atomic_store(&c->running,1);
+    ctrl=(uint32_t *)(c->region+c->ctrl_off); ctrl[ROCE_CTRL_TIMEOUT_WORD]=2000;
+    assert(relay_both_directions(c,1,16)==-1);
+    assert(strstr(c->err, "relay timed out after 0.002 s"));
+    atomic_store(&c->running,0); cleanup();
     setup(0); c=ranks[0]; atomic_store(&c->running,1);
     __atomic_store_n(flag(c,3,1,0),3,__ATOMIC_RELEASE);
     assert(relay_both_directions(c,1,16)==-1); atomic_store(&c->running,0); cleanup();

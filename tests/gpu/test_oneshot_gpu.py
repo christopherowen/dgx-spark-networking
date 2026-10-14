@@ -13,9 +13,14 @@ Without a torchrun environment the tests skip.
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import subprocess
+import sys
 import time
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 import torch
@@ -402,113 +407,54 @@ def test_adapter_path_graph_replay(runtime):
     dist.barrier()
 
 
-# What a fail-stopped rank raises: its own timed-out wait ("poisoned"), or on the ring a
-# relay neighbour's proxy that saw the stopped peer first ("proxy failed").
-FAIL_STOP = "poisoned|proxy failed"
+# A stopped rank's report: its own timed-out wait ("saw nothing from rank N"), and on
+# the ring possibly a relay neighbour's proxy that saw the stopped peer first.
+FAIL_STOP = r"saw nothing from rank \d+|proxy failed"
 
 
-def _fresh_runtime(spin_limit: int):
-    """A runtime of its own with a short spin limit, for fault injection."""
-    from sparknet import oneshot as roce
+def _fail_stop(scenario: str) -> dict:
+    """Run ``failstop_child.py`` on this rank and return its report.
 
-    previous = os.environ.get("SPARKNET_ROCE_SPIN_LIMIT")
-    os.environ["SPARKNET_ROCE_SPIN_LIMIT"] = str(spin_limit)
-    try:
-        rt = roce.AllReduce.from_exchange_group(
-            exchange_group=dist.group.WORLD,
-            device=torch.device("cuda", 0),
-            max_size=1 << 20,
-        )
-    finally:
-        if previous is None:
-            del os.environ["SPARKNET_ROCE_SPIN_LIMIT"]
-        else:
-            os.environ["SPARKNET_ROCE_SPIN_LIMIT"] = previous
-    rt.prepare((torch.bfloat16,))
-    return rt
+    The scenario stops the child's GPU, so it gets a process (and a gloo group
+    on its own port) of its own; this process's runtime is untouched.
+    """
+    env = dict(os.environ, FAILSTOP_PORT=str(int(os.environ.get("MASTER_PORT", "29650")) + 7))
+    child = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("failstop_child.py")), scenario],
+        env=env, capture_output=True, text=True, timeout=300,
+    )
+    lines = [line for line in child.stdout.splitlines() if line.startswith("{")]
+    assert lines, f"no report (exit {child.returncode}): {child.stderr[-2000:]}"
+    return json.loads(lines[-1])
+
+
+def _assert_stopped(report: dict) -> None:
+    timeout_s = report["timeout_ms"] / 1000
+    assert report["healthy_before"], report
+    assert report["error"] is not None, report  # the GPU stopped instead of computing on
+    assert re.search(FAIL_STOP, report["failure"] or ""), report
+    # Detected within the timeout of the stalled wait, not a poll-count guess:
+    # one timeout for a rank waiting on the stopped one, two for a rank that
+    # first completed on the others' payloads.
+    assert 0.9 * timeout_s <= report["seconds"] <= 3 * timeout_s + 2, report
 
 
 def test_fail_stop_on_timeout_eager(runtime):
-    """A wait that times out poisons the runtime: the epoch stops, the failure
-    is raised on the next check, another launch raises before enqueue, and the
-    peers converge to the same state on their own.
-
-    Rank 1 stops its proxy for good.  Every other rank's first collective times
-    out (asymmetric: rank 1's own kernel completes on the peers' payloads).
-    Rank 1 then times out on its second collective because the poisoned peers
-    launch no-ops and never post again, so no rank can proceed alone.
-    """
-    world = dist.get_world_size()
-    rank = dist.get_rank()
-    rt = _fresh_runtime(2_000_000)
-    epoch_before = rt.stats()["epoch"]
+    """Rank 1 stops its proxy; every rank's wait then times out and stops its GPU,
+    and reports whom it waited for. This process's runtime keeps working."""
+    _assert_stopped(_fail_stop("eager"))
     dist.barrier()
-    if rank == 1:
-        rt._proxy.stop()
-    x = torch.ones(4096, dtype=torch.bfloat16, device=rt.device)
-    out = rt.all_reduce(
-        x
-    )  # enqueue succeeds: the fault is only visible once the kernel waited
-    torch.cuda.synchronize()
-    if rank != 1:
-        with pytest.raises(RuntimeError, match=FAIL_STOP):
-            rt.check_health()
-        assert rt.poisoned
-        assert rt.stats()["epoch"] == epoch_before
-        with pytest.raises(RuntimeError, match=FAIL_STOP):
-            rt.all_reduce(x)  # fatal, never a fallback
-    else:
-        rt.check_health()
-        assert rt.stats()["epoch"] == epoch_before + 1
-        torch.testing.assert_close(out, x * world)
-        rt.all_reduce(x)
-        torch.cuda.synchronize()
-        with pytest.raises(RuntimeError, match=FAIL_STOP):
-            rt.check_health()
-    assert rt.poisoned
-    rt.close()  # teardown during failure must not hang
-    dist.barrier()
+    x = torch.ones(4096, dtype=torch.bfloat16, device=runtime.device)
+    torch.testing.assert_close(runtime.all_reduce(x), x * dist.get_world_size())
+    runtime.check_health()
 
 
 def test_fail_stop_on_timeout_graph_replay(runtime):
-    """A faulted replay leaves the epoch where it was and raises on the post-step check."""
-    world = dist.get_world_size()
-    rank = dist.get_rank()
-    rt = _fresh_runtime(2_000_000)
-    static = torch.ones(4096, dtype=torch.bfloat16, device=rt.device)
-    stream = torch.cuda.Stream(device=rt.device)
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        rt.all_reduce(static)
-    torch.cuda.current_stream().wait_stream(stream)
-    torch.cuda.synchronize()
+    """A graph captured under a 60 s timeout stops within the 2 s one set after
+    capture: kernels read the timeout when they wait."""
+    _assert_stopped(_fail_stop("graph"))
     dist.barrier()
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph, stream=stream), rt.capture(stream=stream):
-        o1 = rt.all_reduce(static)
-        o2 = rt.all_reduce(o1)
-        o3 = rt.all_reduce(o2)
-    torch.cuda.synchronize()
-    dist.barrier()
-    graph.replay()
-    torch.cuda.synchronize()
-    rt.check_health()
-    torch.testing.assert_close(o3, static * world**3)
-    epoch_ok = rt.stats()["epoch"]
-    dist.barrier()
-    if rank == 1:
-        rt._proxy.stop()
-    o3.zero_()
-    graph.replay()
-    torch.cuda.synchronize()
-    with pytest.raises(RuntimeError, match=FAIL_STOP):
-        rt.check_health()
-    # no rank advanced past the failed sequence by more than the ops that
-    # completed on the peers' payloads, and none produced the step's result
-    assert rt.stats()["epoch"] < epoch_ok + 3
-    assert not torch.equal(o3, static * world**3)
-    rt.close()
-    dist.barrier()
+    runtime.check_health()
 
 
 @pytest.mark.parametrize(

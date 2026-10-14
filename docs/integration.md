@@ -252,15 +252,22 @@ Whatever the engine, these hold:
 - **One stream inside a capture.** Eager collectives on different streams are
   ordered by the runtime; inside `torch.cuda.graph` every collective must be
   on the capture stream, under `runtime.capture(stream=...)`.
-- **Check health after each step's own host sync.** `check_health()` costs two
-  host reads. A wait that timed out poisons the runtime: later launches do
-  nothing, `check_health` raises, and the peers time out and raise too. The
+- **Check health after each step's own host sync.** `check_health()` costs
+  host reads. A wait that timed out stops the GPU (`trap`) after writing its
+  record, so CUDA reports a launch failure at the next sync; the peers stop
+  within one timeout too. Report `failure()` with that CUDA error: it names
+  the rank waited for, its HCA lane, the sequence and the time waited. The
   engine treats this as a fatal error of the rank group. There is no
   fallback and no reconnect; restart the group.
-- **Choose the spin limit as the failure-detection latency.** About a
-  microsecond per poll; the profiles use 5,000,000 (seconds). It must exceed
-  the longest legitimate rank skew, which for tensor-parallel decode is
-  milliseconds.
+- **One timeout; meet on the host before collectives.** `SPARKNET_ROCE_TIMEOUT_MS`
+  (default 10 s) is the failure-detection latency; it must exceed the longest
+  legitimate rank skew, which for tensor-parallel decode is milliseconds.
+  Ranks that load or compile for different times (minutes on cold caches)
+  must meet on the host (a CPU barrier) before each phase that runs
+  collectives, and must not compile inside one: a rank compiling inside a
+  collective phase is indistinguishable from a stalled one, and the group
+  stops. Kernels and relays read the timeout when they wait, so
+  `set_timeout_ms` governs captured graphs too.
 - **Close on shutdown.** `close()` synchronizes the device and releases the
   queue pairs; peers that still write see a completion error and raise.
 
@@ -356,7 +363,7 @@ sequence-parallel threshold, which is a model-scheduling change.
   equal across interfaces.
 - Run `sparknet probe doctor` in the launch preflight; a changed GID index
   after a reboot or a moved cable shows up there, not in a hang.
-- A poisoned runtime (timeout, proxy failure) is a rank-group failure.
+- A failed runtime (a stopped collective, a proxy failure) is a rank-group failure.
   Restart the group; do not restart one rank.
 - Keep the rendered environment with the serving configuration and treat
   it as part of the image's identity; the probe's JSON result and the NCCL
@@ -384,7 +391,7 @@ sequence-parallel threshold, which is a model-scheduling change.
 | `port 1 is not active` | cable or link down, or the wrong port cabled | `rdma link`, `sparknet probe doctor` |
 | `ibv_reg_mr(pinned region): Cannot allocate memory` | `kho=off` missing from the kernel command line, or memlock limited | `cat /proc/cmdline`, `ulimit -l`, container `--ulimit memlock=-1:-1` |
 | `rank N published incompatible transport geometry` | ranks run different topologies, stripe counts or ABIs (mixed images or environments) | compare each node's rendered environment and image |
-| `timed out waiting for rank N, HCA h` | that peer stalled, its GID is wrong for the subnet, or the spin limit is below the real skew | `sparknet probe doctor` on rank N; NCCL/one-shot GID index; spin limit |
+| `saw nothing from rank N, HCA h, for T s` | that peer stalled (it may be compiling inside a collective phase: meet on the host first), its GID is wrong for the subnet, or the timeout is below the real skew | `sparknet probe doctor` on rank N; NCCL/one-shot GID index; `SPARKNET_ROCE_TIMEOUT_MS` |
 | `one-shot policy unavailable: needs an integrated GPU with an active RDMA device` | not a Spark, or no active device at the GID index | `sparknet topology inventory` |
 | `SWITCHLESS_BIDIRECTIONAL needs ...` in the NCCL log | channel count not even or not a multiple of four for mode 2 | `sparknet nccl validate` |
 | NCCL hangs with every rank waiting, AArch64 | unpatched NCCL (missing the CTS fence) | image's `libnccl.so.2` hash against the built one |
@@ -405,7 +412,7 @@ sparknet probe doctor|gpudirect|render-command|fleet|summarize|collectives
 **Profile-level environment** (from `sparknet nccl env`): `NCCL_*` as listed
 in `docs/nccl.md`; `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES`,
 `SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES`,
-`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`, `SPARKNET_ROCE_SPIN_LIMIT`; per host,
+`SPARKNET_ROCE_ALLGATHER_MAX_BYTES`, `SPARKNET_ROCE_TIMEOUT_MS`; per host,
 `SPARKNET_ROCE_PROXY_CPU` (`docs/oneshot.md`).
 
 **Per-node environment** (from `sparknet topology render`):
@@ -418,7 +425,7 @@ and the ring policy keys on neighbour rings.
 **Runtime API** (`sparknet.oneshot`): `AllReduce.from_exchange_group(exchange_group, device, max_size, max_gather_bytes)`,
 `prepare(dtypes, padded_gather=)`, `should_allreduce(x)`, `all_reduce(x, out=, stream=)`,
 `should_all_gather(x, dim)`, `all_gather(x, dim=, out=, stream=)`, `capture(stream=)`,
-`check_health()`, `poisoned`, `stats()`, `close()`; properties `topology`,
+`check_health()`, `failure()`, `set_timeout_ms(ms)`, `poisoned`, `stats()`, `close()`; properties `topology`,
 `hca_names`, `stripe_count`, `dispatch_max_bytes`, `max_size`, `max_gather_bytes`;
 module functions `is_supported(device)`, `discover_hcas()`, `default_gid_index()`,
 `freeze_kernel_resolution(reason)`.

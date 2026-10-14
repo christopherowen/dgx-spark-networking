@@ -36,8 +36,8 @@ One pinned region per rank: `recv[src][slot]`, `flag[src][slot][lane]`,
    a 4-byte `seq` write on the same reliable QP, so a flag cannot land before
    its data;
 3. the kernel waits on `flag[peer][seq & 1][lane] == seq` for every peer and
-   lane, bounded by the spin limit; a timeout records the missing peer and
-   poisons the runtime;
+   lane, bounded by the timeout in the control record; a timeout records the
+   missing peer, its lane and the time waited, then stops the GPU;
 4. all-reduce sums the local input and every peer slot in fixed rank order
    (bit-identical across ranks); all-gather writes the concatenated layout
    directly;

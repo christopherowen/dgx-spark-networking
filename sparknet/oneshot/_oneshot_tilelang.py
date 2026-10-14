@@ -99,8 +99,6 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
             slot_bytes: T.int32,
             stage_index: T.int32,
             tail_index: T.int32,
-            poison_index: T.int32,
-            spin_limit: T.int32,
             grid_x: T.int32,
             trace_base: T.int64,
         ):
@@ -122,67 +120,56 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                 index = bx * threads + tx
                 stride = T.alloc_var(T.int32)
                 stride = grid_x * threads
-                # A recorded timeout poisons the runtime: later launches do
-                # nothing so the host sees the failure without another spin
-                # limit per op.
-                poisoned = T.alloc_var(T.uint32)
-                poisoned = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
-                if poisoned == T.uint32(0):
+                if traced:
+                    if bx == 0:
+                        if tx == 0:
+                            T.call_extern("roce_trace_begin", trace_base, seq, T.cast(nbytes, T.uint32),
+                                          T.cast(grid_x, T.uint32), dtype="handle")
+                # 1. stage the input into the pinned send slot
+                count = T.alloc_var(T.int32)
+                count = T.max(0, (size_packs - index + stride - 1) // stride)
+                for i in T.serial(count):
+                    pack = index + i * stride
+                    T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
+                                  T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
+                T.sync_threads()
+                # 2. the last block to finish staging rings the proxy doorbell
+                if tx == 0:
+                    rang = T.alloc_var(T.uint32)
+                    rang = T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
+                                         T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype=T.uint32)
                     if traced:
-                        if bx == 0:
-                            if tx == 0:
-                                T.call_extern("roce_trace_begin", trace_base, seq, T.cast(nbytes, T.uint32),
-                                              T.cast(grid_x, T.uint32), dtype="handle")
-                    # 1. stage the input into the pinned send slot
-                    count = T.alloc_var(T.int32)
-                    count = T.max(0, (size_packs - index + stride - 1) // stride)
-                    for i in T.serial(count):
-                        pack = index + i * stride
-                        T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
-                                      T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
-                    T.sync_threads()
-                    # 2. the last block to finish staging rings the proxy doorbell
-                    if tx == 0:
-                        rang = T.alloc_var(T.uint32)
-                        rang = T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
-                                             T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype=T.uint32)
-                        if traced:
-                            if rang != T.uint32(0):
-                                T.call_extern("roce_trace_stamp", trace_base, seq, w_doorbell, dtype="handle")
-                    # 3. wait for every peer's payload-stripe flags
+                        if rang != T.uint32(0):
+                            T.call_extern("roce_trace_stamp", trace_base, seq, w_doorbell, dtype="handle")
+                # 3. wait for every peer's payload-stripe flags
+                if traced:
+                    T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
+                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"),
+                                  T.call_extern("roce_trace_record_if", trace_base, seq, T.cast(bx == 0, T.int32), dtype="handle"), dtype="handle")
+                else:
+                    T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
+                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), dtype="handle")
+                T.sync_threads()
+                if traced:
+                    if bx == 0:
+                        if tx == 0:
+                            T.call_extern("roce_trace_stamp", trace_base, seq, w_wait_done, dtype="handle")
+                # 4. reduce in fixed rank order so every rank stores identical bits
+                for i in T.serial(count):
+                    pack = index + i * stride
+                    T.call_extern(reduce_pack, T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
+                                  T.cast(slot_bytes, T.int64), seq, T.address_of(out[0]),
+                                  T.cast(pack, T.int64) * PACK_BYTES, dtype="handle")
+                # 5. the last block to finish reduction publishes the next epoch
+                T.call_extern("roce_fence_sc_gpu", dtype="handle")
+                T.sync_threads()
+                if tx == 0:
+                    last = T.alloc_var(T.uint32)
+                    last = T.call_extern("roce_tail", T.address_of(counters[tail_index]), T.cast(grid_x, T.uint32),
+                                         T.address_of(counters[0]), seq, dtype=T.uint32)
                     if traced:
-                        T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq, T.cast(spin_limit, T.uint32),
-                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[poison_index]),
-                                      T.call_extern("roce_trace_record_if", trace_base, seq, T.cast(bx == 0, T.int32), dtype="handle"), dtype="handle")
-                    else:
-                        T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq, T.cast(spin_limit, T.uint32),
-                                      T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[poison_index]), dtype="handle")
-                    T.sync_threads()
-                    if traced:
-                        if bx == 0:
-                            if tx == 0:
-                                T.call_extern("roce_trace_stamp", trace_base, seq, w_wait_done, dtype="handle")
-                    # A wait that timed out in this block leaves the peer slot
-                    # unreliable: skip the data phase.
-                    failed = T.alloc_var(T.uint32)
-                    failed = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[poison_index]), dtype=T.uint32)
-                    if failed == T.uint32(0):
-                        # 4. reduce in fixed rank order so every rank stores identical bits
-                        for i in T.serial(count):
-                            pack = index + i * stride
-                            T.call_extern(reduce_pack, T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
-                                          T.cast(slot_bytes, T.int64), seq, T.address_of(out[0]),
-                                          T.cast(pack, T.int64) * PACK_BYTES, dtype="handle")
-                    # 5. the last block to finish reduction publishes the next epoch
-                    T.call_extern("roce_fence_sc_gpu", dtype="handle")
-                    T.sync_threads()
-                    if tx == 0:
-                        last = T.alloc_var(T.uint32)
-                        last = T.call_extern("roce_tail", T.address_of(counters[tail_index]), T.cast(grid_x, T.uint32),
-                                             T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.address_of(counters[0]), seq, dtype=T.uint32)
-                        if traced:
-                            if last != T.uint32(0):
-                                T.call_extern("roce_trace_stamp", trace_base, seq, w_end, dtype="handle")
+                        if last != T.uint32(0):
+                            T.call_extern("roce_trace_stamp", trace_base, seq, w_end, dtype="handle")
 
         return oneshot_allreduce
 
@@ -238,8 +225,7 @@ def get_launcher(
             launch.input, launch.output, launch.counters,
             int(launch.region.data_ptr()), int(launch.size_packs), int(launch.nbytes), int(launch.recv_off),
             int(launch.flag_off), int(launch.send_off), int(launch.ctrl_off), int(launch.slot_bytes),
-            int(launch.stage_index), int(launch.tail_index), int(launch.poison_index), int(launch.spin_limit),
-            int(launch.grid_x), int(launch.trace_base),
+            int(launch.stage_index), int(launch.tail_index), int(launch.grid_x), int(launch.trace_base),
         )
 
     _PREPARED_LAUNCHERS.add(process_key)

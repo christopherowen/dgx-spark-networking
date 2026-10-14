@@ -54,6 +54,9 @@
 #define ROCE_MAX_STRIPES 4
 #define ROCE_SLOTS 2
 #define ROCE_FLAG_STRIDE 128
+// Control-record word (uint32) holding the collective wait timeout in
+// microseconds, set by the host runtime (runtime.CTRL_TIMEOUT_WORD).
+#define ROCE_CTRL_TIMEOUT_WORD 7
 #define ROCE_PORT 1
 #define ROCE_SEND_DEPTH 256
 #define ROCE_ABI_VERSION 10
@@ -782,11 +785,19 @@ static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
     volatile uint32_t *ctrl = (volatile uint32_t *)(c->region + c->ctrl_off);
+    // The same timeout as the kernels' waits (microseconds, host-set): a relay
+    // waits for the same peers, so it may wait as long and no longer.
+    const int64_t limit_ns = 1000LL * (int64_t)__atomic_load_n(&ctrl[ROCE_CTRL_TIMEOUT_WORD], __ATOMIC_RELAXED);
     unsigned pending = (1u << (2 * c->n_stripes)) - 1u;
     for (unsigned spins = 0;; spins++) {
-        if (!atomic_load_explicit(&c->running, memory_order_relaxed) ||
-            __atomic_load_n(&ctrl[2], __ATOMIC_ACQUIRE)) {
-            snprintf(c->err, sizeof(c->err), "relay stopped or GPU failed at seq %u", seq);
+        if (!atomic_load_explicit(&c->running, memory_order_relaxed)) {
+            snprintf(c->err, sizeof(c->err), "relay stopped at seq %u: the runtime is closing", seq);
+            return -1;
+        }
+        uint32_t failed = __atomic_load_n(&ctrl[2], __ATOMIC_ACQUIRE);
+        if (failed != 0) {
+            snprintf(c->err, sizeof(c->err),
+                     "relay stopped at seq %u: this rank's collective at seq %u timed out", seq, failed);
             return -1;
         }
         // Do not wait for one direction before progressing the other. Each
@@ -840,8 +851,9 @@ static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
         }
         if ((spins & 4095u) == 0) {
             clock_gettime(CLOCK_MONOTONIC, &now);
-            if ((now.tv_sec - start.tv_sec) * 1000000000LL + now.tv_nsec - start.tv_nsec >= 5000000000LL) {
-                snprintf(c->err, sizeof(c->err), "relay timed out: seq %u pending 0x%x", seq, pending);
+            if ((now.tv_sec - start.tv_sec) * 1000000000LL + now.tv_nsec - start.tv_nsec >= limit_ns) {
+                snprintf(c->err, sizeof(c->err), "relay timed out after %.3f s: seq %u pending 0x%x",
+                         (double)limit_ns / 1e9, seq, pending);
                 return -1;
             }
         }

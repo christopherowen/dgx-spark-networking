@@ -9,7 +9,8 @@ host proxy later.
 
 ``AllReduce`` is the runtime (``from_exchange_group``, ``prepare``,
 ``should_allreduce``, ``all_reduce``, ``should_all_gather``, ``all_gather``,
-``capture``, ``check_health``, ``poisoned``, ``stats``, ``close``).
+``capture``, ``check_health``, ``failure``, ``set_timeout_ms``, ``poisoned``,
+``stats``, ``close``).
 See ``runtime.py`` for the protocol and the contract, and ``docs/oneshot.md``.
 
 Importing this package imports torch. The TileLang kernels are compiled when

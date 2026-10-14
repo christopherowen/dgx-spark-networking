@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 # Bumped when the adapter-visible surface (constructor keywords, methods, their
 # semantics) changes incompatibly; integrations pin the value they were built for.
-API_VERSION = 1
+API_VERSION = 2
 SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 SUPPORTED_WORLD_SIZES = tuple(range(2, 17))
 DEFAULT_MAX_SIZE = 2 * 1024 * 1024
@@ -55,7 +55,22 @@ DEFAULT_BLOCKS = 8
 DEFAULT_GID_INDEX = 3
 # Polls of a peer flag before the kernel gives up (each poll is a system-scope
 # load of host memory, roughly a microsecond): about 20 s.
-DEFAULT_SPIN_LIMIT = 20_000_000
+# A collective wait that sees no peer for this long stops the GPU. It is the
+# failure-detection latency: it must exceed the longest legitimate rank skew
+# (milliseconds in tensor-parallel decode). Ranks that compile for different
+# times meet on the host before collectives instead of lengthening it.
+DEFAULT_TIMEOUT_MS = 10_000
+# The control record holds the timeout in microseconds as an int32 word.
+MAX_TIMEOUT_MS = (2**31 - 1) // 1000
+# Control-record words (int32) beside the doorbell's: the timeout the host
+# sets, and the time a timed-out wait had waited (both microseconds).
+CTRL_TIMEOUT_WORD = 7
+CTRL_WAITED_WORD = 8
+# Replaced settings, refused with the reason instead of being ignored.
+REMOVED_SETTINGS = {
+    "SPARKNET_ROCE_SPIN_LIMIT": "it counted polls; sparknet 0.4.0 times waits in "
+    "milliseconds: set SPARKNET_ROCE_TIMEOUT_MS instead",
+}
 MAX_LOCAL_HCAS = 4
 MAX_STRIPES = 2
 _SLOT_ALIGNMENT = 4096
@@ -105,10 +120,25 @@ def _env_str(*names: str, default: str) -> str:
 ENV_GID_INDEX = ("SPARKNET_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX")
 ENV_HCA = ("SPARKNET_ROCE_HCA", "NCCL_IB_HCA")
 ENV_PEER_HCAS = ("SPARKNET_ROCE_PEER_HCAS",)
-ENV_SPIN_LIMIT = ("SPARKNET_ROCE_SPIN_LIMIT",)
+ENV_TIMEOUT_MS = ("SPARKNET_ROCE_TIMEOUT_MS",)
 ENV_TOPOLOGY = ("SPARKNET_ROCE_TOPOLOGY",)
 ENV_DISPATCH = ("SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES",)
 TOPOLOGIES = ("direct", "ring4", "mesh4")
+
+
+def _removed_setting_problems(environ: Mapping[str, str]) -> list[str]:
+    """One message per replaced setting still present in ``environ``."""
+
+    return [f"{name} is no longer read: {reason}" for name, reason in REMOVED_SETTINGS.items() if environ.get(name)]
+
+
+def _checked_timeout_ms(value: int) -> int:
+    """A wait timeout in milliseconds, within what the control record holds."""
+
+    value = int(value)
+    if not 1 <= value <= MAX_TIMEOUT_MS:
+        raise ValueError(f"the RoCE wait timeout must be 1 to {MAX_TIMEOUT_MS} ms, got {value}")
+    return value
 
 
 def default_gid_index() -> int:
@@ -391,14 +421,14 @@ class RoceOneshotAllReduce:
         self._blocks = int(blocks)
         self._counter_classes = self._blocks.bit_length()
         self.gid_index = default_gid_index() if gid_index is None else int(gid_index)
-        self.spin_limit = _env_int(*ENV_SPIN_LIMIT, default=DEFAULT_SPIN_LIMIT)
+        removed = _removed_setting_problems(os.environ) + kernel_setting_problems(os.environ)
+        if removed:
+            raise ValueError("; ".join(removed))
+        self.timeout_ms = _checked_timeout_ms(_env_int(*ENV_TIMEOUT_MS, default=DEFAULT_TIMEOUT_MS))
         self.topology = topology or _env_str(*ENV_TOPOLOGY, default="direct")
         if self.topology not in TOPOLOGIES:
             raise ValueError(f"unknown RoCE topology {self.topology!r}; choose one of {TOPOLOGIES}")
         self._transport_factory = transport if transport is not None else Proxy
-        removed = kernel_setting_problems(os.environ)
-        if removed:
-            raise ValueError("; ".join(removed))
         # Optional per-op timing trace (sparknet.oneshot.trace): a separately compiled
         # kernel and a shared file the proxy thread also writes. Off unless asked for.
         self._trace_path: Optional[str] = None
@@ -430,11 +460,11 @@ class RoceOneshotAllReduce:
             self._region = torch.zeros(
                 self._layout.total_bytes, dtype=torch.uint8, pin_memory=True
             )
-            # Epoch and poison are global. Stage and tail arrivals are separate
+            # The epoch is global. Stage and tail arrivals are separate
             # for every power-of-two grid size because their free-running
             # counters use the launch grid as their modulus.
             self._counters = torch.zeros(
-                2 + 2 * self._counter_classes,
+                1 + 2 * self._counter_classes,
                 dtype=torch.int32,
                 device=self.device,
             )
@@ -451,18 +481,18 @@ class RoceOneshotAllReduce:
         self._flag_base = host_ptr + self._layout.flag_off
         self._send_base = host_ptr + self._layout.send_off
         self._ctrl_base = host_ptr + self._layout.ctrl_off
-        # ctrl record (kernel-written): seq, nbytes, error seq, missing peer,
-        # nbytes per slot (the proxy uses these when it has to catch up), and
-        # the missing HCA index for timeout diagnostics.
+        # ctrl record: seq, nbytes, error seq, missing peer, nbytes per slot
+        # (the proxy uses these when it has to catch up), the missing HCA,
+        # the wait timeout (host-written) and the time a timed-out wait waited.
         self._ctrl_words = self._region[
-            self._layout.ctrl_off : self._layout.ctrl_off + 28
+            self._layout.ctrl_off : self._layout.ctrl_off + 4 * (CTRL_WAITED_WORD + 1)
         ].view(torch.int32)
         self._error_word = self._ctrl_words[2:3]
         # numpy view of the control words: reading it costs nanoseconds, so the
         # health check before and after every launch stays off the profile.
         self._ctrl_np = self._ctrl_words.numpy()
+        self._ctrl_np[CTRL_TIMEOUT_WORD] = 1000 * self.timeout_ms
         self._epoch_address = self._counters.data_ptr()
-        self._poison_address = self._epoch_address + 4 * (1 + 2 * self._counter_classes)
 
         error: Optional[str] = None
         try:
@@ -509,7 +539,7 @@ class RoceOneshotAllReduce:
             "max_size": self.max_size,
             "dispatch_max_bytes": self.dispatch_max_bytes,
             "max_gather_bytes": self.max_gather_bytes,
-            "spin_limit": self.spin_limit,
+            "timeout_ms": self.timeout_ms,
             "threads": self._threads,
             "blocks": self._blocks,
         }
@@ -730,10 +760,6 @@ class RoceOneshotAllReduce:
         counter_class = int(blocks).bit_length() - 1
         return 1 + counter_class, 1 + self._counter_classes + counter_class
 
-    @property
-    def _poison_index(self) -> int:
-        return 1 + 2 * self._counter_classes
-
     @staticmethod
     def _words(tensor: torch.Tensor) -> torch.Tensor:
         """A flat ``int32`` view of a contiguous, 16-byte-aligned tensor's bytes."""
@@ -747,8 +773,8 @@ class RoceOneshotAllReduce:
             input=self._words(src), output=self._words(dst), size_packs=nbytes // PACK_BYTES, nbytes=nbytes,
             region=self._region, recv_off=self._layout.recv_off, flag_off=self._layout.flag_off,
             send_off=self._layout.send_off, ctrl_off=self._layout.ctrl_off, slot_bytes=self._slot_bytes,
-            counters=self._counters, stage_index=stage_index, tail_index=tail_index, poison_index=self._poison_index,
-            spin_limit=self.spin_limit, grid_x=grid_blocks, row_packs=row_packs, trace_base=self._trace_base,
+            counters=self._counters, stage_index=stage_index, tail_index=tail_index,
+            grid_x=grid_blocks, row_packs=row_packs, trace_base=self._trace_base,
         )
 
     def prepare(
@@ -920,33 +946,59 @@ class RoceOneshotAllReduce:
         self._stream_event.record(current)
         self._last_stream = current
 
-    def check_health(self) -> None:
-        """Raise if the proxy thread died or a kernel wait timed out.
+    def set_timeout_ms(self, timeout_ms: int) -> None:
+        """Set how long a collective wait may see no peer before it stops the GPU.
 
-        Cheap (two host memory reads); call it after graph replays, which
-        cannot check inline.
+        Kernels read the value when a wait passes its first clock check, so it
+        applies to captured CUDA graphs too. Every rank should set the same
+        value at the same point.
         """
 
-        if self._proxy is not None and self._proxy.failed():
-            raise RuntimeError(f"RoCE proxy failed: {self._proxy.error()}")
+        self.timeout_ms = _checked_timeout_ms(timeout_ms)
+        self._ctrl_np[CTRL_TIMEOUT_WORD] = 1000 * self.timeout_ms
+
+    def failure(self) -> Optional[str]:
+        """The runtime's failure report, or None while it is healthy.
+
+        A collective wait that timed out wrote its record (the rank it waited
+        for, that rank's HCA lane, the sequence and the time waited) and stopped
+        the GPU; the record is in pinned host memory, so it can still be read
+        once CUDA reports the stopped kernel. It comes first: a relay proxy that
+        failed at the same time stopped because of it.
+        """
+
+        parts = []
         failed_seq = int(self._ctrl_np[2])
         if failed_seq != 0:
-            peer = int(self._ctrl_np[3])
-            hca = int(self._ctrl_np[6])
-            raise RuntimeError(
-                f"RoCE collective on rank {self.rank} timed out waiting for rank "
-                f"{peer}, HCA {hca}, at sequence {failed_seq}; the runtime is "
-                f"poisoned (its epoch stopped at {failed_seq - 1}, later launches "
-                "do nothing) and rank data is no longer trustworthy"
+            waited_s = int(self._ctrl_np[CTRL_WAITED_WORD]) / 1e6
+            parts.append(
+                f"RoCE collective on rank {self.rank} saw nothing from rank "
+                f"{int(self._ctrl_np[3])}, HCA {int(self._ctrl_np[6])}, for {waited_s:.3f} s "
+                f"(timeout {self.timeout_ms / 1000:g} s) at sequence {failed_seq}; "
+                "the GPU was stopped there"
             )
+        if self._proxy is not None and self._proxy.failed():
+            parts.append(f"RoCE proxy failed: {self._proxy.error()}")
+        return "; ".join(parts) if parts else None
+
+    def check_health(self) -> None:
+        """Raise the failure report if a wait timed out or the proxy failed.
+
+        Cheap (host memory reads); call it after graph replays, which cannot
+        check inline, and after a CUDA error to learn whether a collective
+        stopped the GPU.
+        """
+
+        report = self.failure()
+        if report is not None:
+            raise RuntimeError(report)
 
     @property
     def poisoned(self) -> bool:
-        """True once a wait timed out or the proxy failed; the runtime cannot be reused."""
+        """True once a collective failed (a wait timed out or the proxy failed);
+        the runtime cannot be reused."""
 
-        return (self._proxy is not None and self._proxy.failed()) or int(
-            self._ctrl_np[2]
-        ) != 0
+        return self.failure() is not None
 
     # -- all-gather ---------------------------------------------------------------
 
@@ -1147,7 +1199,8 @@ class RoceOneshotAllReduce:
             "error_peer": int(self._ctrl_words[3].item()),
             "error_hca": int(self._ctrl_words[6].item()),
             "ctrl_seq": int(self._ctrl_words[0].item()),
-            "spin_limit": self.spin_limit,
+            "error_waited_us": int(self._ctrl_words[CTRL_WAITED_WORD].item()),
+            "timeout_ms": self.timeout_ms,
             "stripe_hcas": list(range(self.stripe_count)),
             "threads": self._threads,
             "blocks": self._blocks,

@@ -18,6 +18,8 @@ rt.should_all_gather(x, dim)  # dim 0 or the last dim, shard <= max_gather_bytes
 g = rt.all_gather(x, dim=-1)
 with rt.capture(stream=s): ...  # inside torch.cuda.graph; one stream per capture
 rt.check_health()             # after each step's own device-to-host sync
+rt.failure()                  # the failure report, or None; readable after a stop
+rt.set_timeout_ms(10_000)     # also governs captured graphs
 rt.stats(); rt.poisoned; rt.close()
 ```
 
@@ -46,12 +48,20 @@ limit, traffic class and launch geometry; any difference fails construction
 on every rank. The proxy's connect validates every rank's record, including
 the opposite rank in `ring4`, before connecting anything.
 
-**Failures are fail-stop, never a fallback.** A wait beyond the spin limit
-records the sequence and the missing peer, the kernel skips its data phase
-and keeps the epoch, every later launch is a no-op, and `check_health`
-raises. Peers starve on the stalled rank and poison themselves within one
-spin limit. Choose the spin limit as the failure-detection latency (about a
-microsecond per poll; the profiles use 5,000,000).
+**Failures are fail-stop, never a fallback.** A wait that sees nothing from
+a peer for the timeout (`SPARKNET_ROCE_TIMEOUT_MS`, default 10,000; the
+profiles use 10,000) writes a record to the control record (the peer, its HCA
+lane, the time waited and the sequence) and stops the GPU with `trap`, so
+nothing computes on the rank's unfinished data. CUDA then reports a launch
+failure; `failure()` (and `check_health`) returns the record, which lives in
+pinned host memory. Peers stop within one timeout of the stalled rank, and a
+ring relay that waits for the same peers gives up at the same timeout. The
+kernels and the relay read the timeout from the control record when they
+wait, so `set_timeout_ms` applies to captured graphs too. Choose it as the
+failure-detection latency; it must exceed the longest legitimate rank skew.
+Ranks that compile for different times meet on the host before collectives
+instead of lengthening it (docs/integration.md).
+`SPARKNET_ROCE_SPIN_LIMIT` (a poll count before 0.4.0) is refused.
 
 **Streams.** Collectives on different streams are ordered with an event;
 inside a capture every collective uses the capture stream.
@@ -77,7 +87,7 @@ traffic class fall back to NCCL's own settings.
 | `SPARKNET_ROCE_HCA` | explicit HCA list for direct cliques (falls back to `NCCL_IB_HCA`) |
 | `SPARKNET_ROCE_GID_INDEX` | IPv4 RoCE v2 GID slot (falls back to `NCCL_IB_GID_INDEX`, default 3) |
 | `SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES` | dispatch ceiling, at most the registered capacity |
-| `SPARKNET_ROCE_SPIN_LIMIT` | polls before a wait times out |
+| `SPARKNET_ROCE_TIMEOUT_MS` | how long a collective wait may see nothing from a peer before it stops the GPU (default 10,000) |
 | `SPARKNET_ROCE_TRAFFIC_CLASS` | DSCP/ECN byte for every QP (falls back to `NCCL_IB_TC`, default 0) |
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |

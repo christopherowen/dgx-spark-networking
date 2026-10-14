@@ -13,6 +13,34 @@
   kernel is TileLang too. The CPU test compiles the generated header's
   flag selection with the host compiler instead of executing the CuTe
   kernel's Python expressions.
+- **Fail-stop that stops** (API version 2). A collective wait that sees nothing
+  from a peer for the timeout now writes its record (the peer, its HCA lane,
+  the time waited, the sequence) and stops the GPU with `trap`. Before, the
+  failing collective and every later one became no-ops and the step kept
+  computing on unwritten buffers until the host's health check; a check
+  inside the step (a model's NaN assert) or a probe's verification could fire
+  first and hide the cause. The poison word, the skipped data phase and the
+  kept epoch are gone from both kernels.
+- **The timeout is a duration and can change after capture.**
+  `SPARKNET_ROCE_TIMEOUT_MS` (default 10,000) replaces
+  `SPARKNET_ROCE_SPIN_LIMIT`, a poll count whose duration was never measured
+  on GB10; the old variable is refused with the new name. Kernels read the
+  timeout from the control record when a wait passes its first clock check
+  (after 64 polls, so short waits cost nothing extra), and
+  `set_timeout_ms()` changes it for captured graphs too.
+- **The ring relay uses the same timeout.** It had a fixed 5 s of its own, so
+  a legitimately stalled neighbour failed the relay whatever the kernels'
+  limit. Its stop message now says whether the runtime was closing or this
+  rank's collective had timed out (it said "relay stopped or GPU failed").
+- `failure()` returns the report without raising (readable after the GPU
+  stopped: the record is in pinned host memory) and puts the kernel's record
+  before a relay's failure, which follows from it. `check_health` raises it.
+  The vLLM adapter exposes `failure()`.
+- The probe reports a stopped collective's record instead of CUDA's launch
+  failure or a numerical mismatch.
+- GPU fail-stop tests run each fault in a child process per rank and check
+  the detection time against the timeout, including a timeout lowered after
+  graph capture.
 
 - Per-op timing trace (`SPARKNET_ROCE_TRACE=1`, `sparknet.oneshot.trace`):
   the kernels stamp `%globaltimer` at start, doorbell, every peer lane's

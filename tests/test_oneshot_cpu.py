@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import types
 import typing
 import unittest
 import unittest.mock
@@ -238,6 +239,97 @@ class LauncherGeometryTest(unittest.TestCase):
         prepare = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "prepare")
         self.assertIn("is_current_stream_capturing", ast.unparse(prepare))
         self.assertFalse(any(isinstance(n, ast.FunctionDef) and n.name.startswith("_run_prepared") for n in cls.body))
+
+
+class FailStopTest(unittest.TestCase):
+    """A timed-out wait records why, then stops the GPU; the host reports the record."""
+
+    def _runtime_constants(self) -> dict:
+        tree = ast.parse((ROCE / "runtime.py").read_text())
+        names = {"DEFAULT_TIMEOUT_MS", "MAX_TIMEOUT_MS", "CTRL_TIMEOUT_WORD", "CTRL_WAITED_WORD", "REMOVED_SETTINGS"}
+        body = [n for n in tree.body if isinstance(n, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in names for target in n.targets)]
+        namespace: dict = {}
+        exec(compile(ast.Module(body=body, type_ignores=[]), "runtime.py", "exec"), namespace)
+        return namespace
+
+    def test_one_control_record_layout_everywhere(self):
+        """The timeout and waited words sit at the same place for the runtime, the
+        proxy and the device header."""
+        const = self._runtime_constants()
+        proxy = (ROCE / "_roce_proxy.c").read_text()
+        self.assertIn(f"#define ROCE_CTRL_TIMEOUT_WORD {const['CTRL_TIMEOUT_WORD']}\n", proxy)
+        device = (ROCE / "_device.py").read_text()
+        self.assertIn(f"#define ROCE_CTRL_TIMEOUT_US {4 * const['CTRL_TIMEOUT_WORD']}\n", device)
+        self.assertIn(f"#define ROCE_CTRL_WAITED_US {4 * const['CTRL_WAITED_WORD']}\n", device)
+        # Words 0-6 are the doorbell's and the timeout record's; the region holds 32.
+        self.assertGreater(const["CTRL_TIMEOUT_WORD"], 6)
+        self.assertLess(4 * (const["CTRL_WAITED_WORD"] + 1), 128 + 1)
+
+    def test_timeout_is_milliseconds_within_the_record(self):
+        const = self._runtime_constants()
+        ns = _functions(ROCE / "runtime.py", {"_checked_timeout_ms"}, dict(const))
+        check = ns["_checked_timeout_ms"]
+        self.assertEqual(check(10_000), 10_000)
+        self.assertEqual(check(const["MAX_TIMEOUT_MS"]), const["MAX_TIMEOUT_MS"])
+        self.assertLessEqual(1000 * const["MAX_TIMEOUT_MS"], 2**31 - 1)  # microseconds in an int32 word
+        for bad in (0, -1, const["MAX_TIMEOUT_MS"] + 1):
+            with self.assertRaises(ValueError):
+                check(bad)
+        self.assertEqual(check(const["DEFAULT_TIMEOUT_MS"]), 10_000)
+
+    def test_the_poll_count_setting_is_refused_not_ignored(self):
+        const = self._runtime_constants()
+        ns = _functions(ROCE / "runtime.py", {"_removed_setting_problems"}, dict(const, Mapping=typing.Mapping))
+        problems = ns["_removed_setting_problems"]
+        self.assertEqual(problems({}), [])
+        self.assertEqual(problems({"SPARKNET_ROCE_TIMEOUT_MS": "10000"}), [])
+        [message] = problems({"SPARKNET_ROCE_SPIN_LIMIT": "5000000"})
+        self.assertIn("SPARKNET_ROCE_SPIN_LIMIT", message)
+        self.assertIn("SPARKNET_ROCE_TIMEOUT_MS", message)
+
+    def _failure_method(self):
+        tree = ast.parse((ROCE / "runtime.py").read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RoceOneshotAllReduce")
+        methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in {"failure", "check_health"}]
+        namespace = dict(self._runtime_constants(), Optional=typing.Optional)
+        exec(compile(ast.Module(body=methods, type_ignores=[]), "runtime.py", "exec"), namespace)
+        return namespace["failure"], namespace["check_health"]
+
+    def _fake_runtime(self, ctrl, proxy_error=None):
+        proxy = types.SimpleNamespace(failed=lambda: proxy_error is not None, error=lambda: proxy_error)
+        return types.SimpleNamespace(rank=0, timeout_ms=10_000, _ctrl_np=ctrl, _proxy=proxy)
+
+    def test_failure_report_puts_the_kernel_record_before_the_relay(self):
+        failure, check_health = self._failure_method()
+        const = self._runtime_constants()
+        healthy = self._fake_runtime([0] * 9)
+        self.assertIsNone(failure(healthy))
+        check_health(types.SimpleNamespace(failure=lambda: failure(healthy)))
+        ctrl = [0] * 9
+        ctrl[2], ctrl[3], ctrl[6], ctrl[const["CTRL_WAITED_WORD"]] = 4855, 2, 1, 10_000_512
+        stalled = self._fake_runtime(ctrl, proxy_error="relay stopped at seq 4855: this rank's collective at seq 4855 timed out")
+        report = failure(stalled)
+        self.assertRegex(report, r"^RoCE collective on rank 0 saw nothing from rank 2, HCA 1, for 10\.001 s "
+                                 r"\(timeout 10 s\) at sequence 4855; the GPU was stopped there; RoCE proxy failed: relay stopped")
+        with self.assertRaisesRegex(RuntimeError, "saw nothing from rank 2"):
+            check_health(types.SimpleNamespace(failure=lambda: failure(stalled)))
+        relay_only = self._fake_runtime([0] * 9, proxy_error="relay timed out after 10.000 s: seq 7 pending 0x1")
+        self.assertEqual(failure(relay_only), "RoCE proxy failed: relay timed out after 10.000 s: seq 7 pending 0x1")
+
+    def test_the_wait_records_then_fences_then_traps(self):
+        """The record (peer, HCA, time waited) before the failed sequence the proxy and
+        host watch, each fenced to system scope, and nothing computes after it."""
+        device = (ROCE / "_device.py").read_text()
+        branch = device[device.index("if (waited != 0u) {"):]
+        order = ["ctrl + 12", "ctrl + 24", "ROCE_CTRL_WAITED_US", "roce_fence_sc_sys()", "ctrl + 8, seq",
+                 "roce_fence_sc_sys()", "roce_trap()"]
+        positions = [branch.index(step, branch.index(order[i - 1]) + 1 if i else 0) for i, step in enumerate(order)]
+        self.assertEqual(positions, sorted(positions))
+        for module in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+            source = (ROCE / module).read_text()
+            self.assertNotIn("poison", source, module)
+            self.assertNotIn("spin_limit", source, module)
 
 
 if __name__ == "__main__":

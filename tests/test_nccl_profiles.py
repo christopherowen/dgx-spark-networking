@@ -16,7 +16,7 @@ class ProfileTest(unittest.TestCase):
             "NCCL_IB_SUBNET_PREFIX_LEN": "24", "NCCL_IB_GID_INDEX": "3", "NCCL_P2P_DISABLE": "1",
             "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152",
             "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
-            "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "2097152", "SPARKNET_ROCE_SPIN_LIMIT": "5000000",
+            "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "2097152", "SPARKNET_ROCE_TIMEOUT_MS": "10000",
         }
         for key, value in expected.items():
             self.assertEqual(env.get(key), value, key)

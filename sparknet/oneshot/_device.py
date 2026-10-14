@@ -32,7 +32,8 @@ FUNCTIONS = (
     "roce_st_relaxed_sys_u32",
     "roce_fence_sc_sys",
     "roce_fence_sc_gpu",
-    "roce_spin_until_eq_acquire_sys",
+    "roce_wait_until_eq_acquire_sys",
+    "roce_trap",
     "roce_ptr",
     "roce_copy_pack",
     "roce_doorbell",
@@ -133,23 +134,41 @@ __device__ __forceinline__ void roce_fence_sc_sys() { asm volatile("fence.sc.sys
 
 __device__ __forceinline__ void roce_fence_sc_gpu() { asm volatile("fence.sc.gpu;" ::: "memory"); }
 
-// Spin until the word at p equals expected (system scope). Returns 0 on
-// success and 1 after limit polls without a match, so a dead peer or proxy
-// surfaces as an error instead of a hung kernel.
-__device__ __forceinline__ roce_u32 roce_spin_until_eq_acquire_sys(const void *p, roce_u32 expected, roce_u32 limit) {
-    roce_u32 polls = 0;
-    for (;;) {
+// Control-record words beside the doorbell's: the wait timeout the host sets
+// (microseconds), and the time a timed-out wait had waited.
+#define ROCE_CTRL_TIMEOUT_US 28
+#define ROCE_CTRL_WAITED_US 32
+
+// Wait until the word at p equals expected (system scope). Returns 0 on a
+// match, else the microseconds waited (at least 1) once the timeout in the
+// control record has passed. The clock and the timeout are read only after 64
+// unanswered polls, so a wait that ends quickly costs nothing extra.
+__device__ __forceinline__ roce_u32 roce_wait_until_eq_acquire_sys(const void *p, roce_u32 expected,
+                                                                   const roce_byte *ctrl) {
+    unsigned long long start = 0ull, limit = 0ull;
+    for (roce_u32 polls = 1u;; polls++) {
         roce_u32 seen;
         asm volatile("ld.acquire.sys.global.u32 %0, [%1];" : "=r"(seen) : "l"(p) : "memory");
         if (seen == expected) {
             return 0u;
         }
-        polls += 1u;
-        if (polls >= limit) {
-            return 1u;
+        if ((polls & 63u) == 0u) {
+            unsigned long long now = roce_globaltimer();
+            if (start == 0ull) {
+                start = now;
+                limit = 1000ull * (unsigned long long)roce_ld_relaxed_sys_u32(ctrl + ROCE_CTRL_TIMEOUT_US);
+            } else if (now - start >= limit) {
+                roce_u32 waited = (roce_u32)((now - start) / 1000ull);
+                return waited == 0u ? 1u : waited;
+            }
         }
     }
 }
+
+// Stop the GPU: a timed-out collective leaves this rank's data unusable, and
+// nothing after it may run on it. The host reads the control record, which
+// the caller wrote and fenced first.
+__device__ __forceinline__ void roce_trap() { asm volatile("trap;"); }
 
 __device__ __forceinline__ roce_pack roce_ld_global_pack(const void *src) {
     roce_pack p;
@@ -221,11 +240,13 @@ __device__ __forceinline__ roce_u32 roce_doorbell(void *stage_counter, roce_u32 
 }
 
 // Phase 3: one thread per (peer, flag lane) waits for that lane's flag. A
-// timeout records seq, the peer and the lane in the control record and
-// poisons the runtime. A traced kernel passes block 0's trace record, which
-// gets every lane's arrival time.
-__device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags, roce_u32 seq, roce_u32 spin_limit,
-                                                roce_byte *ctrl, void *poison, roce_byte *trace_record = nullptr) {
+// timeout writes the missing peer, its lane and the time waited, then the
+// failed sequence, into the control record (the proxy stops relaying when it
+// sees that sequence, and the host reports the record), and stops the GPU. A
+// traced kernel passes block 0's trace record, which gets every lane's
+// arrival time.
+__device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags, roce_u32 seq, roce_byte *ctrl,
+                                                roce_byte *trace_record = nullptr) {
     if (tidx < ROCE_WORLD * ROCE_HCA_COUNT) {
         int peer = tidx / ROCE_HCA_COUNT;
         int hca = tidx - peer * ROCE_HCA_COUNT;
@@ -236,33 +257,32 @@ __device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags
         if (active) {
             long long slot = (long long)(seq & 1u);
             const roce_byte *flag = flags + (((long long)peer * ROCE_SLOTS + slot) * ROCE_HCA_COUNT + hca) * ROCE_FLAG_STRIDE;
-            roce_u32 timed_out = roce_spin_until_eq_acquire_sys(flag, seq, spin_limit);
+            roce_u32 waited = roce_wait_until_eq_acquire_sys(flag, seq, ctrl);
 #if ROCE_TRACE
-            if (trace_record != nullptr && timed_out == 0u) {
+            if (trace_record != nullptr && waited == 0u) {
                 roce_trace_store(trace_record, ROCE_TRACE_W_FLAGS + peer * ROCE_HCA_COUNT + hca, roce_globaltimer());
             }
 #endif
-            if (timed_out != 0u) {
+            if (waited != 0u) {
                 roce_st_relaxed_sys_u32(ctrl + 12, (roce_u32)peer);
                 roce_st_relaxed_sys_u32(ctrl + 24, (roce_u32)hca);
+                roce_st_relaxed_sys_u32(ctrl + ROCE_CTRL_WAITED_US, waited);
+                roce_fence_sc_sys();
                 roce_st_relaxed_sys_u32(ctrl + 8, seq);
-                roce_st_release_gpu_u32(poison, seq);
+                roce_fence_sc_sys();
+                roce_trap();
             }
         }
     }
 }
 
-// Phase 5: the last block to finish publishes the next epoch, unless a
-// timeout was recorded (a failed sequence keeps the epoch); returns 1 in that
-// block.
-__device__ __forceinline__ roce_u32 roce_tail(void *tail_counter, roce_u32 grid, const roce_byte *ctrl,
-                                              void *epoch, roce_u32 seq) {
+// Phase 5: the last block to finish publishes the next epoch; returns 1 in
+// that block.
+__device__ __forceinline__ roce_u32 roce_tail(void *tail_counter, roce_u32 grid, void *epoch, roce_u32 seq) {
     roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(tail_counter, 1u);
     if ((prior + 1u) % grid == 0u) {
         roce_fence_sc_gpu();
-        if (roce_ld_relaxed_sys_u32(ctrl + 8) == 0u) {
-            roce_st_release_gpu_u32(epoch, seq);
-        }
+        roce_st_release_gpu_u32(epoch, seq);
         return 1u;
     }
     return 0u;
