@@ -33,6 +33,7 @@ import torch
 import torch.distributed as dist
 
 FAULT_TIMEOUT_MS = 2000
+PROBE_BYTES = 1 << 20
 CAPTURE_TIMEOUT_MS = 60000
 # A stopped rank's report: its own timed-out wait, and on the ring possibly a
 # relay neighbour's proxy that saw the stopped peer first.
@@ -43,9 +44,12 @@ def _runtime(timeout_ms: int):
     from sparknet import oneshot as roce
 
     os.environ["SPARKNET_ROCE_TIMEOUT_MS"] = str(timeout_ms)
+    # The probe's own registration bounds its dispatch, whatever a serving
+    # environment sets (a larger limit fails setup).
+    os.environ["SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES"] = str(PROBE_BYTES)
     device = torch.device("cuda", 0)
     torch.cuda.set_device(device)
-    rt = roce.AllReduce.from_exchange_group(exchange_group=dist.group.WORLD, device=device, max_size=1 << 20)
+    rt = roce.AllReduce.from_exchange_group(exchange_group=dist.group.WORLD, device=device, max_size=PROBE_BYTES)
     rt.prepare((torch.bfloat16,))
     return rt
 
