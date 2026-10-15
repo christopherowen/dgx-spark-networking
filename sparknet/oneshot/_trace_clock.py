@@ -8,8 +8,8 @@ round with the shortest round trip bounds the offset most tightly: offset = GPU 
 midpoint of the CPU times, give or take half that round trip.
 """
 
-from __future__ import annotations
-
+# No `from __future__ import annotations`: TileLang evaluates the prim_func's
+# annotations, and its symbolic shape (a local of the jitted function) must resolve.
 import functools
 import time
 
