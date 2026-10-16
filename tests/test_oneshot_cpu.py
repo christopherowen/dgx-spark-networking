@@ -317,6 +317,24 @@ class FailStopTest(unittest.TestCase):
         relay_only = self._fake_runtime([0] * 9, proxy_error="relay timed out after 10.000 s: seq 7 pending 0x1")
         self.assertEqual(failure(relay_only), "RoCE proxy failed: relay timed out after 10.000 s: seq 7 pending 0x1")
 
+    def test_the_vllm_adapter_sets_the_wait_and_returns_the_previous_one(self):
+        # vLLM's startup waits longer than serving: the adapter passes the value on
+        # and returns the one it replaced, so the worker can restore it.
+        tree = ast.parse((ROOT / "sparknet" / "integration" / "vllm" / "roce_all_reduce.py").read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SparknetOneShotAllReduce")
+        method = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "set_timeout_ms"]
+        namespace: dict = {}
+        exec(compile(ast.Module(body=method, type_ignores=[]), "roce_all_reduce.py", "exec"), namespace)
+        set_timeout_ms = namespace["set_timeout_ms"]
+        runtime = types.SimpleNamespace(timeout_ms=10_000)
+        runtime.set_timeout_ms = lambda value: setattr(runtime, "timeout_ms", value)
+        adapter = types.SimpleNamespace(disabled=False, _runtime=runtime)
+        self.assertEqual(set_timeout_ms(adapter, 1_800_000), 10_000)
+        self.assertEqual(runtime.timeout_ms, 1_800_000)
+        self.assertEqual(set_timeout_ms(adapter, 10_000), 1_800_000)
+        with self.assertRaisesRegex(RuntimeError, "disabled"):
+            set_timeout_ms(types.SimpleNamespace(disabled=True, _runtime=None), 10_000)
+
     def test_the_wait_records_then_fences_then_traps(self):
         """The record (peer, HCA, time waited) before the failed sequence the proxy and
         host watch, each fenced to system scope, and nothing computes after it."""

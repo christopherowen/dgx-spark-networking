@@ -184,6 +184,17 @@ class SparknetOneShotAllReduce:
             return None
         return self._runtime.failure()
 
+    def set_timeout_ms(self, timeout_ms: int) -> int:
+        """Set how long a collective wait may see no peer before it stops the GPU,
+        and return the previous value. Every rank must set the same value at the
+        same point: vLLM gives startup, whose ranks can be minutes apart while
+        their JIT caches fill, a longer wait than serving."""
+        if self.disabled or self._runtime is None:
+            raise RuntimeError("one-shot collectives are disabled: no wait to time")
+        previous = self._runtime.timeout_ms
+        self._runtime.set_timeout_ms(timeout_ms)
+        return previous
+
     def should_custom_ar(self, inp: torch.Tensor) -> bool:
         return not self.disabled and self._runtime.should_allreduce(inp)
 
