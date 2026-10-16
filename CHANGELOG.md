@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-16)
 
 - **One kernel family: TileLang.** The vendored CuTe DSL kernels
   (`_oneshot_cute.py`, `_allgather_cute.py`, `_cute_intrinsics.py`,

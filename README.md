@@ -107,9 +107,10 @@ fit the map.
 ## Status
 
 **Serving.** The deployment repository
-([spark-ds41f](https://github.com/christopherowen/spark-ds41f)) promoted its
-r6 image on 2026-10-05: it installs this package's 0.2.0 wheel, and its vLLM
-fork constructs `sparknet.integration.vllm.SparknetOneShotAllReduce` (its
+([spark-ds41f](https://github.com/christopherowen/spark-ds41f)) serves its
+r6n image, promoted on 2026-10-15 (TP4) and 2026-10-16 (TP3). The image
+installs this package's 0.4.0 sources (the release commit adds only the
+version and documentation), and its vLLM fork constructs `sparknet.integration.vllm.SparknetOneShotAllReduce` (its
 vLLM patch 0038, the one-file switch described in
 [sparknet/integration/vllm/README.md](sparknet/integration/vllm/README.md))
 for the TP3 triangle recipe (`oneshot-direct`, `tp3-triangle`) on three
@@ -147,7 +148,7 @@ the TileLang port is the kernel it will be written into.
 ## Install
 
 ```sh
-pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.3.0
+pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.4.0
 ```
 
 The package has no dependencies: the CLI and the topology, profile, policy
