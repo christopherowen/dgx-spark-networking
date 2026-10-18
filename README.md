@@ -243,8 +243,8 @@ promise batch-invariant output across the two backends.
 
 **What does a node need?** DGX Spark OS 26.09 or later with `kho=off`,
 driver 580.178.04, rdma-core 50 with `libibverbs-dev` and a C compiler for
-the proxy, MTU 9000 with one static IPv4 address per cable stripe, GID index
-3 as the IPv4 RoCE v2 GID, unlimited locked memory:
+the proxy, MTU 9000 with one static IPv4 address per cable stripe (its port's
+one IPv4 RoCE v2 GID, found by address at setup, at whatever GID index), unlimited locked memory:
 [docs/host-prerequisites.md](docs/host-prerequisites.md). `sparknet probe
 doctor` checks all of it and changes nothing.
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+- **RoCE GIDs by address** (API version 3). The proxy finds each HCA's source
+  GID when it opens the device: it scans the port's GID table with
+  `ibv_query_gid_ex` and takes the one entry that is RoCE v2, IPv4-mapped and
+  in that HCA's subnet, wherever the kernel filed it. None, or more than one,
+  fails setup naming the device and the subnet. A fixed index stopped
+  matching after a link flap under live RDMA: the kernel re-adds the address
+  in the next free slot (3 to 4 on dgx2 and dgx4 after dgx1 rebooted on
+  2026-10-11), and the fix was a cluster stop plus `nmcli connection up` on
+  every affected port. This is NCCL's own selection with `NCCL_IB_GID_INDEX`
+  unset, made strict.
+- `SPARKNET_ROCE_SUBNETS` (JSON `{HCA: subnet}`, rendered from `roce_subnets`)
+  gives each opened HCA its network; unset, any IPv4 address qualifies.
+  `SPARKNET_ROCE_GID_INDEX` is refused with the reason, and the runtime no
+  longer reads `NCCL_IB_GID_INDEX`. The `gid_index` constructor keyword and
+  `default_gid_index()` are gone; `stats()` reports `gid_indices` and
+  `gid_subnets`.
+- Rendering and the profiles emit no GID index for either library, and
+  `environment_problems`/`nccl validate` refuse a fixed `NCCL_IB_GID_INDEX`.
+  Node maps drop `roce_gid_index`: a map that still has it fails validation
+  with the reason.
+- `sparknet probe doctor`, `topology inventory` and `discover --fabric
+  switched` read each port's whole GID table (`sparknet.topology.gids`); the
+  doctor requires exactly one IPv4 RoCE v2 GID per port, in the declared
+  subnet, at any index (NCCL takes the lowest-index one, so a second address
+  could become NCCL's). `--gid-index` is gone from the CLI.
+
 ## 0.4.0 (2026-10-16)
 
 - **One kernel family: TileLang.** The vendored CuTe DSL kernels

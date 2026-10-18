@@ -15,9 +15,9 @@ tooling run on any host; ``sparknet.oneshot`` is imported only where a GPU
 runtime is constructed.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Bumped when the runtime surface used by integrations changes incompatibly.
-API_VERSION = 2
+API_VERSION = 3
 
 __all__ = ["API_VERSION", "__version__"]

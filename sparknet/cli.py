@@ -22,6 +22,7 @@ from sparknet.probe.container import docker_probe_command
 from sparknet.probe.doctor import local_problems
 from sparknet.probe.gpudirect import gpudirect_report
 from sparknet.topology import discover, nodes as topology, render
+from sparknet.topology.gids import ipv4_roce_v2
 
 EXAMPLES = Path(__file__).parent / "topology" / "examples"
 
@@ -118,16 +119,17 @@ def cmd_topology_discover(args) -> int:
 
 
 def _discover_switched(args) -> int:
-    rails = {host: discover.collect_rails(host, ssh_user=args.ssh_user, gid_index=args.gid_index) for host in args.hosts}
+    rails = {host: discover.collect_rails(host, ssh_user=args.ssh_user) for host in args.hosts}
     for host in args.hosts:
         for hca, entry in sorted(rails[host].items()):
-            print(f"{host} {hca:<14} {entry['state']:<10} {discover.gid_ipv4(entry['gid']) or entry['gid']:<16} {entry['netdev']} mtu {entry['mtu']}")
+            gids = ", ".join(f"{address}@{index}" for index, address in ipv4_roce_v2(entry["gids"])) or "no IPv4 RoCE v2 GID"
+            print(f"{host} {hca:<14} {entry['state']:<10} {gids:<20} {entry['netdev']} mtu {entry['mtu']}")
     if not args.management_ip:
         print("pass --management-ip HOST=IP for every host to generate nodes.json", file=sys.stderr)
         return 0
     ips = dict(item.split("=", 1) for item in args.management_ip)
     document, problems = discover.generate_switched_nodes(rails, args.hosts, management_ips=ips, ssh_user=args.ssh_user or "spark",
-                                                          management_interface=args.management_interface, gid_index=args.gid_index,
+                                                          management_interface=args.management_interface,
                                                           traffic_class=args.traffic_class)
     for problem in problems:
         print("WARNING:", problem, file=sys.stderr)
@@ -157,7 +159,7 @@ def cmd_topology_subset(args) -> int:
 
 
 def cmd_topology_inventory(args) -> int:
-    print(json.dumps(discover.local_inventory(gid_index=args.gid_index), indent=2))
+    print(json.dumps(discover.local_inventory(), indent=2))
     return 0
 
 
@@ -358,7 +360,6 @@ def parser() -> argparse.ArgumentParser:
     d.add_argument("--fabric", choices=("cabled", "switched"), default="cabled")
     d.add_argument("--management-ip", action="append", metavar="HOST=IP")
     d.add_argument("--management-interface")
-    d.add_argument("--gid-index", type=int, default=3)
     d.add_argument("--traffic-class", type=int)
     d.set_defaults(func=cmd_topology_discover)
     ts = t.add_parser("subset", help="carve a pair or a triangle out of a cabled map (ranks in the order given)")
@@ -366,8 +367,7 @@ def parser() -> argparse.ArgumentParser:
     ts.add_argument("names", nargs="+", metavar="NODE")
     ts.add_argument("--out", help="write the map here instead of stdout")
     ts.set_defaults(func=cmd_topology_subset)
-    i = t.add_parser("inventory", help="this host's RDMA devices from sysfs")
-    i.add_argument("--gid-index", type=int, default=3)
+    i = t.add_parser("inventory", help="this host's RDMA devices and their GID tables, from sysfs")
     i.set_defaults(func=cmd_topology_inventory)
 
     n = sub.add_parser("nccl", help="NCCL profiles and patches").add_subparsers(dest="subcommand", required=True)

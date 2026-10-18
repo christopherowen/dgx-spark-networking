@@ -47,7 +47,8 @@ RING_ENV = {
 # routes through ranks that have no cable.
 FORBIDDEN_RING_KEYS = ("NCCL_ALGO_PLUGIN", "NCCL_TUNER_PLUGIN", "NCCL_GRAPH_FILE", "NCCL_TOPO_FILE")
 
-_ROCE_KEYS = ("PEER_HCAS", "TOPOLOGY", "HCA", "GID_INDEX", "TRAFFIC_CLASS")
+# GID_INDEX is retired (the runtime refuses it), so a stale value in ``base`` is dropped too.
+_ROCE_KEYS = ("PEER_HCAS", "TOPOLOGY", "HCA", "SUBNETS", "GID_INDEX", "TRAFFIC_CLASS")
 
 
 def node_environment(
@@ -60,8 +61,10 @@ def node_environment(
 ) -> dict[str, str]:
     """The environment one rank needs for ``transport`` on top of ``base``.
 
-    Emits the ``SPARKNET_ROCE_*`` settings. Stale routing keys in ``base`` are
-    replaced, never merged.
+    Emits the ``SPARKNET_ROCE_*`` settings, the one-shot HCAs' cable subnets
+    among them: the proxy finds each HCA's source GID in its subnet. No GID
+    index is rendered for either library; NCCL scans by address family and
+    RoCE version. Stale routing keys in ``base`` are replaced, never merged.
     """
     env = {k: str(v) for k, v in (base or {}).items()}
     for key in list(env):
@@ -78,13 +81,14 @@ def node_environment(
             put("HCA", ",".join(node_hcas(node, transport)))
         else:
             put("PEER_HCAS", json.dumps(logical_peer_hcas(node, transport, mesh_paths), separators=(",", ":")))
+        declared = node.get("roce_subnets", {})
+        subnets = {hca: declared[hca] for hca in node_hcas(node, transport) if hca in declared}
+        if subnets:
+            put("SUBNETS", json.dumps(subnets, separators=(",", ":")))
     if transport in RING_TRANSPORTS:
         env.update(RING_ENV)
     # '=' makes NCCL match device names exactly rather than by prefix.
     env["NCCL_IB_HCA"] = "=" + ",".join(nccl_hcas(node, transport))
-    if "roce_gid_index" in node:
-        env["NCCL_IB_GID_INDEX"] = str(node["roce_gid_index"])
-        put("GID_INDEX", str(node["roce_gid_index"]))
     if "roce_traffic_class" in node:
         env["NCCL_IB_TC"] = str(node["roce_traffic_class"])
         put("TRAFFIC_CLASS", str(node["roce_traffic_class"]))
@@ -95,9 +99,22 @@ def node_environment(
     return env
 
 
+def gid_setting_problems(env: dict[str, str]) -> list[str]:
+    """A fixed GID slot for either library: the slot of the IPv4 RoCE v2 GID moves when a link flaps under live RDMA."""
+    errors = []
+    if env.get("NCCL_IB_GID_INDEX"):
+        errors.append("NCCL_IB_GID_INDEX pins NCCL to one GID slot, and the IPv4 RoCE v2 GID moves to another when "
+                      "a link flaps under live RDMA; unset it so NCCL finds the GID by NCCL_IB_ADDR_FAMILY and "
+                      "NCCL_IB_ROCE_VERSION_NUM, as the one-shot proxy does by subnet")
+    if env.get("SPARKNET_ROCE_GID_INDEX"):
+        errors.append("SPARKNET_ROCE_GID_INDEX is no longer read: the one-shot proxy finds each HCA's IPv4 RoCE v2 "
+                      "GID in its SPARKNET_ROCE_SUBNETS network")
+    return errors
+
+
 def environment_problems(env: dict[str, str], transport: str, node_count: int) -> list[str]:
     """Settings in ``env`` that contradict the transport's fabric policy."""
-    errors = []
+    errors = gid_setting_problems(env)
     if transport in RING_TRANSPORTS:
         for key, value in RING_ENV.items():
             if str(env.get(key)) != value:
@@ -119,4 +136,4 @@ def environment_problems(env: dict[str, str], transport: str, node_count: int) -
     return errors
 
 
-__all__ = ["FORBIDDEN_RING_KEYS", "RING_ENV", "environment_problems", "node_environment"]
+__all__ = ["FORBIDDEN_RING_KEYS", "RING_ENV", "environment_problems", "gid_setting_problems", "node_environment"]

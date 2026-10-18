@@ -33,7 +33,6 @@ from .runtime import (
     SUPPORTED_WORLD_SIZES,
     TOPOLOGIES,
     RoceOneshotAllReduce as AllReduce,
-    default_gid_index,
     discover_hcas,
     is_supported,
 )
@@ -47,7 +46,6 @@ __all__ = [
     "SUPPORTED_DTYPES",
     "SUPPORTED_WORLD_SIZES",
     "TOPOLOGIES",
-    "default_gid_index",
     "discover_hcas",
     "freeze_kernel_resolution",
     "is_supported",

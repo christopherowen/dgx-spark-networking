@@ -45,10 +45,15 @@ class ProxySimulatorTest(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("PASS: direct3/ring4/mesh4", run.stdout)
             self.assertIn("thread placement", run.stdout)
+            self.assertIn("GID selection by address", run.stdout)
 
     def test_proxy_abi_is_the_qualified_one(self):
         source = (ROCE / "_roce_proxy.c").read_text()
         self.assertIn("#define ROCE_ABI_VERSION 10", source)
+        # Each HCA's source GID comes from the table scan; no slot is taken as given.
+        self.assertIn("ibv_query_gid_ex(hca->ctx", source)
+        self.assertNotIn("ibv_query_gid(", source)
+        self.assertIn("rtr.ah_attr.grh.sgid_index = (uint8_t)hca->gid_index;", source)
         self.assertIn("lib.roce_abi_version() != 10", (ROCE / "_proxy.py").read_text())
         self.assertIn('getenv("SPARKNET_ROCE_MESH_ROTATE")', source)
         self.assertIn('getenv("SPARKNET_ROCE_PROXY_CPU")', source)
@@ -139,7 +144,7 @@ class TopologyResolverTest(unittest.TestCase):
     def setUp(self):
         namespace = dict(vars(typing), os=os, json=json, MAX_STRIPES=2, MAX_LOCAL_HCAS=4,
                          ENV_PEER_HCAS=("SPARKNET_ROCE_PEER_HCAS",),
-                         discover_hcas=lambda gid_index=None: ())
+                         discover_hcas=lambda: ())
         _functions(ROCE / "runtime.py", {"_resolve_hca_topology", "_peer_hca_names_from_env"}, namespace)
         self.resolve = namespace["_resolve_hca_topology"]
         self.from_env = namespace["_peer_hca_names_from_env"]
@@ -151,7 +156,7 @@ class TopologyResolverTest(unittest.TestCase):
                 peers = ((rank - 1) % 4, (rank + 1) % 4)
                 routes = {p: tuple(f"hca{p}_{i}" for i in range(width)) for p in peers}
                 names, result, stripes = self.resolve(world_size=4, rank=rank, hca_names=None,
-                                                      peer_hca_names=routes, gid_index=3, topology="ring4")
+                                                      peer_hca_names=routes, topology="ring4")
                 self.assertEqual((len(names), stripes), (2 * width, width))
                 self.assertEqual(result[rank], ())
                 self.assertEqual(result[(rank + 2) % 4], ())
@@ -160,24 +165,47 @@ class TopologyResolverTest(unittest.TestCase):
     def test_invalid_geometry_rejected(self):
         for world, routes in ((3, {1: ("a",), 2: ("b",)}), (4, None), (4, {1: ("a",), 2: ("b",), 3: ("c",)})):
             with self.assertRaises(ValueError):
-                self.resolve(world_size=world, rank=0, hca_names=("a", "b"), peer_hca_names=routes, gid_index=3, topology="ring4")
+                self.resolve(world_size=world, rank=0, hca_names=("a", "b"), peer_hca_names=routes, topology="ring4")
         with self.assertRaises(ValueError):
-            self.resolve(world_size=3, rank=0, hca_names=None, peer_hca_names={1: ("a",), 2: ("b", "c")}, gid_index=3)
+            self.resolve(world_size=3, rank=0, hca_names=None, peer_hca_names={1: ("a",), 2: ("b", "c")})
         with self.assertRaises(ValueError):
-            self.resolve(world_size=3, rank=0, hca_names=("a", "b"), peer_hca_names={1: ("a",), 2: ("c",)}, gid_index=3)
+            self.resolve(world_size=3, rank=0, hca_names=("a", "b"), peer_hca_names={1: ("a",), 2: ("c",)})
 
     def test_direct_clique_and_mesh_routes(self):
-        names, routes, stripes = self.resolve(world_size=3, rank=1, hca_names=("mlx5_0", "mlx5_1"), peer_hca_names=None, gid_index=3)
+        names, routes, stripes = self.resolve(world_size=3, rank=1, hca_names=("mlx5_0", "mlx5_1"), peer_hca_names=None)
         self.assertEqual((names, stripes), (("mlx5_0", "mlx5_1"), 2))
         self.assertEqual(routes, (("mlx5_0", "mlx5_1"), (), ("mlx5_0", "mlx5_1")))
         for rank in range(4):
             full = {p: (f"h{p % 2}a", f"h{p % 2}b") for p in range(4) if p != rank}
-            names, result, stripes = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=full, gid_index=3, topology="mesh4")
+            names, result, stripes = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=full, topology="mesh4")
             self.assertEqual(stripes, 2)
             self.assertTrue(all(result[p] == full[p] for p in full))
             four = {(rank + 1) % 4: ("a", "b"), (rank - 1) % 4: ("c", "d"), (rank + 2) % 4: ("a", "c", "b", "d")}
-            names, result, slots = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=four, gid_index=3, topology="mesh4")
+            names, result, slots = self.resolve(world_size=4, rank=rank, hca_names=None, peer_hca_names=four, topology="mesh4")
             self.assertEqual((slots, len(names), len(result[(rank + 2) % 4])), (4, 4, 4))
+
+    def test_subnet_map_gives_every_opened_hca_its_network(self):
+        import ipaddress
+
+        ns = _functions(ROCE / "runtime.py", {"_subnets_from_env", "_gid_networks"},
+                        dict(vars(typing), os=os, json=json, ipaddress=ipaddress, ANY_IPV4="0.0.0.0/0",
+                             ENV_SUBNETS=("SPARKNET_ROCE_SUBNETS",)))
+        parse, networks = ns["_subnets_from_env"], ns["_gid_networks"]
+        os.environ.pop("SPARKNET_ROCE_SUBNETS", None)
+        self.assertIsNone(parse())
+        # No map: any IPv4 address qualifies, and the proxy still needs exactly one.
+        self.assertEqual(networks(("a", "b"), None), (ipaddress.IPv4Network("0.0.0.0/0"),) * 2)
+        os.environ["SPARKNET_ROCE_SUBNETS"] = '{"rocep1s0f0": "10.12.1.0/24", "roceP2p1s0f0": "10.12.2.0/24"}'
+        subnets = parse()
+        self.assertEqual(networks(("roceP2p1s0f0", "rocep1s0f0"), subnets),
+                         (ipaddress.IPv4Network("10.12.2.0/24"), ipaddress.IPv4Network("10.12.1.0/24")))
+        with self.assertRaisesRegex(ValueError, "SPARKNET_ROCE_SUBNETS names no subnet for rocep1s0f1"):
+            networks(("rocep1s0f0", "rocep1s0f1"), subnets)
+        for bad in ('["10.12.1.0/24"]', "not json", '{"a": "10.12.1.4/24"}', '{"a": 5}', '{"a": "fe80::/64"}'):
+            os.environ["SPARKNET_ROCE_SUBNETS"] = bad
+            with self.assertRaisesRegex(ValueError, "SPARKNET_ROCE_SUBNETS"):
+                parse()
+        os.environ.pop("SPARKNET_ROCE_SUBNETS", None)
 
     def test_peer_map_environment(self):
         self.assertIsNone(self.from_env())
@@ -287,6 +315,14 @@ class FailStopTest(unittest.TestCase):
         [message] = problems({"SPARKNET_ROCE_SPIN_LIMIT": "5000000"})
         self.assertIn("SPARKNET_ROCE_SPIN_LIMIT", message)
         self.assertIn("SPARKNET_ROCE_TIMEOUT_MS", message)
+        # A fixed GID slot is refused too; NCCL's own NCCL_IB_GID_INDEX is not the runtime's to read.
+        [message] = problems({"SPARKNET_ROCE_GID_INDEX": "3", "NCCL_IB_GID_INDEX": "3"})
+        self.assertIn("SPARKNET_ROCE_GID_INDEX is no longer read", message)
+        self.assertIn("SPARKNET_ROCE_SUBNETS", message)
+        runtime = (ROCE / "runtime.py").read_text()
+        self.assertNotIn("NCCL_IB_GID_INDEX", runtime)
+        self.assertNotIn("gid_index:", runtime)
+        self.assertNotIn("self.gid_index ", runtime)
 
     def _failure_method(self):
         tree = ast.parse((ROCE / "runtime.py").read_text())
