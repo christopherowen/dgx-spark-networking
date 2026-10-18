@@ -41,6 +41,15 @@ the vendored file only in two comment lines and the `MESH_ROTATE`
 environment name lookup. Verify with `diff` against the tree named in
 `upstreams.lock.json`.
 
+0.5.0 changes how the source GID is chosen, a setup change, not a protocol
+one: the vendored proxy queried one configured GID index
+(`B12X_ROCE_GID_INDEX`, else `NCCL_IB_GID_INDEX`, else 3) for every HCA; the
+proxy now scans each HCA's GID table with `ibv_query_gid_ex` and takes the one
+IPv4 RoCE v2 entry in that HCA's subnet (`select_gid`), and `roce_create`
+takes per-HCA subnets instead of the index. The index becomes per HCA in the
+queue-pair address vector. The wire layout, the geometry handshake and ABI 10
+are unchanged (the blob always carried the GID itself).
+
 Not carried: the relay streaming and progress-window patches (0012 to 0014,
 measured slower), the mesh4 host marker and TC tooling (not recommended),
 the b12x preparation session.

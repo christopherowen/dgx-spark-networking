@@ -484,9 +484,10 @@ def main() -> None:
                     "WORLD_SIZE",
                     "MASTER_ADDR",
                     "NCCL_IB_HCA",
-                    "NCCL_IB_GID_INDEX",
+                    "NCCL_IB_ADDR_FAMILY",
+                    "NCCL_IB_ROCE_VERSION_NUM",
                     "SPARKNET_ROCE_HCA",
-                    "SPARKNET_ROCE_GID_INDEX",
+                    "SPARKNET_ROCE_SUBNETS",
                     "NCCL_IB_TC",
                     "SPARKNET_ROCE_TRAFFIC_CLASS",
                 )

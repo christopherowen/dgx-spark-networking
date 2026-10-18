@@ -12,13 +12,14 @@ from sparknet.transport.host_proxy import host_proxy_capability
 class GeometryTest(unittest.TestCase):
     def test_validation(self):
         good = Geometry(world_size=4, rank=1, topology="ring4", hca_names=("a", "b", "c", "d"),
-                        peer_hca_indices=((0, 1), (), (2, 3), ()), stripe_count=2, gid_index=3,
+                        peer_hca_indices=((0, 1), (), (2, 3), ()), stripe_count=2,
+                        gid_networks=("10.12.1.0/24", "10.12.2.0/24", "10.23.1.0/24", "10.23.2.0/24"),
                         slot_bytes=4096, region_ptr=0, region_bytes=1 << 20)
         self.assertEqual(good.validate(), [])
         bad = Geometry(world_size=3, rank=5, topology="ring4", hca_names=(), peer_hca_indices=(), stripe_count=1,
-                       gid_index=3, slot_bytes=100, region_ptr=0, region_bytes=0)
+                       gid_networks=("10.12.1.4/24",), slot_bytes=100, region_ptr=0, region_bytes=0)
         problems = bad.validate()
-        for needle in ("rank", "four ranks", "1..4", "every rank", "4096"):
+        for needle in ("rank", "four ranks", "1..4", "every rank", "4096", "one GID subnet", "not an IPv4 network"):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
 

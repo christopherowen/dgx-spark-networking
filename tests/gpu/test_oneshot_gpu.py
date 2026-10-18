@@ -3,7 +3,7 @@
 Run with torchrun on two or more nodes that share a RoCE fabric, for example
 from every node of a DGX Spark cluster::
 
-    NCCL_IB_HCA=rocep1s0f0,roceP2p1s0f0 NCCL_IB_GID_INDEX=3 \\
+    NCCL_IB_HCA=rocep1s0f0,roceP2p1s0f0 \\
     torchrun --nnodes=4 --nproc-per-node=1 --node-rank=$RANK \\
         --master-addr=$MASTER --master-port=29650 \\
         -m pytest -x tests/gpu/test_oneshot_gpu.py
@@ -64,6 +64,17 @@ def _tolerance(dtype: torch.dtype, world: int) -> tuple[float, float]:
     if dtype == torch.bfloat16:
         return 1e-2, 2e-2 * world
     return 2e-3, 4e-3 * world
+
+
+def test_source_gids_are_found_by_address(runtime):
+    """The proxy's verbs scan and the sysfs GID table agree on every HCA's source GID slot."""
+    from sparknet.topology.gids import read_gid_table, select_gid
+
+    stats = runtime.stats()
+    for hca in runtime.hca_names:
+        table = read_gid_table(f"/sys/class/infiniband/{hca}/ports/1")
+        index, _ = select_gid(table, stats["gid_subnets"][hca], hca)
+        assert stats["gid_indices"][hca] == index, (hca, stats["gid_indices"], table)
 
 
 def test_payload_is_striped_across_every_hca(runtime):

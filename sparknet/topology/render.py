@@ -48,7 +48,8 @@ RING_ENV = {
 # routes through ranks that have no cable.
 FORBIDDEN_RING_KEYS = ("NCCL_ALGO_PLUGIN", "NCCL_TUNER_PLUGIN", "NCCL_GRAPH_FILE", "NCCL_TOPO_FILE")
 
-_ROCE_KEYS = ("PEER_HCAS", "TOPOLOGY", "HCA", "GID_INDEX", "TRAFFIC_CLASS")
+# GID_INDEX is retired (the runtime refuses it), so a stale value in ``base`` is dropped too.
+_ROCE_KEYS = ("PEER_HCAS", "TOPOLOGY", "HCA", "SUBNETS", "GID_INDEX", "TRAFFIC_CLASS")
 # NCCL settings the renderer writes from the node map and the transport.
 OWNED_KEYS = ("NCCL_IB_HCA", "NCCL_IB_TC")
 
@@ -63,8 +64,10 @@ def node_environment(
 ) -> dict[str, str]:
     """The environment one rank needs for ``transport`` on top of ``base``.
 
-    Emits the ``SPARKNET_ROCE_*`` settings. Stale routing keys in ``base`` are
-    replaced, never merged.
+    Emits the ``SPARKNET_ROCE_*`` settings, the one-shot HCAs' cable subnets
+    among them: the proxy finds each HCA's source GID in its subnet. No GID
+    index is rendered for either library; NCCL scans by address family and
+    RoCE version. Stale routing keys in ``base`` are replaced, never merged.
     """
     env = {k: str(v) for k, v in (base or {}).items()}
     for key in list(env):
@@ -81,13 +84,19 @@ def node_environment(
             put("HCA", ",".join(node_hcas(node, transport)))
         else:
             put("PEER_HCAS", json.dumps(logical_peer_hcas(node, transport, mesh_paths), separators=(",", ":")))
+        if not ("roce_gid_index" in node and base and base.get("NCCL_IB_GID_INDEX")):
+            declared = node.get("roce_subnets", {})
+            subnets = {hca: declared[hca] for hca in node_hcas(node, transport) if hca in declared}
+            if subnets:
+                put("SUBNETS", json.dumps(subnets, separators=(",", ":")))
     if transport in RING_TRANSPORTS:
         env.update(RING_ENV)
     # '=' makes NCCL match device names exactly rather than by prefix.
     env["NCCL_IB_HCA"] = "=" + ",".join(nccl_hcas(node, transport))
-    if "roce_gid_index" in node:
+    if "roce_gid_index" in node and base and base.get("NCCL_IB_GID_INDEX"):
         env["NCCL_IB_GID_INDEX"] = str(node["roce_gid_index"])
-        put("GID_INDEX", str(node["roce_gid_index"]))
+        if uses_oneshot(transport):
+            put("GID_INDEX", str(node["roce_gid_index"]))
     marking = traffic_class(transport)
     if marking is not None:
         env["NCCL_IB_TC"] = str(marking)
@@ -102,15 +111,27 @@ def node_environment(
 
 def base_problems(base: dict[str, str]) -> list[str]:
     """Settings a deployment wrote by hand that the renderer owns: they would duplicate or contradict the node map."""
-    # The GID index is still a deployment setting until GIDs are found by address.
     owned = set(OWNED_KEYS) | {f"SPARKNET_ROCE_{name}" for name in _ROCE_KEYS if name != "GID_INDEX"}
     return [f"{key} is rendered from the node map and the transport; remove it from the environment"
-            for key in sorted(base) if key in owned]
+            for key in sorted(base) if key in owned] + gid_setting_problems(base)
+
+
+def gid_setting_problems(env: dict[str, str]) -> list[str]:
+    """A fixed GID slot for either library: the slot of the IPv4 RoCE v2 GID moves when a link flaps under live RDMA."""
+    errors = []
+    if env.get("NCCL_IB_GID_INDEX"):
+        errors.append("NCCL_IB_GID_INDEX pins NCCL to one GID slot, and the IPv4 RoCE v2 GID moves to another when "
+                      "a link flaps under live RDMA; unset it so NCCL finds the GID by NCCL_IB_ADDR_FAMILY and "
+                      "NCCL_IB_ROCE_VERSION_NUM, as the one-shot proxy does by subnet")
+    if env.get("SPARKNET_ROCE_GID_INDEX"):
+        errors.append("SPARKNET_ROCE_GID_INDEX is no longer read: the one-shot proxy finds each HCA's IPv4 RoCE v2 "
+                      "GID in its SPARKNET_ROCE_SUBNETS network")
+    return errors
 
 
 def environment_problems(env: dict[str, str], transport: str, node_count: int) -> list[str]:
     """Settings in ``env`` that contradict the transport's fabric policy."""
-    errors = []
+    errors = gid_setting_problems(env)
     if transport in RING_TRANSPORTS:
         for key, value in RING_ENV.items():
             if str(env.get(key)) != value:
@@ -133,4 +154,4 @@ def environment_problems(env: dict[str, str], transport: str, node_count: int) -
 
 
 __all__ = ["FORBIDDEN_RING_KEYS", "OWNED_KEYS", "RING_ENV", "base_problems", "environment_problems",
-           "node_environment"]
+           "gid_setting_problems", "node_environment"]

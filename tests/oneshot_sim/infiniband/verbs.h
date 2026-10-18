@@ -23,7 +23,10 @@ enum { IBV_ACCESS_LOCAL_WRITE=1, IBV_ACCESS_REMOTE_WRITE=2,
 #define IBV_QP_PORT 8192
 #define IBV_QP_ACCESS_FLAGS 16384
 union ibv_gid { unsigned char raw[16]; };
-struct ibv_context { int unused; };
+enum ibv_gid_type { IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2 };
+struct ibv_gid_entry { union ibv_gid gid; uint32_t gid_index, port_num, gid_type, ndev_ifindex; };
+/* One port's GID table (filled marks a populated slot) and an error every query returns. */
+struct ibv_context { struct ibv_gid_entry gid[16]; int filled[16]; int query_error; };
 struct ibv_device { int unused; };
 struct ibv_pd { int unused; };
 struct ibv_mr { uint32_t lkey, rkey; };
@@ -36,7 +39,7 @@ struct ibv_qp {
     struct ibv_cq *cq;
     struct transfer *head, *tail;
 };
-struct ibv_port_attr { int state; uint16_t lid; enum ibv_mtu active_mtu; };
+struct ibv_port_attr { int state; uint16_t lid; enum ibv_mtu active_mtu; int gid_tbl_len; };
 struct ibv_qp_init_attr {
     struct ibv_cq *send_cq, *recv_cq;
     int qp_type;
@@ -68,7 +71,7 @@ const char *ibv_get_device_name(struct ibv_device *);
 void ibv_free_device_list(struct ibv_device **);
 struct ibv_context *ibv_open_device(struct ibv_device *);
 int ibv_query_port(struct ibv_context *, int, struct ibv_port_attr *);
-int ibv_query_gid(struct ibv_context *, int, int, union ibv_gid *);
+int ibv_query_gid_ex(struct ibv_context *, uint32_t, uint32_t, struct ibv_gid_entry *, uint32_t);
 struct ibv_pd *ibv_alloc_pd(struct ibv_context *);
 struct ibv_mr *ibv_reg_mr(struct ibv_pd *, void *, size_t, int);
 struct ibv_cq *ibv_create_cq(struct ibv_context *, int, void *, void *, int);

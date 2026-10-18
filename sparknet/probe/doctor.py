@@ -5,7 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from sparknet.topology.discover import gid_ipv4, local_inventory
+from sparknet.topology.discover import local_inventory
+from sparknet.topology.gids import port_gid_problems
 from sparknet.topology.nodes import nccl_hcas, node_by_name, node_hcas, problems as map_problems, uses_oneshot
 
 
@@ -30,8 +31,7 @@ def local_problems(
         node = node_by_name(nodes, node_name)
     except KeyError as exc:
         return errors + [str(exc)]
-    gid_index = node.get("roce_gid_index", 3)
-    inventory = local_inventory(gid_index=gid_index) if inventory is None else inventory
+    inventory = local_inventory() if inventory is None else inventory
     routed = sorted(set(node_hcas(node, transport)) | set(nccl_hcas(node, transport)))
     for hca in routed:
         entry = inventory.get(hca)
@@ -40,13 +40,10 @@ def local_problems(
             continue
         if "ACTIVE" not in (entry.get("state") or ""):
             errors.append(f"{node_name}: {hca} port is {entry.get('state')!r}, not ACTIVE")
-        address = gid_ipv4(entry.get("gid"))
-        subnet = node.get("roce_subnets", {}).get(hca)
-        if subnet:
-            import ipaddress
-
-            if address is None or ipaddress.IPv4Address(address) not in ipaddress.IPv4Network(subnet):
-                errors.append(f"{node_name}: {hca} GID {gid_index} is {entry.get('gid')}, expected an IPv4 address in {subnet}")
+        # One IPv4 RoCE v2 GID in the cable's subnet (any IPv4 address when the map
+        # declares none), at whatever index: what the proxy and NCCL will select.
+        for problem in port_gid_problems(hca, entry.get("gids", []), node.get("roce_subnets", {}).get(hca)):
+            errors.append(f"{node_name}: {problem}")
         mtu = entry.get("mtu")
         if mtu is not None and mtu != 9000:
             errors.append(f"{node_name}: {hca} netdev MTU is {mtu}, the fabric uses 9000")

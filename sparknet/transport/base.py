@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -16,7 +17,7 @@ class Geometry:
     hca_names: tuple[str, ...]
     peer_hca_indices: tuple[tuple[int, ...], ...]
     stripe_count: int
-    gid_index: int
+    gid_networks: tuple[str, ...]  # per HCA: the IPv4 subnet its source GID is found in
     slot_bytes: int
     region_ptr: int
     region_bytes: int
@@ -35,6 +36,13 @@ class Geometry:
             problems.append("1..4 local HCAs")
         if len(self.peer_hca_indices) != self.world_size:
             problems.append("peer routes must cover every rank")
+        if len(self.gid_networks) != len(self.hca_names):
+            problems.append("one GID subnet per local HCA")
+        for network in self.gid_networks:
+            try:
+                ipaddress.IPv4Network(network)
+            except ValueError:
+                problems.append(f"GID subnet {network!r} is not an IPv4 network")
         if self.slot_bytes <= 0 or self.slot_bytes % 4096:
             problems.append("slot_bytes must be a positive multiple of 4096")
         return problems
@@ -66,6 +74,7 @@ class Transport(Protocol):
     world_size: int
     rank: int
     hca_names: tuple[str, ...]
+    gid_indices: tuple[int, ...]  # the GID-table slot each HCA's source GID was found in
 
     def local_blob(self) -> bytes: ...
     def connect(self, blobs: list[bytes]) -> None: ...

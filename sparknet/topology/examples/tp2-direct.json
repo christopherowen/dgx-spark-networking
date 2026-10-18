@@ -7,7 +7,6 @@
       "rank": 0,
       "management_ip": "192.0.2.1",
       "head": true,
-      "roce_gid_index": 3,
       "management_interface": "enP7s7",
       "roce_peer_hcas": {
         "1": ["rocep1s0f0", "roceP2p1s0f0"]
@@ -25,7 +24,6 @@
       "rank": 1,
       "management_ip": "192.0.2.2",
       "head": false,
-      "roce_gid_index": 3,
       "management_interface": "enP7s7",
       "roce_peer_hcas": {
         "0": ["rocep1s0f1", "roceP2p1s0f1"]

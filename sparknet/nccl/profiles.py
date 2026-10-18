@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from sparknet.topology.render import RING_ENV
+from sparknet.topology.render import RING_ENV, gid_setting_problems
 
 # RoCE v2 over the ConnectX-7 functions, one GPU per node, no PCIe peers, no
 # shared memory: the part of the fabric policy every profile shares.
@@ -25,7 +25,6 @@ COMMON_IB_ENV = {
     "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
     "NCCL_IB_ADDR_FAMILY": "AF_INET",
     "NCCL_IB_ROCE_VERSION_NUM": "2",
-    "NCCL_IB_GID_INDEX": "3",
     "NCCL_CROSS_NIC": "1",
     "NCCL_IGNORE_CPU_AFFINITY": "1",
     "NCCL_P2P_DISABLE": "1",
@@ -227,7 +226,7 @@ def required_patches(env: dict[str, str]) -> list[str]:
 
 def problems(env: dict[str, str], *, node_count: int, patched_nccl: bool = True) -> list[str]:
     """Settings that contradict each other, the node count or the library build."""
-    errors: list[str] = []
+    errors: list[str] = gid_setting_problems(env)
     for key in ("NCCL_BUFFSIZE", "NCCL_LL128_BUFFSIZE", "NCCL_MIN_TRAFFIC_PER_CHANNEL",
                 "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS",
                 "SPARKNET_ROCE_TIMEOUT_MS"):
