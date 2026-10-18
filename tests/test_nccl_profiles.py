@@ -13,13 +13,18 @@ class ProfileTest(unittest.TestCase):
             "NCCL_BUFFSIZE": "4194304", "NCCL_LL128_BUFFSIZE": "262144", "NCCL_PROTO": "^LL128",
             "NCCL_SWITCHLESS_BIDIRECTIONAL": "2", "NCCL_MIN_TRAFFIC_PER_CHANNEL": "512",
             "NCCL_THREAD_THRESHOLDS": "-2 -2 -2 1 1 1", "NCCL_CUMEM_ENABLE": "1", "NCCL_RUNTIME_CONNECT": "1",
-            "NCCL_IB_SUBNET_PREFIX_LEN": "24", "NCCL_IB_GID_INDEX": "3", "NCCL_P2P_DISABLE": "1",
+            "NCCL_IB_SUBNET_PREFIX_LEN": "24", "NCCL_IB_ADDR_FAMILY": "AF_INET", "NCCL_IB_ROCE_VERSION_NUM": "2",
+            "NCCL_P2P_DISABLE": "1",
             "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES": "2097152",
             "SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES": "1048576",
             "SPARKNET_ROCE_ALLGATHER_MAX_BYTES": "2097152", "SPARKNET_ROCE_TIMEOUT_MS": "10000",
         }
         for key, value in expected.items():
             self.assertEqual(env.get(key), value, key)
+        # NCCL scans for the IPv4 RoCE v2 GID; a fixed slot is refused.
+        self.assertNotIn("NCCL_IB_GID_INDEX", env)
+        [pinned] = profiles.problems({**env, "NCCL_IB_GID_INDEX": "3"}, node_count=4)
+        self.assertIn("unset it so NCCL finds the GID", pinned)
         # One name per setting, and none of an engine's own switches.
         self.assertFalse([k for k in env if k.startswith(("B12X_", "VLLM_"))])
         self.assertEqual(profiles.problems(env, node_count=4), [])

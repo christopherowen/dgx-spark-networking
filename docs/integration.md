@@ -104,29 +104,32 @@ sparknet topology render nodes.json dgx3 --transport oneshot-ring4 --profile tp4
 
 The output is the complete fabric-related environment of that rank: the
 profile's NCCL and one-shot settings, the ring policy for neighbour rings,
-`NCCL_IB_HCA` with exact device names, the peer map or the rail list, the GID
-index, the traffic class and the socket interfaces. Put it in the container's
+`NCCL_IB_HCA` with exact device names, the peer map or the rail list, the
+one-shot HCAs' cable subnets (`SPARKNET_ROCE_SUBNETS`), the traffic class and
+the socket interfaces. No GID index is rendered for either library: the proxy
+finds each HCA's IPv4 RoCE v2 GID in its subnet, NCCL scans by address family
+and RoCE version (`docs/design.md`, "GIDs by address"). Put it in the container's
 environment verbatim. Every setting has exactly one name, `SPARKNET_ROCE_*`
 (or NCCL's own `NCCL_*`).
 
 Rendering refuses a profile that does not fit the map's transport or node
 count, and an environment that contradicts the fabric policy (for example a
 neighbour ring without `NCCL_ALGO=Ring`, or an NCCL-only transport with a
-one-shot route set).
+one-shot route set, or a fixed `NCCL_IB_GID_INDEX`).
 
 ### 2.6 Hosts
 
 `docs/host-prerequisites.md` lists what a node needs (kernel `kho=off`,
-driver, firmware, rdma-core, MTU 9000, static addresses per stripe, GID 3 as
-the IPv4 address, unlimited memlock). On each node, before every launch:
+driver, firmware, rdma-core, MTU 9000, one static address per stripe,
+unlimited memlock). On each node, before every launch:
 
 ```sh
 sparknet probe doctor nodes.json --node dgx3 --transport oneshot-ring4
 ```
 
-It checks the map against the live devices, the GID in each declared subnet,
-MTU, `kho=off`, memlock, the compiler and headers the proxy needs. It never
-changes anything.
+It checks the map against the live devices: exactly one IPv4 RoCE v2 GID
+per port, in the declared subnet, at any index; MTU, `kho=off`, memlock, the
+compiler and headers the proxy needs. It never changes anything.
 
 ## 3. Build the serving image
 
@@ -361,8 +364,10 @@ sequence-parallel threshold, which is a model-scheduling change.
 - Log `runtime.stats()` at startup: topology, HCAs, stripe count, dispatch
   limit, and later the per-HCA byte counters. On a ring the bytes must be
   equal across interfaces.
-- Run `sparknet probe doctor` in the launch preflight; a changed GID index
-  after a reboot or a moved cable shows up there, not in a hang.
+- Run `sparknet probe doctor` in the launch preflight; a moved cable or a
+  second address on a port shows up there, not in a hang. A GID that moved
+  to another slot after a neighbour's reboot is not a fault: the restart
+  finds it (`runtime.stats()["gid_indices"]` reports where).
 - A failed runtime (a stopped collective, a proxy failure) is a rank-group failure.
   Restart the group; do not restart one rank.
 - Keep the rendered environment with the serving configuration and treat
@@ -391,8 +396,9 @@ sequence-parallel threshold, which is a model-scheduling change.
 | `port 1 is not active` | cable or link down, or the wrong port cabled | `rdma link`, `sparknet probe doctor` |
 | `ibv_reg_mr(pinned region): Cannot allocate memory` | `kho=off` missing from the kernel command line, or memlock limited | `cat /proc/cmdline`, `ulimit -l`, container `--ulimit memlock=-1:-1` |
 | `rank N published incompatible transport geometry` | ranks run different topologies, stripe counts or ABIs (mixed images or environments) | compare each node's rendered environment and image |
-| `saw nothing from rank N, HCA h, for T s` | that peer stalled (it may be compiling inside a collective phase: meet on the host first), its GID is wrong for the subnet, or the timeout is below the real skew | `sparknet probe doctor` on rank N; NCCL/one-shot GID index; `SPARKNET_ROCE_TIMEOUT_MS` |
-| `one-shot policy unavailable: needs an integrated GPU with an active RDMA device` | not a Spark, or no active device at the GID index | `sparknet topology inventory` |
+| `RDMA device X has no IPv4 RoCE v2 GID in S` or `has 2 IPv4 RoCE v2 GIDs in S` at construction | the port's address is not the cable's (wrong cable or netplan), the link has no address yet, or the port carries a second address in the subnet | `sparknet probe doctor`, `sparknet topology inventory` |
+| `saw nothing from rank N, HCA h, for T s` | that peer stalled (it may be compiling inside a collective phase: meet on the host first), a link flapped under the running ranks, or the timeout is below the real skew | `sparknet probe doctor` on rank N; `SPARKNET_ROCE_TIMEOUT_MS` |
+| `one-shot policy unavailable: needs an integrated GPU with an active RDMA device` | not a Spark, or no active device with an IPv4 RoCE v2 GID | `sparknet topology inventory` |
 | `SWITCHLESS_BIDIRECTIONAL needs ...` in the NCCL log | channel count not even or not a multiple of four for mode 2 | `sparknet nccl validate` |
 | NCCL hangs with every rank waiting, AArch64 | unpatched NCCL (missing the CTS fence) | image's `libnccl.so.2` hash against the built one |
 | the probe fails `actual transport counters disagree with the dispatch policy` | the engine or the probe routed a size to the wrong backend; environment and runtime limits differ | the rendered environment versus `runtime.stats()` |
@@ -417,8 +423,8 @@ in `docs/nccl.md`; `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES`,
 
 **Per-node environment** (from `sparknet topology render`):
 `SPARKNET_ROCE_TOPOLOGY`, `SPARKNET_ROCE_PEER_HCAS` (cabled) or
-`SPARKNET_ROCE_HCA` (switched), `SPARKNET_ROCE_GID_INDEX`,
-`SPARKNET_ROCE_TRAFFIC_CLASS`, `NCCL_IB_HCA`, `NCCL_IB_GID_INDEX`,
+`SPARKNET_ROCE_HCA` (switched), `SPARKNET_ROCE_SUBNETS`,
+`SPARKNET_ROCE_TRAFFIC_CLASS`, `NCCL_IB_HCA`,
 `NCCL_IB_TC`, `NCCL_SOCKET_IFNAME`, `GLOO_SOCKET_IFNAME`, `TP_SOCKET_IFNAME`,
 and the ring policy keys on neighbour rings.
 
@@ -427,8 +433,9 @@ and the ring policy keys on neighbour rings.
 `should_all_gather(x, dim)`, `all_gather(x, dim=, out=, stream=)`, `capture(stream=)`,
 `check_health()`, `failure()`, `set_timeout_ms(ms)`, `poisoned`, `stats()`, `close()`; properties `topology`,
 `hca_names`, `stripe_count`, `dispatch_max_bytes`, `max_size`, `max_gather_bytes`;
-module functions `is_supported(device)`, `discover_hcas()`, `default_gid_index()`,
-`freeze_kernel_resolution(reason)`.
+module functions `is_supported(device)`, `discover_hcas()`,
+`freeze_kernel_resolution(reason)`. `stats()` includes `gid_indices` and
+`gid_subnets`: where each HCA's source GID was found, and in which network.
 
 **Policy API** (`sparknet.policy`): `CollectivePolicy(dispatch, capacity, gather_shard)`,
 `.from_environment(env)`, `.environment()`, `.all_reduce_backend(nbytes, dtype, contiguous=)`,

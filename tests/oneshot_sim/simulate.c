@@ -157,6 +157,7 @@ static void setup(uint32_t seed) {
             c->hca[h].cq=calloc(1, sizeof(struct ibv_cq));
             c->hca[h].mr=calloc(1, sizeof(struct ibv_mr));
             c->hca[h].mr->lkey = c->hca[h].mr->rkey = 100 + r*4+h;
+            c->hca[h].gid_index = 3 + (r + h) % 3;  // per-HCA slots, as after a link flap
         }
         int edge=0;
         for (int p=0; p<world; p++) {
@@ -321,6 +322,68 @@ static void independent_directions(void) {
     }
 }
 
+// One GID-table slot: an IPv4-mapped address, or (ipv4 == 0) the port's fe80 default.
+static void gid_slot(struct ibv_context *x, int i, uint32_t type, uint32_t ipv4) {
+    struct ibv_gid_entry *e = &x->gid[i];
+    memset(e, 0, sizeof(*e));
+    e->gid_index = (uint32_t)i; e->port_num = ROCE_PORT; e->gid_type = type;
+    if (ipv4) {
+        e->gid.raw[10] = e->gid.raw[11] = 0xff;
+        for (int b = 0; b < 4; b++) e->gid.raw[12 + b] = (uint8_t)(ipv4 >> (24 - 8 * b));
+    } else {
+        e->gid.raw[0] = 0xfe; e->gid.raw[1] = 0x80; e->gid.raw[15] = 0x2b;
+    }
+    x->filled[i] = 1;
+}
+
+// select_gid against the tables a ConnectX-7 port shows: the selection is by
+// type, family and subnet, never by slot, and none or two is an error.
+static void gid_selection(void) {
+    const uint32_t cable = 0x0a0e0100u, here = 0x0a0e0104u;  // 10.14.1.0/24, 10.14.1.4
+    roce_ctx_t *c = calloc(1, sizeof(*c));
+    struct ibv_context x;
+    c->n_hca = 1; c->hca[0].ctx = &x;
+    // Healthy: link-local v1/v2, then the address as v1 and v2.
+    memset(&x, 0, sizeof x);
+    gid_slot(&x, 0, IBV_GID_TYPE_ROCE_V1, 0); gid_slot(&x, 1, IBV_GID_TYPE_ROCE_V2, 0);
+    gid_slot(&x, 2, IBV_GID_TYPE_ROCE_V1, here); gid_slot(&x, 3, IBV_GID_TYPE_ROCE_V2, here);
+    assert(!select_gid(c, 0, "rocep1s0f0", 16, cable, 24) && c->hca[0].gid_index == 3);
+    assert(!memcmp(c->hca[0].gid.raw, x.gid[3].gid.raw, 16));
+    // After a flap under live RDMA: slot 3 empty, the address re-added at 4.
+    x.filled[3] = 0; gid_slot(&x, 4, IBV_GID_TYPE_ROCE_V2, here);
+    assert(!select_gid(c, 0, "rocep1s0f0", 16, cable, 24) && c->hca[0].gid_index == 4);
+    assert(roce_hca_stat(c, 0, 2) == 4);
+    // Another subnet's address beside the cable's is not a candidate.
+    gid_slot(&x, 3, IBV_GID_TYPE_ROCE_V2, 0xc0a80004u);
+    assert(!select_gid(c, 0, "rocep1s0f0", 16, cable, 24) && c->hca[0].gid_index == 4);
+    // ...but with no subnet declared (prefix 0) the port has two IPv4 RoCE v2 GIDs.
+    assert(select_gid(c, 0, "rocep1s0f0", 16, 0, 0) == -1);
+    assert(strstr(c->err, "rocep1s0f0 has 2 IPv4 RoCE v2 GIDs in 0.0.0.0/0 (indices 3, 4)"));
+    // Two addresses in the cable's subnet.
+    gid_slot(&x, 5, IBV_GID_TYPE_ROCE_V2, 0x0a0e0109u);
+    assert(select_gid(c, 0, "rocep1s0f0", 16, cable, 24) == -1);
+    assert(strstr(c->err, "has 2 IPv4 RoCE v2 GIDs in 10.14.1.0/24 (indices 4, 5)"));
+    // Only the RoCE v1 entry, or only another cable's address: nothing to take.
+    memset(&x, 0, sizeof x);
+    gid_slot(&x, 0, IBV_GID_TYPE_ROCE_V1, 0); gid_slot(&x, 1, IBV_GID_TYPE_ROCE_V2, 0);
+    gid_slot(&x, 2, IBV_GID_TYPE_ROCE_V1, here); gid_slot(&x, 3, IBV_GID_TYPE_ROCE_V2, 0x0a0c0104u);
+    assert(select_gid(c, 0, "roceP2p1s0f1", 16, cable, 24) == -1);
+    assert(strstr(c->err, "roceP2p1s0f1 has no IPv4 RoCE v2 GID in 10.14.1.0/24 (16 slots scanned)"));
+    // Any IPv4 address with no subnet declared.
+    assert(!select_gid(c, 0, "roceP2p1s0f1", 16, 0, 0) && c->hca[0].gid_index == 3);
+    // A failing query names the device and the slot.
+    x.query_error = EIO;
+    assert(select_gid(c, 0, "rocep1s0f1", 16, cable, 24) == -1 && strstr(c->err, "ibv_query_gid_ex(rocep1s0f1, index 0)"));
+    free(c);
+    char err[160];
+    const char *names[2] = {"a", "b"};
+    int routes[3] = {-1, 0, 0};
+    uint32_t networks[2] = {cable, cable};
+    int prefixes[2] = {24, 33};
+    assert(roce_create(3, 0, names, 2, routes, 1, networks, prefixes, 0, 0, NULL, 4096 * 64, 4096, err, sizeof err) == NULL);
+    assert(strstr(err, "invalid GID subnet prefix for HCA 1: 33"));
+}
+
 static void placement(void) {
     // SPARKNET_ROCE_PROXY_CPU parsing (none, one core, the big-core set) and, on
     // Linux, that a pinned proxy thread reports the CPUs it was given and ran on.
@@ -365,7 +428,8 @@ int main(void) {
     stripes=4;world=4;ring4=2;run(3000,0);run(1000,UINT32_MAX-100);
     rotate=1;run(3000,0);run(1000,UINT32_MAX-100);rotate=0;
     placement();
-    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 26000 collectives, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement (%llu writes)\n", (unsigned long long)messages);
+    gid_selection();
+    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 26000 collectives, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement, GID selection by address (%llu writes)\n", (unsigned long long)messages);
 }
 
 /* Setup/teardown stubs. Contexts are supplied by setup; no fake successful NIC discovery. */
@@ -375,12 +439,18 @@ const char *ibv_get_device_name(struct ibv_device *p) {(void)p;return "none";}
 void ibv_free_device_list(struct ibv_device **p) {(void)p;}
 struct ibv_context *ibv_open_device(struct ibv_device *p) {(void)p;return NULL;}
 int ibv_query_port(struct ibv_context *c,int p,struct ibv_port_attr *a) {(void)c;(void)p;(void)a;return -1;}
-int ibv_query_gid(struct ibv_context *c,int p,int i,union ibv_gid *g) {(void)c;(void)p;(void)i;(void)g;return -1;}
+int ibv_query_gid_ex(struct ibv_context *c,uint32_t p,uint32_t i,struct ibv_gid_entry *e,uint32_t f) {
+    assert(p==ROCE_PORT && f==0 && i<16);
+    if(c->query_error) return c->query_error;
+    if(!c->filled[i]) return ENODATA;
+    *e=c->gid[i]; return 0;
+}
 struct ibv_pd *ibv_alloc_pd(struct ibv_context *c) {(void)c;return NULL;}
 struct ibv_mr *ibv_reg_mr(struct ibv_pd *p,void *a,size_t n,int f) {(void)p;(void)a;(void)n;(void)f;return NULL;}
 struct ibv_cq *ibv_create_cq(struct ibv_context *c,int n,void *a,void *b,int v) {(void)c;(void)n;(void)a;(void)b;(void)v;return NULL;}
 struct ibv_qp *ibv_create_qp(struct ibv_pd *p,struct ibv_qp_init_attr *a) {(void)p;(void)a;return NULL;}
-int ibv_modify_qp(struct ibv_qp *q,struct ibv_qp_attr *a,int f) {(void)f;assert(q); if(a->qp_state==IBV_QPS_RTR) {assert(a->dest_qp_num); assert(a->ah_attr.grh.flow_label == ((ring4 == 2 && q->dest == (q->source+2)%4) ? 16383 : 0));} return 0;}
+int ibv_modify_qp(struct ibv_qp *q,struct ibv_qp_attr *a,int f) {(void)f;assert(q); if(a->qp_state==IBV_QPS_RTR) {assert(a->dest_qp_num); assert(a->ah_attr.grh.flow_label == ((ring4 == 2 && q->dest == (q->source+2)%4) ? 16383 : 0));
+    assert(a->ah_attr.grh.sgid_index == ranks[q->source]->hca[q->hca].gid_index);} return 0;}
 int ibv_destroy_qp(struct ibv_qp *p) {free(p);return 0;}
 int ibv_destroy_cq(struct ibv_cq *p) {free(p);return 0;}
 int ibv_dereg_mr(struct ibv_mr *p) {free(p);return 0;}

@@ -2,10 +2,11 @@
 
 import copy
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
-from sparknet.topology import discover, nodes as topology, render
+from sparknet.topology import discover, gids, nodes as topology, render
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "sparknet" / "topology" / "examples"
 
@@ -156,16 +157,24 @@ class NodeMapTest(unittest.TestCase):
         errors = topology.problems(self.three, "oneshot-direct")
         self.assertTrue(any("equal stripe counts" in p or "common stripe count" in p for p in errors))
 
-    def test_live_gid_matches_declared_cable_and_per_node_index(self):
+    def test_live_gid_matches_declared_cable_at_any_index(self):
         node = self.four["nodes"][3]
-        node["roce_gid_index"] = 4
         lines = [f"{hca} 4 RoCEv2 ::ffff:{subnet.replace('.0/24', '.4')} en0" for hca, subnet in node["roce_subnets"].items()]
         output = "\n".join(lines)
-        self.assertEqual(topology.gid_subnet_problems(node, 4, output), [])
-        self.assertTrue(topology.gid_subnet_problems(node, 4, output.replace("10.14.1.4", "10.14.2.4")))
-        self.assertTrue(topology.gid_subnet_problems(node, 3, output))
+        self.assertEqual(topology.gid_subnet_problems(node, output), [])
+        [problem] = topology.gid_subnet_problems(node, output.replace("10.14.1.4", "10.14.2.4"))
+        self.assertIn("dgx4: rocep1s0f0 has no IPv4 RoCE v2 GID in 10.14.1.0/24 (it has 10.14.2.4 at index 4)", problem)
         sysfs = "rocep1s0f0 4 RoCEv2 0000:0000:0000:0000:0000:ffff:0a0e:0104 enp1s0f0np0"
-        self.assertEqual(len(topology.gid_subnet_problems(node, 4, sysfs)), 3)
+        self.assertEqual(len(topology.gid_subnet_problems(node, sysfs)), 3)
+        [problem] = topology.gid_subnet_problems(node, output + "\nrocep1s0f0 6 RoCEv2 ::ffff:10.14.1.9 en0")
+        self.assertIn("rocep1s0f0 has 2 IPv4 RoCE v2 GIDs in 10.14.1.0/24 (indices 4, 6)", problem)
+
+    def test_retired_gid_index_is_refused_with_its_reason(self):
+        self.four["nodes"][0]["roce_gid_index"] = 5
+        errors = topology.problems(self.four, "oneshot-ring4")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("dgx1: roce_gid_index is no longer read", errors[0])
+        self.assertIn("delete the field", errors[0])
 
     def test_mesh_logical_routes_derive_the_opposite_path(self):
         for node in self.four["nodes"]:
@@ -192,8 +201,20 @@ class RenderTest(unittest.TestCase):
         self.assertTrue(env["NCCL_IB_HCA"].startswith("="))
         self.assertEqual(env["NCCL_ALGO"], "Ring")
         self.assertEqual(env["NCCL_SOCKET_IFNAME"], "enP7s7")
-        self.assertEqual(env["SPARKNET_ROCE_GID_INDEX"], "3")
+        # Each one-shot HCA's cable subnet, and no GID slot for either library.
+        self.assertEqual(json.loads(env["SPARKNET_ROCE_SUBNETS"]), node["roce_subnets"])
+        self.assertFalse([k for k in env if "GID_INDEX" in k])
         self.assertEqual(render.environment_problems({**env, "NCCL_MIN_NCHANNELS": "4", "NCCL_MAX_NCHANNELS": "4"}, "oneshot-ring4", 4), [])
+
+    def test_a_fixed_gid_slot_is_refused_for_both_libraries(self):
+        node = self.four["nodes"][0]
+        env = render.node_environment(self.four, node, transport="oneshot-ring4",
+                                      base={"NCCL_MIN_NCHANNELS": "4", "NCCL_MAX_NCHANNELS": "4", "SPARKNET_ROCE_GID_INDEX": "3"})
+        self.assertNotIn("SPARKNET_ROCE_GID_INDEX", env)  # a stale base value is dropped
+        [problem] = render.environment_problems(dict(env, NCCL_IB_GID_INDEX="3"), "oneshot-ring4", 4)
+        self.assertIn("NCCL_IB_GID_INDEX pins NCCL to one GID slot", problem)
+        [problem] = render.environment_problems(dict(env, SPARKNET_ROCE_GID_INDEX="3"), "oneshot-ring4", 4)
+        self.assertIn("SPARKNET_ROCE_GID_INDEX is no longer read", problem)
 
     def test_nccl_only_ring_drops_the_oneshot_routes(self):
         env = render.node_environment(self.four, self.four["nodes"][0], transport="nccl-ring",
@@ -221,6 +242,8 @@ class RenderTest(unittest.TestCase):
         switched = example("switched")
         env = render.node_environment(switched, switched["nodes"][3], transport="oneshot-switched")
         self.assertEqual(env["SPARKNET_ROCE_HCA"], "rocep1s0f0,roceP2p1s0f0")
+        # Only the one-shot rails' subnets: the proxy opens no other device.
+        self.assertEqual(set(json.loads(env["SPARKNET_ROCE_SUBNETS"])), {"rocep1s0f0", "roceP2p1s0f0"})
         self.assertNotIn("SPARKNET_ROCE_PEER_HCAS", env)
         self.assertEqual(env["SPARKNET_ROCE_TOPOLOGY"], "direct")
         self.assertEqual(env["NCCL_IB_HCA"], "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1")
@@ -229,6 +252,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(render.environment_problems(env, "oneshot-switched", 4), [])
         env = render.node_environment(switched, switched["nodes"][0], transport="nccl-switched")
         self.assertNotIn("SPARKNET_ROCE_HCA", env)
+        self.assertNotIn("SPARKNET_ROCE_SUBNETS", env)
         self.assertTrue(render.environment_problems(dict(env, SPARKNET_ROCE_HCA="x"), "nccl-switched", 4))
 
     def test_ring_policy_rejects_each_unsafe_override(self):
@@ -311,12 +335,15 @@ class DiscoverTest(unittest.TestCase):
             self.assertEqual(got["nccl_hcas"], want["nccl_hcas"], got["name"])
 
     def test_switched_map_from_rails(self):
-        def gid(address):
+        def table(address, slot):
             raw = "".join(f"{int(o):02x}" for o in address.split("."))
-            return "0000:0000:0000:0000:0000:ffff:" + raw[:4] + ":" + raw[4:]
+            return [{"index": 1, "type": "RoCE v2", "gid": "fe80:0000:0000:0000:4ebb:47ff:fee9:7f2b"},
+                    {"index": slot, "type": "RoCE v2", "gid": "0000:0000:0000:0000:0000:ffff:" + raw[:4] + ":" + raw[4:]}]
         rails = {}
         for n, host in enumerate(["dgx1", "dgx2", "dgx3"], start=1):
-            rails[host] = {hca: {"state": "4: ACTIVE", "gid": gid(f"10.{100 + port}.{path}.{n}"), "netdev": "x", "mtu": 9000}
+            # dgx2's GIDs sit one slot higher, as after a flap: the subnets still come from the addresses.
+            rails[host] = {hca: {"state": "4: ACTIVE", "gids": table(f"10.{100 + port}.{path}.{n}", 3 + (n == 2)),
+                                 "netdev": "x", "mtu": 9000}
                            for hca, (port, path) in discover.INTERFACES_BY_HCA.items()}
         rails["dgx3"]["roceP2p1s0f1"]["state"] = "1: DOWN"
         document, problems = discover.generate_switched_nodes(rails, ["dgx1", "dgx2", "dgx3"], management_ips={h: f"192.0.2.{i}" for i, h in enumerate(["dgx1", "dgx2", "dgx3"], start=1)},
@@ -325,12 +352,28 @@ class DiscoverTest(unittest.TestCase):
         self.assertEqual(document["nodes"][0]["roce_hcas"], ["rocep1s0f0", "roceP2p1s0f0"])
         self.assertEqual(document["nodes"][0]["roce_subnets"]["rocep1s0f1"], "10.101.1.0/24")
         self.assertEqual(document["nodes"][0]["roce_traffic_class"], 106)
+        self.assertEqual(document["nodes"][1]["roce_subnets"]["rocep1s0f1"], "10.101.1.0/24")
+        self.assertNotIn("roce_gid_index", document["nodes"][0])
         # dgx3's fourth rail is down, so the rail counts differ and validation says so.
         self.assertTrue(any("same rail counts" in p for p in topology.problems(document, "oneshot-switched")))
         rails["dgx3"]["roceP2p1s0f1"]["state"] = "4: ACTIVE"
         document, _ = discover.generate_switched_nodes(rails, ["dgx1", "dgx2", "dgx3"], management_ips={h: f"192.0.2.{i}" for i, h in enumerate(["dgx1", "dgx2", "dgx3"], start=1)}, ssh_user="spark")
         self.assertEqual(topology.problems(document, "oneshot-switched"), [])
         self.assertEqual(topology.problems(document, "nccl-switched"), [])
+
+    def test_rails_script_output_parses_into_gid_tables(self):
+        out = ("rail rocep1s0f0 4:ACTIVE enp1s0f0np0 9000\n"
+               "rocep1s0f0 0 IB/RoCEv1 fe80:0000:0000:0000:4ebb:47ff:fee9:7f2b enp1s0f0np0\n"
+               "rocep1s0f0 4 RoCEv2 0000:0000:0000:0000:0000:ffff:0a65:0101 enp1s0f0np0\n"
+               "rail roceP2p1s0f0 1:DOWN enP2p1s0f0np0 9000\n")
+        rails = discover.parse_rails(out)
+        self.assertEqual(rails["rocep1s0f0"]["mtu"], 9000)
+        self.assertEqual(gids.select_gid(rails["rocep1s0f0"]["gids"], None, "rocep1s0f0"), (4, "10.101.1.1"))
+        self.assertEqual(rails["roceP2p1s0f0"]["gids"], [])
+        document, problems = discover.generate_switched_nodes({"dgx1": rails}, ["dgx1"], management_ips={"dgx1": "192.0.2.1"},
+                                                              ssh_user="spark")
+        self.assertEqual(problems, [])
+        self.assertEqual(document["nodes"][0]["roce_subnets"], {"rocep1s0f0": "10.101.1.0/24"})
 
     def test_asymmetric_or_down_links_are_reported(self):
         data = _synthetic_ring(["dgx1", "dgx2", "dgx3", "dgx4"])
@@ -339,6 +382,70 @@ class DiscoverTest(unittest.TestCase):
         _, problems = discover.resolve_links(data)
         self.assertTrue(any("link down" in p for p in problems))
         self.assertTrue(any("unresolved peer" in p for p in problems))
+
+
+def _port(root: Path, slots: dict[int, tuple[str, str]]) -> Path:
+    """A sysfs port directory: every slot of a 16-entry table, populated ones with a type and netdev."""
+    port = root / "rocep1s0f0" / "ports" / "1"
+    for name in ("gids", "gid_attrs/types", "gid_attrs/ndevs"):
+        (port / name).mkdir(parents=True)
+    for index in range(16):
+        kind, gid = slots.get(index, (None, "0000:0000:0000:0000:0000:0000:0000:0000"))
+        (port / "gids" / str(index)).write_text(gid + "\n")
+        if kind:  # the kernel's type file of an empty slot cannot be read
+            (port / "gid_attrs" / "types" / str(index)).write_text(kind + "\n")
+            (port / "gid_attrs" / "ndevs" / str(index)).write_text("enp1s0f0np0\n")
+    (port / "state").write_text("4: ACTIVE\n")
+    return port
+
+
+LOCAL = "fe80:0000:0000:0000:4ebb:47ff:fee9:7f2b"
+HERE = "0000:0000:0000:0000:0000:ffff:0a0e:0104"  # 10.14.1.4
+
+
+class GidTableTest(unittest.TestCase):
+    """The rule the proxy applies through ibv_query_gid_ex, over sysfs."""
+
+    def test_the_gid_is_found_where_the_kernel_filed_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            healthy = {0: ("IB/RoCE v1", LOCAL), 1: ("RoCE v2", LOCAL), 2: ("IB/RoCE v1", HERE), 3: ("RoCE v2", HERE)}
+            table = gids.read_gid_table(_port(Path(tmp) / "a", healthy))
+            self.assertEqual([e["index"] for e in table], [0, 1, 2, 3])
+            self.assertEqual(table[3]["ndev"], "enp1s0f0np0")
+            self.assertEqual(gids.select_gid(table, "10.14.1.0/24", "rocep1s0f0"), (3, "10.14.1.4"))
+            # After a flap under live RDMA: slot 3 empty, the address re-added at 4.
+            moved = {k: v for k, v in healthy.items() if k != 3} | {4: ("RoCE v2", HERE)}
+            table = gids.read_gid_table(_port(Path(tmp) / "b", moved))
+            self.assertEqual(gids.select_gid(table, "10.14.1.0/24", "rocep1s0f0"), (4, "10.14.1.4"))
+            self.assertEqual(gids.select_gid(table, None, "rocep1s0f0"), (4, "10.14.1.4"))
+            self.assertEqual(gids.port_gid_problems("rocep1s0f0", table, "10.14.1.0/24"), [])
+            info = discover.local_inventory(Path(tmp) / "b")
+            self.assertEqual(info["rocep1s0f0"]["gids"], table)
+
+    def test_none_or_two_fail_naming_the_device(self):
+        v2 = [{"index": 1, "type": "RoCE v2", "gid": LOCAL}, {"index": 2, "type": "IB/RoCE v1", "gid": HERE}]
+        with self.assertRaisesRegex(gids.GidSelectionError, r"^roceP2p1s0f1 has no IPv4 RoCE v2 GID in 10.14.1.0/24$"):
+            gids.select_gid(v2, "10.14.1.0/24", "roceP2p1s0f1")
+        other = v2 + [{"index": 3, "type": "RoCE v2", "gid": "::ffff:10.12.1.4"}]
+        with self.assertRaisesRegex(gids.GidSelectionError, r"\(it has 10.12.1.4 at index 3\); check the link's address"):
+            gids.select_gid(other, "10.14.1.0/24", "roceP2p1s0f1")
+        two = other + [{"index": 5, "type": "RoCEv2", "gid": "::ffff:10.14.1.4"}, {"index": 6, "type": "v2", "gid": "::ffff:10.14.1.5"}]
+        with self.assertRaisesRegex(gids.GidSelectionError, r"has 2 IPv4 RoCE v2 GIDs in 10.14.1.0/24 \(indices 5, 6\)"):
+            gids.select_gid(two, "10.14.1.0/24", "roceP2p1s0f1")
+        # The subnet filters; the doctors' rule also refuses an address NCCL could take instead.
+        one = other + [{"index": 5, "type": "RoCE v2", "gid": "::ffff:10.14.1.4"}]
+        self.assertEqual(gids.select_gid(one, "10.14.1.0/24", "roceP2p1s0f1"), (5, "10.14.1.4"))
+        [problem] = gids.port_gid_problems("roceP2p1s0f1", one, "10.14.1.0/24")
+        self.assertIn("also has an IPv4 RoCE v2 GID outside 10.14.1.0/24 (10.12.1.4 at index 3)", problem)
+        with self.assertRaisesRegex(gids.GidSelectionError, r"has 2 IPv4 RoCE v2 GIDs in 0.0.0.0/0"):
+            gids.select_gid(one, None, "roceP2p1s0f1")
+
+    def test_ipv4_mapped_forms(self):
+        self.assertEqual(gids.gid_ipv4(HERE), "10.14.1.4")
+        self.assertEqual(gids.gid_ipv4("::ffff:10.14.1.4"), "10.14.1.4")
+        self.assertIsNone(gids.gid_ipv4(LOCAL))
+        self.assertIsNone(gids.gid_ipv4("not a gid"))
+        self.assertIs(discover.gid_ipv4, gids.gid_ipv4)
 
 
 if __name__ == "__main__":

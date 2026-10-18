@@ -26,6 +26,10 @@
 // opposite GPU waits on twice as many flags; source slots and rank-order sums
 // are unchanged. Neighbour traffic always uses its direct QPs.
 //
+// Each HCA's source GID is found at setup by what it is (select_gid): the one
+// IPv4 RoCE v2 entry of the port's GID table in that HCA's subnet, wherever
+// the kernel filed it. No GID slot is configured.
+//
 // This file is compiled by sparknet.oneshot._proxy at first use with the host
 // gcc and libibverbs; it must stay plain C with no CUDA dependency.
 
@@ -89,6 +93,7 @@ typedef struct {
     uint64_t writes_completed;
     uint64_t bytes_posted;
     union ibv_gid gid;
+    int gid_index;
     uint16_t lid;
     enum ibv_mtu mtu;
 } roce_hca_t;
@@ -100,7 +105,6 @@ typedef struct {
     int mesh_rotate;
     int n_hca;
     int n_stripes;
-    int gid_index;
     int traffic_class;
     roce_hca_t hca[ROCE_MAX_LOCAL_HCAS];
     uint8_t route_hca[ROCE_MAX_PEERS][ROCE_MAX_STRIPES];
@@ -309,7 +313,64 @@ static int adjacent(int world, int rank, int peer, int ring4) {
                             peer == (rank + world - 1) % world);
 }
 
-static int open_hca(roce_ctx_t *c, int h, const char *name) {
+// The source GID of HCA h: the single IPv4 RoCE v2 entry of its port's GID
+// table whose address lies in network/prefix (host byte order; prefix 0 takes
+// any IPv4 address). This is NCCL's own scan with NCCL_IB_GID_INDEX unset
+// (NCCL_IB_ADDR_FAMILY=AF_INET, NCCL_IB_ROCE_VERSION_NUM=2, the subnet as
+// NCCL_IB_ADDR_RANGE), made strict: no entry or more than one is an error that
+// names the device. The kernel files a re-added address in the lowest free
+// slot, so a link flap while RDMA resources still hold the old entry moves the
+// GID (3 to 4 on the Spark ring); the scan finds it wherever it is.
+static int select_gid(roce_ctx_t *c, int h, const char *name, int slots,
+                      uint32_t network, int prefix) {
+    roce_hca_t *hca = &c->hca[h];
+    uint32_t mask = prefix == 0 ? 0 : 0xffffffffu << (32 - prefix);
+    char subnet[24];
+    snprintf(subnet, sizeof(subnet), "%u.%u.%u.%u/%d", network >> 24, (network >> 16) & 255u,
+             (network >> 8) & 255u, network & 255u, prefix);
+    char found[64] = "";
+    int count = 0;
+    for (int i = 0; i < slots; i++) {
+        struct ibv_gid_entry entry;
+        int rc = ibv_query_gid_ex(hca->ctx, ROCE_PORT, (uint32_t)i, &entry, 0);
+        if (rc == ENODATA) {
+            continue;  // an empty slot
+        }
+        if (rc != 0) {
+            snprintf(c->err, sizeof(c->err), "ibv_query_gid_ex(%s, index %d): %s", name, i, strerror(rc));
+            return -1;
+        }
+        const uint8_t *raw = entry.gid.raw;
+        static const uint8_t v4_mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        if (entry.gid_type != IBV_GID_TYPE_ROCE_V2 || memcmp(raw, v4_mapped, sizeof(v4_mapped)) != 0) {
+            continue;
+        }
+        uint32_t address = (uint32_t)raw[12] << 24 | (uint32_t)raw[13] << 16 | (uint32_t)raw[14] << 8 | raw[15];
+        if ((address & mask) != (network & mask)) {
+            continue;
+        }
+        if (count++ == 0) {
+            hca->gid = entry.gid;
+            hca->gid_index = i;
+        }
+        size_t used = strlen(found);
+        snprintf(found + used, sizeof(found) - used, "%s%d", used ? ", " : "", i);
+    }
+    if (count == 1) {
+        return 0;
+    }
+    if (count == 0) {
+        snprintf(c->err, sizeof(c->err), "RDMA device %s has no IPv4 RoCE v2 GID in %s (%d slots scanned)",
+                 name, subnet, slots);
+    } else {
+        snprintf(c->err, sizeof(c->err),
+                 "RDMA device %s has %d IPv4 RoCE v2 GIDs in %s (indices %s); its port needs one address there",
+                 name, count, subnet, found);
+    }
+    return -1;
+}
+
+static int open_hca(roce_ctx_t *c, int h, const char *name, uint32_t gid_network, int gid_prefix) {
     int num = 0;
     struct ibv_device **list = ibv_get_device_list(&num);
     if (list == NULL) {
@@ -346,8 +407,7 @@ static int open_hca(roce_ctx_t *c, int h, const char *name) {
     }
     hca->lid = port.lid;
     hca->mtu = port.active_mtu;
-    if (ibv_query_gid(hca->ctx, ROCE_PORT, c->gid_index, &hca->gid) != 0) {
-        set_err(c, "ibv_query_gid", errno);
+    if (select_gid(c, h, name, port.gid_tbl_len, gid_network, gid_prefix) != 0) {
         return -1;
     }
     hca->pd = ibv_alloc_pd(hca->ctx);
@@ -405,8 +465,11 @@ static int peer_width(int world, int rank, int peer, int stripes) {
     return stripes == 4 && peer != (rank + 2) % world ? 2 : stripes;
 }
 
+// gid_network/gid_prefix: each HCA's IPv4 subnet (host byte order), in which
+// select_gid finds its source GID.
 roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n_hca,
-                        const int *route_hca, int n_stripes, int gid_index,
+                        const int *route_hca, int n_stripes,
+                        const uint32_t *gid_network, const int *gid_prefix,
                         int traffic_class, int ring4,
                         void *region, uint64_t region_bytes,
                         uint64_t slot_bytes, char *err, uint64_t err_len) {
@@ -414,11 +477,18 @@ roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n
     if (roce_layout(world, slot_bytes, layout) != 0 || layout[4] > region_bytes ||
         rank < 0 || rank >= world || n_hca < 1 || n_hca > ROCE_MAX_LOCAL_HCAS ||
         n_stripes < 1 || n_stripes > ROCE_MAX_STRIPES || route_hca == NULL ||
+        gid_network == NULL || gid_prefix == NULL ||
         traffic_class < 0 || traffic_class > 255 ||
         (ring4 < 0 || ring4 > 2) || (ring4 && world != 4) ||
         (n_stripes > 2 && (n_stripes != 4 || ring4 != 2 || n_hca != 4))) {
         snprintf(err, err_len, "invalid roce runtime geometry");
         return NULL;
+    }
+    for (int h = 0; h < n_hca; h++) {
+        if (gid_prefix[h] < 0 || gid_prefix[h] > 32) {
+            snprintf(err, err_len, "invalid GID subnet prefix for HCA %d: %d", h, gid_prefix[h]);
+            return NULL;
+        }
     }
     for (int p = 0; p < world; p++) {
         if (!adjacent(world, rank, p, ring4)) {
@@ -497,7 +567,6 @@ roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n
     c->ring4 = ring4;
     c->n_hca = n_hca;
     c->n_stripes = n_stripes;
-    c->gid_index = gid_index;
     c->traffic_class = traffic_class;
     c->region = region;
     c->region_bytes = region_bytes;
@@ -512,7 +581,7 @@ roce_ctx_t *roce_create(int world, int rank, const char *const *hca_names, int n
         }
     }
     for (int h = 0; h < n_hca; h++) {
-        if (open_hca(c, h, hca_names[h]) != 0) {
+        if (open_hca(c, h, hca_names[h], gid_network[h], gid_prefix[h]) != 0) {
             snprintf(err, err_len, "%s", c->err);
             roce_destroy(c);
             return NULL;
@@ -569,7 +638,7 @@ static int connect_qp(roce_ctx_t *c, int local_h, int remote_h, int p,
     rtr.ah_attr.src_path_bits = 0;
     rtr.ah_attr.port_num = ROCE_PORT;
     memcpy(rtr.ah_attr.grh.dgid.raw, peer->gid[remote_h], 16);
-    rtr.ah_attr.grh.sgid_index = (uint8_t)c->gid_index;
+    rtr.ah_attr.grh.sgid_index = (uint8_t)hca->gid_index;
     rtr.ah_attr.grh.hop_limit = 64;
     rtr.ah_attr.grh.traffic_class = (uint8_t)c->traffic_class;
     // mlx5 maps flow label 16383 to UDP source 65535. The host fabric
@@ -1069,6 +1138,8 @@ uint64_t roce_hca_stat(roce_ctx_t *c, int hca, int which) {
         return c->hca[hca].writes_completed;
     case 1:
         return c->hca[hca].bytes_posted;
+    case 2:
+        return (uint64_t)c->hca[hca].gid_index;
     default:
         return 0;
     }

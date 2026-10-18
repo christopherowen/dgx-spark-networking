@@ -10,8 +10,10 @@ only by the owner's fleet tooling.
   28.45.4028; rdma-core 50 with `libibverbs-dev` and the mlx5 provider
   headers; a C compiler (the proxy is built at first use or at image build).
 - Both PCIe functions of each cabled port active at 200 Gb/s, MTU 9000, one
-  static IPv4 address per cable stripe, no IPv6, GID index 3 holding the
-  IPv4 RoCE v2 GID.
+  static IPv4 address per cable stripe, no IPv6: the port's GID table then
+  holds exactly one IPv4 RoCE v2 GID, in the cable's subnet. Its index does
+  not matter (it moves from 3 to 4 after a link flap under live RDMA); the
+  proxy and NCCL find it by address.
 - Locked-memory limit unlimited for the serving user and inside the
   container (`--ulimit memlock=-1:-1`, `--cap-add IPC_LOCK`,
   `--device /dev/infiniband`).

@@ -16,7 +16,6 @@
     "NCCL_DEBUG_SUBSYS": "INIT",
     "NCCL_IB_ADDR_FAMILY": "AF_INET",
     "NCCL_IB_DISABLE": "0",
-    "NCCL_IB_GID_INDEX": "3",
     "NCCL_IB_MERGE_NICS": "1",
     "NCCL_IB_ROCE_VERSION_NUM": "2",
     "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
@@ -39,8 +38,8 @@
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"2\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
+      "SPARKNET_ROCE_SUBNETS": "{\"roceP2p1s0f0\":\"10.12.2.0/24\",\"roceP2p1s0f1\":\"10.13.2.0/24\",\"rocep1s0f0\":\"10.12.1.0/24\",\"rocep1s0f1\":\"10.13.1.0/24\"}",
       "SPARKNET_ROCE_TOPOLOGY": "direct",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
@@ -48,8 +47,8 @@
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"2\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
+      "SPARKNET_ROCE_SUBNETS": "{\"roceP2p1s0f0\":\"10.23.2.0/24\",\"roceP2p1s0f1\":\"10.12.2.0/24\",\"rocep1s0f0\":\"10.23.1.0/24\",\"rocep1s0f1\":\"10.12.1.0/24\"}",
       "SPARKNET_ROCE_TOPOLOGY": "direct",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
@@ -57,8 +56,8 @@
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f0\",\"roceP2p1s0f0\"],\"1\":[\"rocep1s0f1\",\"roceP2p1s0f1\"]}",
+      "SPARKNET_ROCE_SUBNETS": "{\"roceP2p1s0f0\":\"10.13.2.0/24\",\"roceP2p1s0f1\":\"10.23.2.0/24\",\"rocep1s0f0\":\"10.13.1.0/24\",\"rocep1s0f1\":\"10.23.1.0/24\"}",
       "SPARKNET_ROCE_TOPOLOGY": "direct",
       "TP_SOCKET_IFNAME": "enP7s7"
     }

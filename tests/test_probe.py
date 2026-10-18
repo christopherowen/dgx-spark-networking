@@ -15,6 +15,15 @@ from sparknet.topology import nodes as topology
 EXAMPLES = Path(__file__).resolve().parents[1] / "sparknet" / "topology" / "examples"
 
 
+def gid_table(address: str, slot: int = 3) -> list[dict]:
+    """A ConnectX port's GID table as sysfs shows it: link-local v1/v2, then the address as v1 and v2."""
+    raw = "".join(f"{int(o):02x}" for o in address.split("."))
+    mapped = "0000:0000:0000:0000:0000:ffff:" + raw[:4] + ":" + raw[4:]
+    local = "fe80:0000:0000:0000:4ebb:47ff:fee9:7f2b"
+    return [{"index": 0, "type": "IB/RoCE v1", "gid": local}, {"index": 1, "type": "RoCE v2", "gid": local},
+            {"index": 2, "type": "IB/RoCE v1", "gid": mapped}, {"index": slot, "type": "RoCE v2", "gid": mapped}]
+
+
 class ContainerTest(unittest.TestCase):
     def test_probe_is_bounded_and_does_not_share_serving_ipc(self):
         command = docker_probe_command(image="img:tag", environment={"NCCL_DEBUG": "WARN", "A": "1"}, rank=3, world_size=4,
@@ -45,24 +54,30 @@ class DoctorTest(unittest.TestCase):
         node = topology.node_by_name(self.nodes, "dgx4")
         self.inventory = {}
         for hca, subnet in node["roce_subnets"].items():
-            address = subnet.replace(".0/24", ".4")
-            gid = "0000:0000:0000:0000:0000:ffff:" + "".join(f"{int(o):02x}" for o in address.split("."))
-            gid = gid[:-8] + gid[-8:-4] + ":" + gid[-4:]
-            self.inventory[hca] = {"state": "4: ACTIVE", "gid": gid, "mtu": 9000}
+            self.inventory[hca] = {"state": "4: ACTIVE", "gids": gid_table(subnet.replace(".0/24", ".4")), "mtu": 9000}
         self.kwargs = dict(transport="oneshot-ring4", inventory=self.inventory, cmdline="BOOT_IMAGE=/boot/vmlinuz-7.0.0-1019-nvidia-64k kho=off",
                            memlock_unlimited=True, compiler_present=True, verbs_header=True)
 
     def test_matching_host_passes(self):
         self.assertEqual(local_problems(self.nodes, "dgx4", **self.kwargs), [])
 
+    def test_a_moved_gid_passes_at_its_new_slot(self):
+        """After a neighbour reboot the IPv4 RoCE v2 GID sits at index 4 with slot 3 empty."""
+        node = topology.node_by_name(self.nodes, "dgx4")
+        hca, subnet = next(iter(node["roce_subnets"].items()))
+        self.inventory[hca]["gids"] = gid_table(subnet.replace(".0/24", ".4"), slot=4)
+        self.assertEqual(local_problems(self.nodes, "dgx4", **self.kwargs), [])
+        # A second IPv4 RoCE v2 GID outside the cable's subnet is NCCL's to take.
+        self.inventory[hca]["gids"] += [dict(gid_table("192.0.2.4", slot=5)[3])]
+        [problem] = local_problems(self.nodes, "dgx4", **self.kwargs)
+        self.assertIn(f"dgx4: {hca} also has an IPv4 RoCE v2 GID outside {subnet} (192.0.2.4 at index 5)", problem)
+
     def test_switched_doctor_checks_every_rail(self):
         nodes = json.loads((EXAMPLES / "switched.json").read_text())
         node = topology.node_by_name(nodes, "dgx2")
         inventory = {}
         for hca, subnet in node["roce_subnets"].items():
-            address = subnet.replace(".0/24", ".2")
-            raw = "".join(f"{int(o):02x}" for o in address.split("."))
-            inventory[hca] = {"state": "4: ACTIVE", "gid": "0000:0000:0000:0000:0000:ffff:" + raw[:4] + ":" + raw[4:], "mtu": 9000}
+            inventory[hca] = {"state": "4: ACTIVE", "gids": gid_table(subnet.replace(".0/24", ".2")), "mtu": 9000}
         kwargs = dict(self.kwargs, transport="oneshot-switched", inventory=inventory)
         self.assertEqual(local_problems(nodes, "dgx2", **kwargs), [])
         inventory["roceP2p1s0f1"]["state"] = "1: DOWN"
@@ -74,11 +89,12 @@ class DoctorTest(unittest.TestCase):
         inventory = {k: dict(v) for k, v in self.inventory.items()}
         inventory["rocep1s0f0"]["mtu"] = 1500
         inventory["roceP2p1s0f0"]["state"] = "2: INIT"
-        inventory["rocep1s0f1"]["gid"] = "0000:0000:0000:0000:0000:ffff:0a0e:0204"
+        inventory["rocep1s0f1"]["gids"] = gid_table("10.14.2.4")
         del inventory["roceP2p1s0f1"]
         errors = local_problems(self.nodes, "dgx4", **dict(self.kwargs, inventory=inventory, cmdline="vmlinuz-7.0.0-1019-nvidia",
                                                            memlock_unlimited=False, compiler_present=False))
-        for needle in ("MTU is 1500", "not ACTIVE", "expected an IPv4 address in 10.34.1.0/24", "is not present",
+        for needle in ("MTU is 1500", "not ACTIVE",
+                       "rocep1s0f1 has no IPv4 RoCE v2 GID in 10.34.1.0/24 (it has 10.14.2.4 at index 3)", "is not present",
                        "kho=off", "locked-memory", "no C compiler"):
             self.assertTrue(any(needle in e for e in errors), (needle, errors))
         self.assertTrue(any("not in the map" in e for e in local_problems(self.nodes, "dgx9", **self.kwargs)))

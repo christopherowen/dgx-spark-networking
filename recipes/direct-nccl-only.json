@@ -16,7 +16,6 @@
     "NCCL_DEBUG_SUBSYS": "INIT",
     "NCCL_IB_ADDR_FAMILY": "AF_INET",
     "NCCL_IB_DISABLE": "0",
-    "NCCL_IB_GID_INDEX": "3",
     "NCCL_IB_MERGE_NICS": "1",
     "NCCL_IB_ROCE_VERSION_NUM": "2",
     "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
@@ -36,21 +35,18 @@
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx2": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx3": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
       "NCCL_SOCKET_IFNAME": "enP7s7",
-      "SPARKNET_ROCE_GID_INDEX": "3",
       "TP_SOCKET_IFNAME": "enP7s7"
     }
   }

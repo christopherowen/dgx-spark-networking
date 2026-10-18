@@ -18,6 +18,8 @@ import ipaddress
 import json
 from pathlib import Path
 
+from .gids import parse_gid_lines, port_gid_problems
+
 SCHEMA_VERSION = 1
 TRANSPORTS = (
     "oneshot-direct",   # 2 or 3 nodes, every pair cabled; one-shot direct + NCCL
@@ -35,7 +37,12 @@ CABLED_TRANSPORTS = DIRECT_TRANSPORTS + RING_TRANSPORTS
 ONESHOT_TRANSPORTS = ("oneshot-direct", "oneshot-ring4", "oneshot-mesh4", "oneshot-switched")
 MAX_SWITCHED_NODES = 16  # the proxy's ROCE_MAX_PEERS
 _NODE_FIELDS = {"name", "rank", "management_ip", "head", "roce_peer_hcas", "roce_subnets", "roce_hcas", "nccl_hcas",
-                "roce_gid_index", "roce_traffic_class", "management_interface", "mesh_ports", "mesh_hairpin_queue_size"}
+                "roce_traffic_class", "management_interface", "mesh_ports", "mesh_hairpin_queue_size"}
+# Retired fields, refused with the reason instead of being reported as unknown.
+REMOVED_NODE_FIELDS = {
+    "roce_gid_index": "sparknet 0.5.0 finds each HCA's IPv4 RoCE v2 GID by address (in its roce_subnets "
+    "network) at setup, and NCCL scans for it with NCCL_IB_GID_INDEX unset; delete the field",
+}
 
 
 def load(path: str | Path) -> dict:
@@ -169,12 +176,12 @@ def problems(nodes: dict, transport: str, *, mesh_paths: int = 2) -> list[str]:
         if any(not isinstance(v, str) or not v for v in values) or len(set(values)) != count:
             errors.append(f"nodes must have distinct nonempty {field} values")
     for node in entries:
-        unknown = set(node) - _NODE_FIELDS
+        for field, reason in REMOVED_NODE_FIELDS.items():
+            if field in node:
+                errors.append(f"{node.get('name')}: {field} is no longer read: {reason}")
+        unknown = set(node) - _NODE_FIELDS - set(REMOVED_NODE_FIELDS)
         if unknown:
             errors.append(f"{node.get('name')}: unknown fields {sorted(unknown)}")
-        gid = node.get("roce_gid_index", 3)
-        if type(gid) is not int or gid < 0:
-            errors.append(f"{node.get('name')}: roce_gid_index must be a nonnegative integer")
         tc = node.get("roce_traffic_class")
         if tc is not None and (type(tc) is not int or not 0 <= tc <= 255):
             errors.append(f"{node.get('name')}: roce_traffic_class must be an integer from 0 to 255")
@@ -335,7 +342,7 @@ def subset(nodes: dict, names: list[str]) -> dict:
                  and node.get("roce_subnets", {}).get(hca) in peer_subnets]
         new = {"name": node["name"], "rank": new_rank[node["name"]], "management_ip": node["management_ip"],
                "head": new_rank[node["name"]] == 0}
-        for key in ("roce_gid_index", "roce_traffic_class", "management_interface"):
+        for key in ("roce_traffic_class", "management_interface"):
             if key in node:
                 new[key] = node[key]
         new["roce_peer_hcas"] = dict(sorted(routes.items(), key=lambda item: int(item[0])))
@@ -353,43 +360,21 @@ def subset(nodes: dict, names: list[str]) -> dict:
     return document
 
 
-def gid_subnet_problems(node: dict, gid_index: int, show_gids_output: str) -> list[str]:
+def gid_subnet_problems(node: dict, show_gids_output: str) -> list[str]:
     """Compare live ``show_gids``-style lines with the declared subnets.
 
     Each line is ``<hca> <index> <RoCE version> <gid or ::ffff:a.b.c.d> <netdev>``.
-    The selected index must hold an IPv4 RoCE v2 GID inside the declared
-    subnet for every HCA the map names.
+    Every HCA the map gives a subnet must carry exactly one IPv4 RoCE v2 GID,
+    in that subnet, at whatever index (``sparknet.topology.gids``).
     """
-    problems: list[str] = []
-    live: dict[tuple[str, int], str] = {}
-    for line in show_gids_output.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        try:
-            live[(parts[0], int(parts[1]))] = parts[3]
-        except ValueError:
-            continue
-    for hca, subnet in node.get("roce_subnets", {}).items():
-        gid = live.get((hca, gid_index))
-        if gid is None:
-            problems.append(f"{node.get('name')}: {hca} has no GID at index {gid_index}")
-            continue
-        try:
-            address = ipaddress.IPv6Address(gid).ipv4_mapped
-        except ipaddress.AddressValueError:
-            address = None
-        if address is None or address not in ipaddress.IPv4Network(subnet):
-            problems.append(
-                f"{node.get('name')}: {hca} GID {gid_index} is {gid}, expected the subnet {subnet}; "
-                "check the link's address and GID index"
-            )
-    return problems
+    tables = parse_gid_lines(show_gids_output)
+    return [f"{node.get('name')}: {problem}" for hca, subnet in node.get("roce_subnets", {}).items()
+            for problem in port_gid_problems(hca, tables.get(hca, []), subnet)]
 
 
 __all__ = [
     "CABLED_TRANSPORTS", "DIRECT_TRANSPORTS", "MAX_SWITCHED_NODES", "RING_TRANSPORTS", "ONESHOT_TRANSPORTS",
-    "SCHEMA_VERSION", "SWITCHED_TRANSPORTS", "TRANSPORTS", "expected_peers", "fabric_kind", "gid_subnet_problems",
+    "REMOVED_NODE_FIELDS", "SCHEMA_VERSION", "SWITCHED_TRANSPORTS", "TRANSPORTS", "expected_peers", "fabric_kind", "gid_subnet_problems",
     "head_node", "load", "logical_peer_hcas", "mesh_path_specs", "nccl_hcas", "node_by_name", "node_by_rank",
     "node_hcas", "problems", "roce_topology", "uses_oneshot",
 ]

@@ -1,6 +1,7 @@
 """Read-only fabric discovery: local RDMA inventory and LLDP-based cabling.
 
-``local_inventory`` reads sysfs on the node it runs on. ``collect_lldp`` runs
+``local_inventory`` reads sysfs on the node it runs on, every port's GID table
+included (``sparknet.topology.gids``). ``collect_lldp`` runs
 one read-only script over SSH per host (interface MACs, operstate and LLDP
 neighbour MACs) and ``resolve_links`` turns the answers into cables.
 ``generate_nodes`` writes a node map from the cables under the fleet's
@@ -16,6 +17,8 @@ import json
 import re
 import subprocess
 from pathlib import Path
+
+from .gids import GidSelectionError, gid_ipv4, parse_gid_lines, read_gid_table, select_gid
 
 # DGX Spark ConnectX-7 netdev -> (QSFP port, PCIe path). Port 0 cables to the
 # next node in the ring, port 1 to the previous one.
@@ -53,8 +56,8 @@ def node_number(host: str) -> int:
     return int(match.group(1))
 
 
-def local_inventory(sysfs: str | Path = "/sys/class/infiniband", gid_index: int = 3) -> dict:
-    """RDMA devices of this host: state, rate, firmware, netdev, MTU and the selected GID."""
+def local_inventory(sysfs: str | Path = "/sys/class/infiniband") -> dict:
+    """RDMA devices of this host: state, rate, firmware, netdev, MTU and the port's GID table."""
     root = Path(sysfs)
     devices = {}
     for dev in sorted(root.glob("*")) if root.exists() else []:
@@ -65,24 +68,13 @@ def local_inventory(sysfs: str | Path = "/sys/class/infiniband", gid_index: int 
             "rate": _read(port / "rate"),
             "firmware": _read(dev / "fw_ver"),
             "netdev": netdevs[0] if netdevs else None,
-            "gid": _read(port / "gids" / str(gid_index)),
-            "gid_index": gid_index,
+            "gids": read_gid_table(port),
         }
         if entry["netdev"]:
             mtu = Path("/sys/class/net") / entry["netdev"] / "mtu"
             entry["mtu"] = int(_read(mtu) or 0) if mtu.exists() else None
         devices[dev.name] = entry
     return devices
-
-
-def gid_ipv4(gid: str | None) -> str | None:
-    """The IPv4 address an IPv4-mapped RoCE v2 GID encodes, else None."""
-    if not gid:
-        return None
-    raw = gid.replace(":", "")
-    if len(raw) != 32 or raw[:24] != "0" * 20 + "ffff":
-        return None
-    return ".".join(str(int(raw[i:i + 2], 16)) for i in range(24, 32, 2))
 
 
 def _read(path: Path) -> str | None:
@@ -134,34 +126,49 @@ def cable_subnet(a: int, b: int, path: int) -> str:
     return f"10.{lo}{hi}.{path}.0/24"
 
 
+# One ``rail <dev> <state> <netdev> <mtu>`` line per device, then one
+# ``<dev> <index> <type> <gid> <ndev>`` line per populated GID slot.
 RAILS = r"""
 for d in /sys/class/infiniband/*; do
-  n=$(basename "$d"); p="$d/ports/1"
-  printf '%s %s %s %s %s\n' "$n" "$(tr -d ' ' < "$p/state")" "$(cat "$p/gids/GID_INDEX")" \
-    "$(ls "$d/device/net" | head -1)" "$(cat /sys/class/net/$(ls "$d/device/net" | head -1)/mtu)"
+  n=$(basename "$d"); p="$d/ports/1"; i=$(ls "$d/device/net" | head -1)
+  printf 'rail %s %s %s %s\n' "$n" "$(tr -d ' ' < "$p/state")" "$i" "$(cat /sys/class/net/$i/mtu)"
+  for g in "$p"/gids/*; do s=${g##*/}
+    t=$(cat "$p/gid_attrs/types/$s" 2>/dev/null | tr -d ' '); [ -n "$t" ] || continue
+    printf '%s %s %s %s %s\n' "$n" "$s" "$t" "$(cat "$g")" "$(cat "$p/gid_attrs/ndevs/$s" 2>/dev/null)"
+  done
 done
 """
 
 
-def collect_rails(host: str, *, ssh_user: str | None = None, gid_index: int = 3) -> dict[str, dict]:
-    """A host's RDMA devices with state, selected GID, netdev and MTU, over SSH (read-only)."""
-    target = f"{ssh_user}@{host}" if ssh_user else host
-    script = RAILS.replace("GID_INDEX", str(gid_index))
-    out = subprocess.run(["ssh", "-o", "BatchMode=yes", target, "bash", "-s"], input=script,
-                         capture_output=True, text=True, check=True, timeout=60).stdout
+def parse_rails(out: str) -> dict[str, dict]:
+    """``RAILS`` output as {device: {state, netdev, mtu, gids}}."""
     rails = {}
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 5:
-            rails[parts[0]] = {"state": parts[1], "gid": parts[2], "netdev": parts[3], "mtu": int(parts[4]) if parts[4].isdigit() else None}
+        if len(parts) >= 5 and parts[0] == "rail":
+            rails[parts[1]] = {"state": parts[2], "netdev": parts[3], "mtu": int(parts[4]) if parts[4].isdigit() else None,
+                               "gids": []}
+    for device, table in parse_gid_lines(out).items():
+        if device in rails:
+            rails[device]["gids"] = table
     return rails
+
+
+def collect_rails(host: str, *, ssh_user: str | None = None) -> dict[str, dict]:
+    """A host's RDMA devices with state, netdev, MTU and GID table, over SSH (read-only)."""
+    target = f"{ssh_user}@{host}" if ssh_user else host
+    out = subprocess.run(["ssh", "-o", "BatchMode=yes", target, "bash", "-s"], input=RAILS,
+                         capture_output=True, text=True, check=True, timeout=60).stdout
+    return parse_rails(out)
 
 
 def generate_switched_nodes(
     rails: dict[str, dict[str, dict]], hosts: list[str], *, management_ips: dict[str, str], ssh_user: str,
-    management_interface: str | None = None, gid_index: int = 3, traffic_class: int | None = None,
+    management_interface: str | None = None, traffic_class: int | None = None,
 ) -> tuple[dict, list[str]]:
     """A switched node map from each host's active rails; rail subnets come from the live addresses.
+
+    A rail's address is its port's one IPv4 RoCE v2 GID, wherever it sits in the table.
 
     One-shot takes the first port's two functions (one QSFP port, two PCIe
     paths); NCCL takes every active rail. Rank order is host order; rank 0 is the head.
@@ -172,18 +179,19 @@ def generate_switched_nodes(
         active = {hca: entry for hca, entry in sorted(rails.get(host, {}).items()) if "ACTIVE" in (entry.get("state") or "")}
         subnets = {}
         for hca, entry in active.items():
-            address = gid_ipv4(entry.get("gid"))
-            if address is None:
-                problems.append(f"{host} {hca}: GID {gid_index} is not an IPv4 RoCE v2 address")
+            try:
+                _, address = select_gid(entry.get("gids", []), None, f"{host} {hca}")
+            except GidSelectionError as error:
+                problems.append(str(error))
                 continue
             subnets[hca] = str(ipaddress.ip_network(f"{address}/24", strict=False))
         ordered = [h for h in INTERFACES_BY_HCA if h in subnets] + [h for h in subnets if h not in INTERFACES_BY_HCA]
         roce = [h for h in ordered if INTERFACES_BY_HCA.get(h, (0, 0))[0] == 0][:2] or ordered[:2]
         if not roce:
-            problems.append(f"{host}: no active rail with an IPv4 GID at index {gid_index}")
+            problems.append(f"{host}: no active rail with an IPv4 RoCE v2 GID")
             continue
         node = {"name": host, "rank": rank, "management_ip": management_ips[host], "head": rank == 0,
-                "roce_gid_index": gid_index, "roce_hcas": roce, "nccl_hcas": ordered, "roce_subnets": subnets}
+                "roce_hcas": roce, "nccl_hcas": ordered, "roce_subnets": subnets}
         if traffic_class is not None:
             node["roce_traffic_class"] = traffic_class
         if management_interface:
@@ -194,7 +202,7 @@ def generate_switched_nodes(
 
 def generate_nodes(
     links: dict, hosts: list[str], *, management_ips: dict[str, str], ssh_user: str,
-    management_interface: str | None = None, gid_index: int = 3,
+    management_interface: str | None = None,
 ) -> dict:
     """A node map in cable order from resolved links; rank 0 is ``hosts[0]`` (the head)."""
     numbers = {h: node_number(h) for h in hosts}
@@ -224,7 +232,7 @@ def generate_nodes(
                 extra.append(hca_name(iface))
         node = {
             "name": host, "rank": rank_of[host], "management_ip": management_ips[host],
-            "head": rank_of[host] == 0, "roce_gid_index": gid_index,
+            "head": rank_of[host] == 0,
             "roce_peer_hcas": dict(sorted(routes.items(), key=lambda kv: int(kv[0]))),
             "roce_subnets": subnets,
         }
@@ -285,5 +293,5 @@ def write_json(path: str | Path, document: dict) -> None:
 __all__ = [
     "COLLECT", "INTERFACES", "INTERFACES_BY_HCA", "RAILS", "cable_subnet", "collect_lldp", "collect_rails",
     "generate_nodes", "generate_switched_nodes", "gid_ipv4", "hca_name", "local_inventory", "netplan_yaml",
-    "node_number", "resolve_links", "write_json",
+    "node_number", "parse_rails", "resolve_links", "write_json",
 ]

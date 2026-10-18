@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import hashlib
+import ipaddress
 import os
 import shutil
 import subprocess
@@ -119,7 +120,8 @@ def load() -> ctypes.CDLL:
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_int),
             ctypes.c_int,
-            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint32),  # per-HCA GID subnet address (host order)
+            ctypes.POINTER(ctypes.c_int),  # per-HCA GID subnet prefix length
             ctypes.c_int,
             ctypes.c_int,  # topology: direct=0, ring4=1, mesh4=2
             p,
@@ -199,13 +201,19 @@ class Proxy:
         hca_names: tuple[str, ...],
         peer_hca_indices: tuple[tuple[int, ...], ...],
         stripe_count: int,
-        gid_index: int,
+        gid_networks: tuple[ipaddress.IPv4Network, ...],
         region_ptr: int,
         region_bytes: int,
         slot_bytes: int,
         topology: str = "direct",
     ) -> None:
-        """Create the proxy context: open the HCAs, register the pinned region, create the queue pairs."""
+        """Create the proxy context: open the HCAs, register the pinned region, create the queue pairs.
+
+        ``gid_networks`` holds one IPv4 network per HCA: the proxy takes the
+        HCA's source GID from the one IPv4 RoCE v2 entry of its GID table in
+        that network (``0.0.0.0/0``: any address) and fails naming the device
+        when there is none or more than one.
+        """
         if topology not in ("direct", "ring4", "mesh4"):
             raise ValueError(f"unknown RoCE topology: {topology}")
         self.topology = topology
@@ -220,6 +228,10 @@ class Proxy:
             for lane in range(int(stripe_count))
         ]
         routes = (ctypes.c_int * len(flat_routes))(*flat_routes)
+        if len(gid_networks) != len(hca_names):
+            raise ValueError("one GID subnet per HCA")
+        networks = (ctypes.c_uint32 * len(hca_names))(*[int(n.network_address) for n in gid_networks])
+        prefixes = (ctypes.c_int * len(hca_names))(*[n.prefixlen for n in gid_networks])
         err = ctypes.create_string_buffer(512)
         self._ctx = self._lib.roce_create(
             int(world_size),
@@ -228,7 +240,8 @@ class Proxy:
             len(hca_names),
             routes,
             int(stripe_count),
-            int(gid_index),
+            networks,
+            prefixes,
             self.traffic_class,
             {"direct": 0, "ring4": 1, "mesh4": 2}[topology],
             ctypes.c_void_p(int(region_ptr)),
@@ -246,6 +259,8 @@ class Proxy:
         self.hca_names = tuple(hca_names)
         self.peer_hca_indices = tuple(tuple(route) for route in peer_hca_indices)
         self.stripe_count = int(stripe_count)
+        # The GID-table slot each HCA's source GID was found in.
+        self.gid_indices = tuple(int(self._lib.roce_hca_stat(self._ctx, h, 2)) for h in range(len(hca_names)))
 
     def local_blob(self) -> bytes:
         """Serialized connection record (region address, keys, queue-pair numbers) to send to every peer."""

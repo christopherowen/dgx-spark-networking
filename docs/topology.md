@@ -26,7 +26,7 @@ The examples live under `sparknet/topology/examples/`.
   "ssh_user": "spark",
   "nodes": [
     {"name": "dgx1", "rank": 0, "management_ip": "192.0.2.1", "head": true,
-     "roce_gid_index": 3, "management_interface": "enP7s7",
+     "management_interface": "enP7s7",
      "roce_peer_hcas": {"3": ["rocep1s0f1", "roceP2p1s0f1"], "1": ["rocep1s0f0", "roceP2p1s0f0"]},
      "roce_subnets": {"rocep1s0f0": "10.12.1.0/24", "roceP2p1s0f0": "10.12.2.0/24",
                       "rocep1s0f1": "10.14.1.0/24", "roceP2p1s0f1": "10.14.2.0/24"}}
@@ -41,14 +41,17 @@ The examples live under `sparknet/topology/examples/`.
 - `roce_subnets` records the IPv4 `/24` of each cable stripe; each subnet
   appears at exactly its two endpoints. The two PCIe functions on one cable
   use two subnets.
-- `roce_gid_index` selects the node's IPv4 RoCE v2 GID slot for both
-  one-shot and NCCL; it may differ between nodes.
+- No GID index is configured. Each HCA's source GID is its port's one IPv4
+  RoCE v2 GID in its `roce_subnets` network, wherever the kernel filed it
+  (`docs/design.md`, "GIDs by address"). `roce_gid_index` is retired: maps that
+  still carry it fail validation with that reason; delete the field.
 - `management_interface` renders `NCCL_SOCKET_IFNAME`, `GLOO_SOCKET_IFNAME`
   and `TP_SOCKET_IFNAME`.
 
 `sparknet topology validate` reports every configuration mistake;
 `sparknet probe doctor` adds the live checks on a node (device present and
-active, GID in the declared subnet, MTU 9000, `kho=off`, memlock, compiler
+active, exactly one IPv4 RoCE v2 GID on the port and in the declared subnet,
+at any index, MTU 9000, `kho=off`, memlock, compiler
 and headers). Neither proves that a cable delivers RDMA packets; the
 collective probe does.
 
@@ -56,8 +59,8 @@ collective probe does.
 
 The fleet rule: cable between nodes `a < b`, path 1 (`enp1s0*`) on
 `10.<a><b>.1.0/24`, path 2 (`enP2p1s0*`) on `10.<a><b>.2.0/24`, host address
-is the node number. MTU 9000, static, no DHCP, no IPv6 (so GID index 3 stays
-the IPv4 address). `sparknet topology discover` collects LLDP neighbour MACs
+is the node number. MTU 9000, static, no DHCP, no IPv6, so each port's GID
+table holds one IPv4 RoCE v2 GID. `sparknet topology discover` collects LLDP neighbour MACs
 over SSH, resolves the cables, and writes `40-cx7.yaml` per node plus
 `nodes.json` in cable order from the head. It changes nothing on a host.
 
@@ -65,7 +68,8 @@ The cabling flips between a triangle (TP3) and a loop (TP4) by moving one
 cable. Always check live links before trusting a map: `rdma link`,
 `ip -br a`, or discovery. Behind a switch LLDP sees the switch, not the
 peers, so `discover --fabric switched` reads each host's rails from sysfs
-and takes the rail subnets from the live addresses.
+and takes the rail subnets from the live addresses (each rail's one IPv4 RoCE
+v2 GID, at whatever index).
 
 ## Rendering
 
@@ -73,5 +77,6 @@ and takes the rail subnets from the live addresses.
 prints the rank's complete environment: the profile's NCCL and one-shot
 settings, the ring policy (`NCCL_ALGO=Ring`, runtime connect with cuMem,
 trees, PAT, NVLS, CollNet and GIN off, subnet-aware routing over merged
-NICs), `NCCL_IB_HCA` with exact device names, the JSON peer map and the GID
-index, each under its one `SPARKNET_ROCE_*` or `NCCL_*` name.
+NICs), `NCCL_IB_HCA` with exact device names, the JSON peer map and the
+one-shot HCAs' cable subnets, each under its one `SPARKNET_ROCE_*` or `NCCL_*`
+name. No GID index is rendered for either library.

@@ -19,12 +19,16 @@ Runtime constraints:
 * every rank of the exchange group must construct the runtime collectively;
 * every peer payload is striped across the HCAs routed to that peer, with a
   completion flag per stripe so the GPU consumes the slot only after every
-  route lane delivered.
+  route lane delivered;
+* each HCA's source GID is the one IPv4 RoCE v2 entry of its port's GID table
+  in that HCA's subnet (``SPARKNET_ROCE_SUBNETS``), found at setup wherever the
+  kernel filed it; no GID slot is configured.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import logging
 import os
@@ -37,6 +41,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
 
+from ..topology.gids import ANY_IPV4, ipv4_roce_v2, read_gid_table
 from . import trace as _trace
 from ._kernels import PACK_BYTES, Launch, gather_launcher, kernel_setting_problems, reduce_launcher
 from ._proxy import Layout, Proxy, load as _load_proxy_library
@@ -45,14 +50,14 @@ logger = logging.getLogger(__name__)
 
 # Bumped when the adapter-visible surface (constructor keywords, methods, their
 # semantics) changes incompatibly; integrations pin the value they were built for.
-API_VERSION = 2
+# 3: no gid_index keyword or default_gid_index(); GIDs are found by subnet.
+API_VERSION = 3
 SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 SUPPORTED_WORLD_SIZES = tuple(range(2, 17))
 DEFAULT_MAX_SIZE = 2 * 1024 * 1024
 DEFAULT_MAX_GATHER_BYTES = 16 * 1024 * 1024
 DEFAULT_THREADS = 512
 DEFAULT_BLOCKS = 8
-DEFAULT_GID_INDEX = 3
 # Polls of a peer flag before the kernel gives up (each poll is a system-scope
 # load of host memory, roughly a microsecond): about 20 s.
 # A collective wait that sees no peer for this long stops the GPU. It is the
@@ -70,6 +75,8 @@ CTRL_WAITED_WORD = 8
 REMOVED_SETTINGS = {
     "SPARKNET_ROCE_SPIN_LIMIT": "it counted polls; sparknet 0.4.0 times waits in "
     "milliseconds: set SPARKNET_ROCE_TIMEOUT_MS instead",
+    "SPARKNET_ROCE_GID_INDEX": "a fixed slot stops matching when a link flaps under live RDMA; sparknet 0.5.0 "
+    "finds each HCA's IPv4 RoCE v2 GID in its SPARKNET_ROCE_SUBNETS network: unset it",
 }
 MAX_LOCAL_HCAS = 4
 MAX_STRIPES = 2
@@ -114,11 +121,12 @@ def _env_str(*names: str, default: str) -> str:
     return default
 
 
-# Each setting has one ``SPARKNET_ROCE_*`` name. The GID index and HCAs fall
-# back to NCCL's own settings, so one fabric configuration serves both
-# libraries in the same process.
-ENV_GID_INDEX = ("SPARKNET_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX")
+# Each setting has one ``SPARKNET_ROCE_*`` name. The HCAs fall back to NCCL's
+# own setting, so one fabric configuration serves both libraries in the same
+# process. Neither library is given a GID slot: NCCL scans its GID table by
+# NCCL_IB_ADDR_FAMILY and NCCL_IB_ROCE_VERSION_NUM, the proxy by subnet.
 ENV_HCA = ("SPARKNET_ROCE_HCA", "NCCL_IB_HCA")
+ENV_SUBNETS = ("SPARKNET_ROCE_SUBNETS",)
 ENV_PEER_HCAS = ("SPARKNET_ROCE_PEER_HCAS",)
 ENV_TIMEOUT_MS = ("SPARKNET_ROCE_TIMEOUT_MS",)
 ENV_TOPOLOGY = ("SPARKNET_ROCE_TOPOLOGY",)
@@ -141,37 +149,75 @@ def _checked_timeout_ms(value: int) -> int:
     return value
 
 
-def default_gid_index() -> int:
-    """``SPARKNET_ROCE_GID_INDEX``, else NCCL's ``NCCL_IB_GID_INDEX``, else 3."""
-
-    return _env_int(*ENV_GID_INDEX, default=DEFAULT_GID_INDEX)
-
-
-def discover_hcas(gid_index: Optional[int] = None) -> tuple[str, ...]:
+def discover_hcas() -> tuple[str, ...]:
     """Return the RDMA devices to use, at most two.
 
     ``SPARKNET_ROCE_HCA`` (or NCCL's ``NCCL_IB_HCA``) selects explicitly; otherwise
-    every active device with a populated GID at ``gid_index`` is used.
+    every active device whose port has an IPv4 RoCE v2 GID is used.
     """
 
     explicit = _env_list(*ENV_HCA)
     if explicit:
         return explicit[:2]
-    gid_index = default_gid_index() if gid_index is None else int(gid_index)
     found = []
     root = Path("/sys/class/infiniband")
     for dev in sorted(root.glob("*")):
-        state = dev / "ports" / "1" / "state"
-        gid = dev / "ports" / "1" / "gids" / str(gid_index)
+        port = dev / "ports" / "1"
         try:
-            if "ACTIVE" not in state.read_text():
-                continue
-            if gid.read_text().strip().replace(":", "").strip("0") == "":
+            if "ACTIVE" not in (port / "state").read_text():
                 continue
         except OSError:
             continue
-        found.append(dev.name)
+        if ipv4_roce_v2(read_gid_table(port)):
+            found.append(dev.name)
     return tuple(found[:2])
+
+
+def _subnets_from_env() -> Optional[dict[str, ipaddress.IPv4Network]]:
+    """Parse ``SPARKNET_ROCE_SUBNETS``: each local HCA's IPv4 subnet, the cable's.
+
+    A JSON object such as ``{"rocep1s0f0": "10.12.1.0/24"}``, rendered from the
+    node map's ``roce_subnets``.
+    """
+
+    name = ENV_SUBNETS[0]
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a JSON object") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    subnets = {}
+    for hca, subnet in value.items():
+        try:
+            if not isinstance(subnet, str):
+                raise TypeError(subnet)
+            subnets[hca] = ipaddress.IPv4Network(subnet)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name}[{hca!r}] must be an IPv4 network such as 10.12.1.0/24, got {subnet!r}") from exc
+    return subnets
+
+
+def _gid_networks(
+    hca_names: Sequence[str], subnets: Optional[Mapping[str, ipaddress.IPv4Network]]
+) -> tuple[ipaddress.IPv4Network, ...]:
+    """The network each opened HCA's source GID must lie in, in ``hca_names`` order.
+
+    With ``SPARKNET_ROCE_SUBNETS`` every opened HCA needs an entry; without it
+    any IPv4 address qualifies, as for NCCL without ``NCCL_IB_ADDR_RANGE``.
+    Either way the proxy takes the single IPv4 RoCE v2 GID that qualifies and
+    fails naming the device when there is none or more than one.
+    """
+
+    if subnets is None:
+        return tuple(ipaddress.IPv4Network(ANY_IPV4) for _ in hca_names)
+    missing = [name for name in hca_names if name not in subnets]
+    if missing:
+        raise ValueError(f"{ENV_SUBNETS[0]} names no subnet for {', '.join(missing)}")
+    return tuple(subnets[name] for name in hca_names)
 
 
 def _peer_hca_names_from_env() -> Optional[dict[int, tuple[str, ...]]]:
@@ -217,7 +263,6 @@ def _resolve_hca_topology(
     rank: int,
     hca_names: Optional[Sequence[str]],
     peer_hca_names: Optional[Mapping[int, Sequence[str]]],
-    gid_index: int,
     topology: str = "direct",
 ) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...], int]:
     """Return opened HCAs, per-peer local routes, and the stripe count.
@@ -237,7 +282,7 @@ def _resolve_hca_topology(
     if explicit_routes is None:
         if topology != "direct":
             raise ValueError("ring4/mesh4 requires explicit HCA routes in cable order")
-        names = tuple(hca_names) if hca_names else discover_hcas(gid_index)
+        names = tuple(hca_names) if hca_names else discover_hcas()
         names = names[:MAX_STRIPES]
         if not names:
             raise RuntimeError("no active RDMA device found for the RoCE all-reduce")
@@ -370,7 +415,6 @@ class RoceOneshotAllReduce:
         max_gather_bytes: int = DEFAULT_MAX_GATHER_BYTES,
         hca_names: Optional[Sequence[str]] = None,
         peer_hca_names: Optional[Mapping[int, Sequence[str]]] = None,
-        gid_index: Optional[int] = None,
         threads: int = DEFAULT_THREADS,
         blocks: int = DEFAULT_BLOCKS,
         topology: Optional[str] = None,
@@ -420,7 +464,6 @@ class RoceOneshotAllReduce:
         self._threads = int(threads)
         self._blocks = int(blocks)
         self._counter_classes = self._blocks.bit_length()
-        self.gid_index = default_gid_index() if gid_index is None else int(gid_index)
         removed = _removed_setting_problems(os.environ) + kernel_setting_problems(os.environ)
         if removed:
             raise ValueError("; ".join(removed))
@@ -440,7 +483,6 @@ class RoceOneshotAllReduce:
             rank=self.rank,
             hca_names=hca_names,
             peer_hca_names=peer_hca_names,
-            gid_index=self.gid_index,
             topology=self.topology,
         )
         hca_indices = {name: index for index, name in enumerate(self.hca_names)}
@@ -495,7 +537,12 @@ class RoceOneshotAllReduce:
         self._epoch_address = self._counters.data_ptr()
 
         error: Optional[str] = None
+        # Each HCA's GID subnet, and the GID-table slot the proxy's scan found its source GID in.
+        self.gid_networks: tuple[ipaddress.IPv4Network, ...] = ()
+        self.gid_indices: tuple[int, ...] = ()
         try:
+            # Inside the collective report: a node's own subnet map can be wrong.
+            self.gid_networks = _gid_networks(self.hca_names, _subnets_from_env())
             # Dispatch is independent of registered capacity. vLLM also uses
             # max_size for its sequence-parallel execution threshold.
             self.dispatch_max_bytes = _env_int(*ENV_DISPATCH, default=self.max_size)
@@ -507,12 +554,13 @@ class RoceOneshotAllReduce:
                 hca_names=self.hca_names,
                 peer_hca_indices=self._peer_hca_indices,
                 stripe_count=self.stripe_count,
-                gid_index=self.gid_index,
+                gid_networks=self.gid_networks,
                 region_ptr=host_ptr,
                 region_bytes=self._layout.total_bytes,
                 slot_bytes=slot_bytes,
                 topology=self.topology,
             )
+            self.gid_indices = tuple(self._proxy.gid_indices)
             if self._trace_path is not None and hasattr(self._proxy, "trace_open"):
                 self._proxy.trace_open(self._trace_path, _trace.HEADER_BYTES, _trace.RECORDS,
                                        _trace.RECORD_BYTES, _trace.W_PROXY)
@@ -588,11 +636,11 @@ class RoceOneshotAllReduce:
             raise RuntimeError("RoCE all-reduce connect failed: " + "; ".join(failures))
         if self.rank == 0:
             logger.info(
-                "one-shot collectives ready: world=%d hcas=%s stripes=%d gid_index=%d max_size=%d traffic_class=%d",
+                "one-shot collectives ready: world=%d hcas=%s stripes=%d gids=%s max_size=%d traffic_class=%d",
                 self.world_size,
                 ",".join(self.hca_names),
                 self.stripe_count,
-                self.gid_index,
+                ",".join(f"{name}:{index}" for name, index in zip(self.hca_names, self.gid_indices, strict=True)),
                 self.max_size,
                 self._proxy.traffic_class,
             )
@@ -1184,6 +1232,9 @@ class RoceOneshotAllReduce:
             "rank": self.rank,
             "topology": self.topology,
             "hcas": list(self.hca_names),
+            # Where each HCA's source GID was found, and the subnet it was found in.
+            "gid_indices": dict(zip(self.hca_names, self.gid_indices, strict=True)),
+            "gid_subnets": {name: str(network) for name, network in zip(self.hca_names, self.gid_networks, strict=True)},
             "peer_hca_routes": {
                 str(peer): list(route)
                 for peer, route in enumerate(self.peer_hca_names)
@@ -1262,7 +1313,6 @@ __all__ = [
     "SUPPORTED_WORLD_SIZES",
     "TOPOLOGIES",
     "RoceOneshotAllReduce",
-    "default_gid_index",
     "discover_hcas",
     "_resolve_hca_topology",
     "is_supported",
