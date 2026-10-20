@@ -38,6 +38,8 @@ FUNCTIONS = (
     "roce_copy_pack",
     "roce_doorbell",
     "roce_wait_flags",
+    "roce_wait_device_eq",
+    "roce_wait_peers",
     "roce_tail",
     "roce_reduce_pack_f32",
     "roce_reduce_pack_f16",
@@ -275,6 +277,48 @@ __device__ __forceinline__ void roce_wait_flags(int tidx, const roce_byte *flags
                 roce_trap();
             }
         }
+    }
+}
+
+// Wait until a device-memory word equals seq (gpu scope), bounded by the
+// control record's timeout like the flag waits; a timed-out wait stops the GPU.
+__device__ __forceinline__ void roce_wait_device_eq(const void *word, roce_u32 seq, const roce_byte *ctrl) {
+    unsigned long long start = 0ull, limit = 0ull;
+    for (roce_u32 polls = 1u;; polls++) {
+        roce_u32 seen;
+        asm volatile("ld.acquire.gpu.global.u32 %0, [%1];" : "=r"(seen) : "l"(word) : "memory");
+        if (seen == seq) {
+            return;
+        }
+        if ((polls & 63u) == 0u) {
+            unsigned long long now = roce_globaltimer();
+            if (start == 0ull) {
+                start = now;
+                limit = 1000ull * (unsigned long long)roce_ld_relaxed_sys_u32(ctrl + ROCE_CTRL_TIMEOUT_US);
+            } else if (now - start >= limit) {
+                roce_trap();
+            }
+        }
+    }
+}
+
+// Phase 3 for every block: block 0 polls the peers' flags, and only once the
+// doorbell has rung (``rung``, set by the block that rang it). A system-scope
+// poll of the pinned region slows the system-scope stores of blocks still
+// staging, and every poller is one more, so no other block polls it: they wait
+// in device memory for block 0's ``arrival`` word, which block 0 sets after its
+// barrier. Block 0's flag wait records a missing peer and stops the GPU; the
+// device-memory waits share its timeout and stop the GPU only after it.
+__device__ __forceinline__ void roce_wait_peers(int block, int tidx, const roce_byte *flags, roce_u32 seq,
+                                                roce_byte *ctrl, const void *rung, const void *arrival,
+                                                roce_byte *trace_record = nullptr) {
+    if (block == 0) {
+        if (tidx < ROCE_WORLD * ROCE_HCA_COUNT) {
+            roce_wait_device_eq(rung, seq, ctrl);
+            roce_wait_flags(tidx, flags, seq, ctrl, trace_record);
+        }
+    } else if (tidx == 0) {
+        roce_wait_device_eq(arrival, seq, ctrl);
     }
 }
 

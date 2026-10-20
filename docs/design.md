@@ -35,9 +35,13 @@ One pinned region per rank: `recv[src][slot]`, `flag[src][slot][lane]`,
    payload into one stripe per route lane and posts each stripe followed by
    a 4-byte `seq` write on the same reliable QP, so a flag cannot land before
    its data;
-3. the kernel waits on `flag[peer][seq & 1][lane] == seq` for every peer and
-   lane, bounded by the timeout in the control record; a timeout records the
-   missing peer, its lane and the time waited, then stops the GPU;
+3. block 0 waits on `flag[peer][seq & 1][lane] == seq` for every peer and
+   lane, bounded by the timeout in the control record, starting once the
+   doorbell has rung (a device-memory word set by the block that rang it); a
+   timeout records the missing peer, its lane and the time waited, then stops
+   the GPU. The other blocks wait in device memory for block 0's arrival
+   word: system-scope polls of the pinned region slow the stores of blocks
+   still staging and the NIC's writes into it, so only block 0 polls it;
 4. all-reduce sums the local input and every peer slot in fixed rank order
    (bit-identical across ranks); all-gather writes the concatenated layout
    directly (its own shard's block while staging, so this phase reads only

@@ -287,24 +287,41 @@ instructions.
 
 **Launch geometry.** One shape: 512-thread blocks at full residency (40
 registers) on a power-of-two grid of one 16-byte pack a thread, up to 64
-blocks (512 KiB a slot in one pass). The data phase reads the peers' slots
-in pinned host memory, and beside the model's L2 prefetch each round trip
-there waits out the DRAM queue, about 6 us on a GB10 against under 1 us
-without it; a thread's packs are serial round trips, so the grid spreads the
-message one pack to a thread. The whole grid must be resident at once
-(blocks waiting for peers keep their SMs while the doorbell waits for every
-block to stage), which the runtime checks against the device. The
+blocks (512 KiB a slot in one pass). Only block 0 polls the peers' flags in
+the pinned region, and only once the doorbell has rung; the other blocks wait
+in device memory for block 0's arrival word. The whole grid must be resident
+at once (blocks waiting for peers keep their SMs while the doorbell waits for
+every block to stage), which the runtime checks against the device. The
 all-gather issues every peer's load of a pack before its first store and
-writes its own shard to the output while staging. Measured on the data phase
-alone (`evidence/2026-10-20-wide-read`), three ranks beside a 20 MiB bulk
-prefetch, against 0.4.0's two packs a thread on at most 8 blocks:
+writes its own shard to the output while staging. Measured 2026-10-20
+(`evidence/2026-10-20-wide-read`):
+
+- The data phase reads the peers' slots in pinned host memory; beside the
+  model's L2 prefetch each round trip there waits out the DRAM queue, about
+  6 us on a GB10 against under 1 us without it, and a thread's packs are
+  serial round trips. On one GB10, three ranks beside a 20 MiB bulk prefetch,
+  the data phase alone against 0.4.0's two packs a thread on at most 8 blocks:
+  all-reduce 10.7 to 6.7 us at 60 KiB, 15.6 to 8.3 at 160 KiB, 33.9 to
+  10.2 at 480 KiB; all-gather 17.9 to 6.8, 26.1 to 8.0, 39.3 to 10.8.
+- Polling is the other half. Every waiting thread polls with a system-scope
+  load, and on the triangle a wide grid in which every block polled was up to
+  58 percent slower than 0.4.0: blocks that finished staging polled while the
+  others were still storing to the pinned region, and staging at 480 KiB grew
+  from 5.4 to 23 to 29 us. The cost grew with the number of polling blocks
+  from 16 on; eight polling blocks after the doorbell still waited longer than
+  one.
+
+Triangle (dgx1-3, r6x image, BF16, slowest rank's median of five samples of
+256 graph-replayed calls, median of three runs; `sparknet probe collectives`):
 
 | Per rank | All-reduce, 0.4.0 | All-reduce | All-gather, 0.4.0 | All-gather |
 | ---: | ---: | ---: | ---: | ---: |
-| 10 KiB | 9.7 us | 6.3 us | 15.6 us | 5.9 us |
-| 60 KiB | 10.7 us | 6.7 us | 17.9 us | 6.8 us |
-| 160 KiB | 15.6 us | 8.3 us | 26.1 us | 8.0 us |
-| 480 KiB | 33.9 us | 10.2 us | 39.3 us | 10.8 us |
+| 10 KiB | 10.8 us | 10.7 us | 12.8 us | 10.5 us |
+| 30 KiB | 15.3 us | 14.3 us | 15.6 us | 13.7 us |
+| 60 KiB | 19.6 us | 17.6 us | 19.6 us | 17.5 us |
+| 160 KiB | 32.5 us | 28.7 us | 35.3 us | 29.5 us |
+| 480 KiB | 62.2 us | 59.0 us | 69.2 us | 65.0 us |
+| 960 KiB | 108.3 us | 102.6 us | 118.7 us | 112.7 us |
 
 Until 0.4.0 a vendored CuTe DSL pair (derived from b12x's RoCEnante, see
 docs/provenance.md) carried the same protocol, selected with

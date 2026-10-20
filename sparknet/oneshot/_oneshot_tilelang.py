@@ -99,6 +99,8 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
             slot_bytes: T.int32,
             stage_index: T.int32,
             tail_index: T.int32,
+            rung_index: T.int32,
+            arrival_index: T.int32,
             grid_x: T.int32,
             trace_base: T.int64,
         ):
@@ -138,18 +140,24 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                     rang = T.alloc_var(T.uint32)
                     rang = T.call_extern("roce_doorbell", T.address_of(counters[stage_index]), T.cast(grid_x, T.uint32),
                                          T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype=T.uint32)
-                    if traced:
-                        if rang != T.uint32(0):
+                    if rang != T.uint32(0):
+                        T.call_extern("roce_st_release_gpu_u32", T.address_of(counters[rung_index]), seq, dtype="handle")
+                        if traced:
                             T.call_extern("roce_trace_stamp", trace_base, seq, w_doorbell, dtype="handle")
-                # 3. wait for every peer's payload-stripe flags
+                # 3. block 0 waits for every peer's payload-stripe flags, the other blocks for block 0
                 if traced:
-                    T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
+                    T.call_extern("roce_wait_peers", bx, tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
                                   T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"),
+                                  T.address_of(counters[rung_index]), T.address_of(counters[arrival_index]),
                                   T.call_extern("roce_trace_record_if", trace_base, seq, T.cast(bx == 0, T.int32), dtype="handle"), dtype="handle")
                 else:
-                    T.call_extern("roce_wait_flags", tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
-                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), dtype="handle")
+                    T.call_extern("roce_wait_peers", bx, tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
+                                  T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"),
+                                  T.address_of(counters[rung_index]), T.address_of(counters[arrival_index]), dtype="handle")
                 T.sync_threads()
+                if bx == 0:
+                    if tx == 0:
+                        T.call_extern("roce_st_release_gpu_u32", T.address_of(counters[arrival_index]), seq, dtype="handle")
                 if traced:
                     if bx == 0:
                         if tx == 0:
@@ -225,7 +233,8 @@ def get_launcher(
             launch.input, launch.output, launch.counters,
             int(launch.region.data_ptr()), int(launch.size_packs), int(launch.nbytes), int(launch.recv_off),
             int(launch.flag_off), int(launch.send_off), int(launch.ctrl_off), int(launch.slot_bytes),
-            int(launch.stage_index), int(launch.tail_index), int(launch.grid_x), int(launch.trace_base),
+            int(launch.stage_index), int(launch.tail_index), int(launch.rung_index),
+            int(launch.arrival_index), int(launch.grid_x), int(launch.trace_base),
         )
 
     _PREPARED_LAUNCHERS.add(process_key)

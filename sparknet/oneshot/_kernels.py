@@ -24,7 +24,7 @@ class Launch:
     input and output bytes; ``region`` is the pinned host region (``uint8``)
     and the offsets locate its receive slots, flags, send slots and control
     record; ``counters`` is the device-resident epoch, staging and tail
-    counters, addressed by index. A TileLang kernel takes
+    counters and the rung and arrival words, addressed by index. A TileLang kernel takes
     the tensors as buffers (which also binds its device and stream).
     """
 
@@ -41,6 +41,8 @@ class Launch:
     counters: Any
     stage_index: int
     tail_index: int
+    rung_index: int  # set to the sequence by the block that rang the doorbell
+    arrival_index: int  # set to the sequence by block 0 once every peer's flags arrived
     grid_x: int
     row_packs: int = 0  # all-gather only: packs per row of the shard (dim-0 gathers: the shard's packs)
     trace_base: int = 0  # all-reduce trace file address (pinned, device-visible), 0 when untraced

@@ -477,9 +477,11 @@ class RoceOneshotAllReduce:
             )
             # The epoch is global. Stage and tail arrivals are separate
             # for every power-of-two grid size because their free-running
-            # counters use the launch grid as their modulus.
+            # counters use the launch grid as their modulus. The last two
+            # words hand the sequence from one block to the others: the
+            # doorbell has rung, and block 0 has seen every peer's flags.
             self._counters = torch.zeros(
-                1 + 2 * self._counter_classes,
+                3 + 2 * self._counter_classes,
                 dtype=torch.int32,
                 device=self.device,
             )
@@ -789,6 +791,7 @@ class RoceOneshotAllReduce:
             region=self._region, recv_off=self._layout.recv_off, flag_off=self._layout.flag_off,
             send_off=self._layout.send_off, ctrl_off=self._layout.ctrl_off, slot_bytes=self._slot_bytes,
             counters=self._counters, stage_index=stage_index, tail_index=tail_index,
+            rung_index=1 + 2 * self._counter_classes, arrival_index=2 + 2 * self._counter_classes,
             grid_x=grid_blocks, row_packs=row_packs, trace_base=self._trace_base,
         )
 

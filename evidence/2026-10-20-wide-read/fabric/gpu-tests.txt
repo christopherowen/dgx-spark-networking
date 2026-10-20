@@ -1,0 +1,18 @@
+wide-read-probe/fabric-failstop-wide-dgx1.txt: 2 passed, 73 deselected, 2 warnings in 19.06s
+wide-read-probe/fabric-failstop-wide-dgx2.txt: 2 passed, 73 deselected in 19.05s
+wide-read-probe/fabric-failstop-wide-dgx3.txt: 2 passed, 73 deselected in 19.05s
+wide-read-probe/fabric-gpu-suite-wide-dgx1.txt: FAILED ../sparknet-tests/gpu/test_oneshot_gpu.py::test_payload_is_striped_across_every_hca / 1 failed, 2 deselected, 1 warning in 10.55s
+wide-read-probe/fabric-gpu-suite-wide-dgx2.txt: FAILED ../sparknet-tests/gpu/test_oneshot_gpu.py::test_payload_is_striped_across_every_hca / 1 failed, 2 deselected in 10.55s
+wide-read-probe/fabric-gpu-suite-wide-dgx3.txt: FAILED ../sparknet-tests/gpu/test_oneshot_gpu.py::test_payload_is_striped_across_every_hca / 1 failed, 2 deselected in 10.51s
+wide-read-diag2/fabric-failstop-v2p1-dgx1.txt: 2 passed, 73 deselected, 2 warnings in 19.20s
+wide-read-diag2/fabric-failstop-v2p1-dgx2.txt: 2 passed, 73 deselected in 19.20s
+wide-read-diag2/fabric-failstop-v2p1-dgx3.txt: 2 passed, 73 deselected in 19.21s
+wide-read-diag2/fabric-failstop-v2p8-dgx1.txt: 2 passed, 73 deselected, 2 warnings in 18.00s
+wide-read-diag2/fabric-failstop-v2p8-dgx2.txt: 2 passed, 73 deselected in 17.99s
+wide-read-diag2/fabric-failstop-v2p8-dgx3.txt: 2 passed, 73 deselected in 17.97s
+wide-read-diag2/fabric-gpu-suite-v2p1-dgx1.txt: 71 passed, 1 skipped, 3 deselected, 7 warnings in 6.14s
+wide-read-diag2/fabric-gpu-suite-v2p1-dgx2.txt: 71 passed, 1 skipped, 3 deselected in 6.10s
+wide-read-diag2/fabric-gpu-suite-v2p1-dgx3.txt: 71 passed, 1 skipped, 3 deselected in 6.10s
+wide-read-diag2/fabric-gpu-suite-v2p8-dgx1.txt: 71 passed, 1 skipped, 3 deselected, 7 warnings in 6.57s
+wide-read-diag2/fabric-gpu-suite-v2p8-dgx2.txt: 71 passed, 1 skipped, 3 deselected in 6.57s
+wide-read-diag2/fabric-gpu-suite-v2p8-dgx3.txt: 71 passed, 1 skipped, 3 deselected in 6.58s
