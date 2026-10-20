@@ -16,3 +16,9 @@ wide-read-diag2/fabric-gpu-suite-v2p1-dgx3.txt: 71 passed, 1 skipped, 3 deselect
 wide-read-diag2/fabric-gpu-suite-v2p8-dgx1.txt: 71 passed, 1 skipped, 3 deselected, 7 warnings in 6.57s
 wide-read-diag2/fabric-gpu-suite-v2p8-dgx2.txt: 71 passed, 1 skipped, 3 deselected in 6.57s
 wide-read-diag2/fabric-gpu-suite-v2p8-dgx3.txt: 71 passed, 1 skipped, 3 deselected in 6.58s
+wide-read-qualify/fabric-q-failstop-wide-dgx1.txt: 2 passed, 73 deselected, 2 warnings in 19.17s
+wide-read-qualify/fabric-q-failstop-wide-dgx2.txt: 2 passed, 73 deselected in 19.18s
+wide-read-qualify/fabric-q-failstop-wide-dgx3.txt: 2 passed, 73 deselected in 19.17s
+wide-read-qualify/fabric-q-gpu-suite-wide-dgx1.txt: 71 passed, 1 skipped, 3 deselected, 7 warnings in 6.47s
+wide-read-qualify/fabric-q-gpu-suite-wide-dgx2.txt: 71 passed, 1 skipped, 3 deselected in 6.53s
+wide-read-qualify/fabric-q-gpu-suite-wide-dgx3.txt: 71 passed, 1 skipped, 3 deselected in 6.54s

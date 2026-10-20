@@ -107,6 +107,13 @@ every arm.
 | 480 KiB | 62.2 us | 59.0 us | 69.2 us | 65.0 us |
 | 960 KiB | 108.3 us | 102.6 us | 118.7 us | 112.7 us |
 
+4. `qualify/` (the committed design, aa01019; spark-ds41f's adapter-path probe,
+   three runs each against main): GPU suite 71 passed, 1 skipped and
+   fail-stop passed on every rank (`gpu-tests.txt`); BF16 all-reduce 11.1 to
+   10.8 us at 10 KiB, 14.0 to 13.8 at 30, 18.8 to 17.7 at 60, 32.5 to 28.8 at
+   160, 62.2 to 59.1 at 480, 107.7 to 104.2 at 960; all-gather 12.4 to 10.4,
+   14.8 to 13.5, 19.3 to 18.0, 33.8 to 30.5, 69.5 to 63.9, 119.4 to 113.3.
+
 Traced phases, all-reduce p50 on rank 0 (staging / wait / data phase, us):
 main 2.3 / 11.8 / 2.5 at 60 KiB, 5.4 / 46.8 / 7.1 at 480 KiB; v2p1 1.8 /
 11.7 / 2.3 and 4.0 / 45.6 / 5.9. These probes run without the model's L2
