@@ -1,0 +1,30 @@
+{
+ "experiment": "results/private/lab/wide-read",
+ "run": "wide-read-serving",
+ "jobs": [
+  {
+   "kind": "sync"
+  },
+  {
+   "kind": "measure",
+   "suite": [
+    "screen-tp3",
+    "single-stream"
+   ],
+   "arms": [
+    {
+     "config": "results/private/lab/wide-read/serve-wide.json",
+     "label": "wide"
+    },
+    {
+     "config": "results/private/lab/wide-read/serve-main.json",
+     "label": "main"
+    },
+    {
+     "config": "results/private/lab/wide-read/serve-wide.json",
+     "label": "wide-again"
+    }
+   ]
+  }
+ ]
+}

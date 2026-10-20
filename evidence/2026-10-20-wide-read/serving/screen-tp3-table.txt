@@ -1,0 +1,165 @@
+verdicts: main -> wide, against the run's own repeat (wide -> wide-again)
+metric                             change    ±95%   repeat  verdict
+grid: decode geometric mean (15)   -1.38%   0.16%   -0.44%  better
+c8: output tok/s                   +0.34%   1.26%   +0.05%  same
+prefill: prefill 32,768 tok/s      -0.23%   1.18%   +0.92%  same
+prefill: prefill 262,144 tok/s     -0.14%   0.81%   +0.81%  same
+
+######## main -> wide
+suite screen-tp3 (476a27f07017): main -> wide
+
+== model
+model behaviour: main -> wide
+  greedy responses identical: 128/128
+  acceptance_length           2.240 ->    2.245  +0.22%
+  verified_per_draft          1.956 ->    1.957  +0.04%
+  accepted_per_verified       0.634 ->    0.636  +0.36%
+  acceptance by draft position: 0: 0.695->0.697, 1: 0.569->0.576, 2: 0.556->0.549, 3: 0.593->0.594, 4: 0.611->0.603
+  teacher-forced over 32768 positions in 128 sequences
+    identical distributions 100.00%, top-1 agreement 100.000%
+    KL mean 0.000e+00 (±0.0e+00 over sequences), p99 0.000e+00, max 0.000e+00 nats
+    given-token log-probability change mean +0.00e+00, mean |change| 0.00e+00, max 0.00e+00
+    perplexity 1.31643 -> 1.31643 (+0.000%)
+
+== grid
+metric                             main         wide   change    ±95%  verdict
+decode 1x2 rows @4K              22.470       22.445   -0.11%   0.94%  same
+decode 4x8 rows @4K              25.899       25.513   -1.49%   0.76%  better
+decode 8x16 rows @4K             29.209       28.714   -1.69%   0.85%  better
+decode 1x3 rows @4K              23.091       22.822   -1.16%   1.09%  better
+decode 4x12 rows @4K             27.857       27.299   -2.00%   0.91%  better
+decode 8x24 rows @4K             32.353       31.819   -1.65%   0.80%  better
+decode 1x6 rows @4K              24.379       23.996   -1.57%   1.11%  better
+decode 2x12 rows @4K             26.451       26.059   -1.48%   0.92%  better
+decode 4x24 rows @4K             32.392       31.720   -2.07%   0.74%  better
+decode 8x48 rows @4K             37.287       36.676   -1.64%   0.83%  better
+decode 1x3 rows @64K             23.315       23.195   -0.52%   1.27%  same
+decode 8x24 rows @64K            32.274       31.620   -2.03%   0.69%  better
+decode 1x3 rows @256K            23.187       23.060   -0.55%   1.28%  same
+decode 8x24 rows @256K           32.459       31.776   -2.10%   0.87%  better
+decode 1x3 rows @1016K           23.017       22.865   -0.66%   1.11%  same
+decode geometric mean (15)                             -1.38%   0.16%  better
+intervals hold for all 15 shapes at once (95%, Bonferroni); slow outliers (median + 5 MAD) dropped first: 12
+
+== c8
+metric                         main         wide   change    ±95%  verdict
+output tok/s                151.893      152.417   +0.34%   1.26%  same
+engine steps/s                9.190        9.220   +0.33%   2.72%  same
+output tokens/step           16.543       16.545   +0.01%   3.36%  same
+accepted/draft                1.313        1.311   -0.16%   6.58%  same
+TTFT p50 s                    0.360        0.358   -0.76%          same (no interval)
+TTFT p99 s                    0.440        0.440   +0.07%          same (no interval)
+TPOT p50 ms                  52.281       52.272   -0.02%          same (no interval)
+TPOT p99 ms                  70.941       70.374   -0.80%          same (no interval)
+per-user tok/s p50           19.127       19.116   -0.06%          same (no interval)
+
+== prefill
+metric                         main         wide   change    ±95%  verdict
+prefill 32,768 tok/s       4463.019     4452.959   -0.23%   1.18%  same
+prefill 262,144 tok/s      4177.720     4172.068   -0.14%   0.81%  same
+
+######## main -> wide-again
+suite screen-tp3 (476a27f07017): main -> wide-again
+
+== model
+model behaviour: main -> wide-again
+  greedy responses identical: 128/128
+  acceptance_length           2.240 ->    2.245  +0.22%
+  verified_per_draft          1.956 ->    1.957  +0.04%
+  accepted_per_verified       0.634 ->    0.636  +0.36%
+  acceptance by draft position: 0: 0.695->0.697, 1: 0.569->0.576, 2: 0.556->0.549, 3: 0.593->0.594, 4: 0.611->0.603
+  teacher-forced over 32768 positions in 128 sequences
+    identical distributions 100.00%, top-1 agreement 100.000%
+    KL mean 0.000e+00 (±0.0e+00 over sequences), p99 0.000e+00, max 0.000e+00 nats
+    given-token log-probability change mean +0.00e+00, mean |change| 0.00e+00, max 0.00e+00
+    perplexity 1.31643 -> 1.31643 (+0.000%)
+
+== grid
+metric                             main   wide-again   change    ±95%  verdict
+decode 1x2 rows @4K              22.470       22.284   -0.83%   0.83%  same
+decode 4x8 rows @4K              25.899       25.461   -1.69%   0.75%  better
+decode 8x16 rows @4K             29.209       28.595   -2.10%   0.78%  better
+decode 1x3 rows @4K              23.091       22.688   -1.74%   1.06%  better
+decode 4x12 rows @4K             27.857       27.365   -1.76%   0.99%  better
+decode 8x24 rows @4K             32.353       31.516   -2.59%   0.75%  better
+decode 1x6 rows @4K              24.379       23.875   -2.07%   0.95%  better
+decode 2x12 rows @4K             26.451       25.921   -2.01%   0.82%  better
+decode 4x24 rows @4K             32.392       31.622   -2.38%   0.75%  better
+decode 8x48 rows @4K             37.287       36.560   -1.95%   0.81%  better
+decode 1x3 rows @64K             23.315       23.032   -1.22%   1.28%  same
+decode 8x24 rows @64K            32.274       31.588   -2.13%   0.69%  better
+decode 1x3 rows @256K            23.187       22.890   -1.28%   1.16%  better
+decode 8x24 rows @256K           32.459       31.607   -2.62%   0.74%  better
+decode 1x3 rows @1016K           23.017       22.818   -0.87%   1.09%  same
+decode geometric mean (15)                             -1.82%   0.16%  better
+intervals hold for all 15 shapes at once (95%, Bonferroni); slow outliers (median + 5 MAD) dropped first: 19
+
+== c8
+metric                         main   wide-again   change    ±95%  verdict
+output tok/s                151.893      152.500   +0.40%   1.24%  same
+engine steps/s                9.190        9.227   +0.40%   2.70%  same
+output tokens/step           16.543       16.542   -0.00%   3.35%  same
+accepted/draft                1.313        1.310   -0.19%   6.54%  same
+TTFT p50 s                    0.360        0.357   -0.92%          same (no interval)
+TTFT p99 s                    0.440        0.439   -0.07%          same (no interval)
+TPOT p50 ms                  52.281       52.198   -0.16%          same (no interval)
+TPOT p99 ms                  70.941       70.337   -0.85%          same (no interval)
+per-user tok/s p50           19.127       19.155   +0.14%          same (no interval)
+
+== prefill
+metric                         main   wide-again   change    ±95%  verdict
+prefill 32,768 tok/s       4463.019     4493.885   +0.69%   1.14%  same
+prefill 262,144 tok/s      4177.720     4205.922   +0.68%   0.74%  same
+
+######## wide -> wide-again
+suite screen-tp3 (476a27f07017): wide -> wide-again
+
+== model
+model behaviour: wide -> wide-again
+  greedy responses identical: 128/128
+  acceptance_length           2.245 ->    2.245  +0.00%
+  verified_per_draft          1.957 ->    1.957  +0.00%
+  accepted_per_verified       0.636 ->    0.636  +0.00%
+  acceptance by draft position: 0: 0.697->0.697, 1: 0.576->0.576, 2: 0.549->0.549, 3: 0.594->0.594, 4: 0.603->0.603
+  teacher-forced over 32768 positions in 128 sequences
+    identical distributions 100.00%, top-1 agreement 100.000%
+    KL mean 0.000e+00 (±0.0e+00 over sequences), p99 0.000e+00, max 0.000e+00 nats
+    given-token log-probability change mean +0.00e+00, mean |change| 0.00e+00, max 0.00e+00
+    perplexity 1.31643 -> 1.31643 (+0.000%)
+
+== grid
+metric                             wide   wide-again   change    ±95%  verdict
+decode 1x2 rows @4K              22.445       22.284   -0.71%   0.90%  same
+decode 4x8 rows @4K              25.513       25.461   -0.20%   0.82%  same
+decode 8x16 rows @4K             28.714       28.595   -0.41%   0.75%  same
+decode 1x3 rows @4K              22.822       22.688   -0.59%   0.99%  same
+decode 4x12 rows @4K             27.299       27.365   +0.25%   0.86%  same
+decode 8x24 rows @4K             31.819       31.516   -0.95%   0.68%  better
+decode 1x6 rows @4K              23.996       23.875   -0.50%   1.10%  same
+decode 2x12 rows @4K             26.059       25.921   -0.53%   0.83%  same
+decode 4x24 rows @4K             31.720       31.622   -0.31%   0.71%  same
+decode 8x48 rows @4K             36.676       36.560   -0.32%   0.71%  same
+decode 1x3 rows @64K             23.195       23.032   -0.70%   1.23%  same
+decode 8x24 rows @64K            31.620       31.588   -0.10%   0.63%  same
+decode 1x3 rows @256K            23.060       22.890   -0.74%   1.14%  same
+decode 8x24 rows @256K           31.776       31.607   -0.53%   0.83%  same
+decode 1x3 rows @1016K           22.865       22.818   -0.21%   1.09%  same
+decode geometric mean (15)                             -0.44%   0.15%  better
+intervals hold for all 15 shapes at once (95%, Bonferroni); slow outliers (median + 5 MAD) dropped first: 23
+
+== c8
+metric                         wide   wide-again   change    ±95%  verdict
+output tok/s                152.417      152.500   +0.05%   1.25%  same
+engine steps/s                9.220        9.227   +0.07%   2.69%  same
+output tokens/step           16.545       16.542   -0.02%   3.30%  same
+accepted/draft                1.311        1.310   -0.03%   6.33%  same
+TTFT p50 s                    0.358        0.357   -0.16%          same (no interval)
+TTFT p99 s                    0.440        0.439   -0.14%          same (no interval)
+TPOT p50 ms                  52.272       52.198   -0.14%          same (no interval)
+TPOT p99 ms                  70.374       70.337   -0.05%          same (no interval)
+per-user tok/s p50           19.116       19.155   +0.20%          same (no interval)
+
+== prefill
+metric                         wide   wide-again   change    ±95%  verdict
+prefill 32,768 tok/s       4452.959     4493.885   +0.92%   1.24%  same
+prefill 262,144 tok/s      4172.068     4205.922   +0.81%   0.76%  better

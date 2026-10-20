@@ -1,0 +1,48 @@
+verdicts: main -> wide, against the run's own repeat (wide -> wide-again)
+metric                             change    ±95%   repeat  verdict
+c1: output tok/s                   +0.16%   7.22%   +0.30%  same
+
+######## main -> wide
+suite single-stream (7c59b27e8503): main -> wide
+
+== c1
+metric                         main         wide   change    ±95%  verdict
+output tok/s                 59.633       59.727   +0.16%   7.22%  same
+engine steps/s               26.603       26.623   +0.08%   2.79%  same
+output tokens/step            2.248        2.250   +0.09%  10.09%  same
+accepted/draft                1.268        1.270   +0.17%  18.17%  same
+TTFT p50 s                    0.123        0.123   -0.33%          same (no interval)
+TTFT p99 s                    0.148        0.148   -0.25%          same (no interval)
+TPOT p50 ms                  16.669       16.647   -0.13%          same (no interval)
+TPOT p99 ms                  20.347       20.332   -0.07%          same (no interval)
+per-user tok/s p50           59.794       59.825   +0.05%          same (no interval)
+
+######## main -> wide-again
+suite single-stream (7c59b27e8503): main -> wide-again
+
+== c1
+metric                         main   wide-again   change    ±95%  verdict
+output tok/s                 59.633       59.907   +0.46%   7.15%  same
+engine steps/s               26.603       26.690   +0.33%   2.82%  same
+output tokens/step            2.248        2.251   +0.15%  10.04%  same
+accepted/draft                1.268        1.271   +0.29%  18.12%  same
+TTFT p50 s                    0.123        0.125   +1.25%          same (no interval)
+TTFT p99 s                    0.148        0.147   -0.54%          same (no interval)
+TPOT p50 ms                  16.669       16.723   +0.32%          same (no interval)
+TPOT p99 ms                  20.347       20.292   -0.27%          same (no interval)
+per-user tok/s p50           59.794       59.798   +0.01%          same (no interval)
+
+######## wide -> wide-again
+suite single-stream (7c59b27e8503): wide -> wide-again
+
+== c1
+metric                         wide   wide-again   change    ±95%  verdict
+output tok/s                 59.727       59.907   +0.30%   7.16%  same
+engine steps/s               26.623       26.690   +0.25%   2.86%  same
+output tokens/step            2.250        2.251   +0.05%  10.10%  same
+accepted/draft                1.270        1.271   +0.12%  18.23%  same
+TTFT p50 s                    0.123        0.125   +1.59%          same (no interval)
+TTFT p99 s                    0.148        0.147   -0.28%          same (no interval)
+TPOT p50 ms                  16.647       16.723   +0.46%          same (no interval)
+TPOT p99 ms                  20.332       20.292   -0.20%          same (no interval)
+per-user tok/s p50           59.825       59.798   -0.05%          same (no interval)

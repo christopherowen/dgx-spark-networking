@@ -323,6 +323,12 @@ Triangle (dgx1-3, r6x image, BF16, slowest rank's median of five samples of
 | 480 KiB | 62.2 us | 59.0 us | 69.2 us | 65.0 us |
 | 960 KiB | 108.3 us | 102.6 us | 118.7 us | 112.7 us |
 
+In serving (spark-ds41f r6x, TP3 at 1M context, servebench `screen-tp3` and
+`single-stream`, arms new, 0.4.0, new again): outputs identical, decode step
+time over the engine grid 1.4 and 1.8 percent lower (+-0.16; the new arms
+differ by 0.4), eight-stream and one-stream throughput and prefill level
+within their intervals.
+
 Until 0.4.0 a vendored CuTe DSL pair (derived from b12x's RoCEnante, see
 docs/provenance.md) carried the same protocol, selected with
 `SPARKNET_ROCE_KERNELS`. The two were bit-identical on the pair and the ring

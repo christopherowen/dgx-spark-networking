@@ -15,7 +15,9 @@
   still storing, so the doorbell came late. Triangle, BF16, against 0.4.0:
   all-reduce 19.6 to 17.6 us at 60 KiB, 32.5 to 28.7 at 160 KiB, 62.2 to 59.0
   at 480 KiB; all-gather 19.6 to 17.5, 35.3 to 29.5, 69.2 to 65.0; level at
-  10 KiB (`evidence/2026-10-20-wide-read`). The runtime refuses a grid the
+  10 KiB. In TP3 serving the engine grid's decode step time is about
+  1.6 percent lower with identical outputs (`evidence/2026-10-20-wide-read`).
+  The runtime refuses a grid the
   device cannot hold at once: blocks waiting for peers keep their SMs while
   the doorbell waits for every block to stage. `blocks` is in the setup
   handshake, so ranks of different versions fail at construction.

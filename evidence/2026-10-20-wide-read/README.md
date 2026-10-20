@@ -117,4 +117,31 @@ every arm.
 Traced phases, all-reduce p50 on rank 0 (staging / wait / data phase, us):
 main 2.3 / 11.8 / 2.5 at 60 KiB, 5.4 / 46.8 / 7.1 at 480 KiB; v2p1 1.8 /
 11.7 / 2.3 and 4.0 / 45.6 / 5.9. These probes run without the model's L2
-prefetch, where the data phase gained most on one GPU; serving decides.
+prefetch, where the data phase gained most on one GPU.
+
+## Serving (`serving/`)
+
+spark-ds41f lab run `wide-read-serving` on the triangle, 2026-10-20 22:16 to
+23:27 UTC (owner-approved after the qualification): servebench suites
+`screen-tp3` and `single-stream` on r6x TP3 at 1M context
+(`r6x-tp3-1m-dev-1017` with the dev-mode collective RPC for the engine grid),
+the sparknet checkout mounted over the image's package. Arms in order:
+`wide` (aa01019), `main` (f7fcc1e), `wide-again`. servebench counted no
+foreign requests in any run, and nothing outside dgx1 connected to the
+serving port during the window.
+
+- Outputs: greedy responses identical in 128 of 128 prompts, one output hash
+  for all three arms, teacher-forced distributions identical (KL 0).
+- Engine grid (decode step time at fixed request and row counts, the suites'
+  text-independent step cost): geometric mean over 15 shapes -1.38 percent
+  (`wide`) and -1.82 percent (`wide-again`) against `main`, each +-0.16
+  percent; the two `wide` arms differ by -0.44 percent, so with `main`
+  between them the change is about -1.6 percent. Per shape -1.5 to -2.6
+  percent from four requests up, -0.1 to -1.7 percent at one request.
+- Closed loop at 8 streams: output +0.34 and +0.40 percent (+-1.26), one
+  stream +0.16 and +0.46 percent (+-7.2), prefill at 32K and 256K level: all
+  within their intervals.
+
+Verdict against the 1 percent bar: the step cost clears it (about 1.6
+percent, outside every interval); the throughput workloads cannot resolve 1
+percent and read level, in the same direction.

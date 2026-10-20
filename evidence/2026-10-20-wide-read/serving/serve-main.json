@@ -1,0 +1,12 @@
+{
+ "notes": "r6x-tp3-1m-dev-1017.json (production r6x TP3 at 1M with the dev-mode collective RPC for the suites' engine grid) with sparknet origin/main f7fcc1e (code-identical to the image's 3bc8d10) mounted over the image's package.",
+ "extends": {"config": "experiments/2026-10-19-r6x-tp3-1m/r6x-tp3-1m-dev-1017.json"},
+ "set": {
+  "container": {
+   "mounts": [
+    ["{home}/projects/spark-ds41f/cache", "/cache", "rw"],
+    ["{home}/sparknet-ab/main/sparknet", "/usr/local/lib/python3.12/dist-packages/sparknet", "ro"]
+   ]
+  }
+ }
+}
