@@ -285,6 +285,27 @@ float32 accumulation in fixed rank order and the conversions. They need
 second per launcher, into TileLang's own cache; they use no tensor-core
 instructions.
 
+**Launch geometry.** One shape: 512-thread blocks at full residency (40
+registers) on a power-of-two grid of one 16-byte pack a thread, up to 64
+blocks (512 KiB a slot in one pass). The data phase reads the peers' slots
+in pinned host memory, and beside the model's L2 prefetch each round trip
+there waits out the DRAM queue, about 6 us on a GB10 against under 1 us
+without it; a thread's packs are serial round trips, so the grid spreads the
+message one pack to a thread. The whole grid must be resident at once
+(blocks waiting for peers keep their SMs while the doorbell waits for every
+block to stage), which the runtime checks against the device. The
+all-gather issues every peer's load of a pack before its first store and
+writes its own shard to the output while staging. Measured on the data phase
+alone (`evidence/2026-10-20-wide-read`), three ranks beside a 20 MiB bulk
+prefetch, against 0.4.0's two packs a thread on at most 8 blocks:
+
+| Per rank | All-reduce, 0.4.0 | All-reduce | All-gather, 0.4.0 | All-gather |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 KiB | 9.7 us | 6.3 us | 15.6 us | 5.9 us |
+| 60 KiB | 10.7 us | 6.7 us | 17.9 us | 6.8 us |
+| 160 KiB | 15.6 us | 8.3 us | 26.1 us | 8.0 us |
+| 480 KiB | 33.9 us | 10.2 us | 39.3 us | 10.8 us |
+
 Until 0.4.0 a vendored CuTe DSL pair (derived from b12x's RoCEnante, see
 docs/provenance.md) carried the same protocol, selected with
 `SPARKNET_ROCE_KERNELS`. The two were bit-identical on the pair and the ring

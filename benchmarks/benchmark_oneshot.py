@@ -279,7 +279,7 @@ def main() -> None:
     ap.add_argument("--graph-ops", type=int, default=20)
     ap.add_argument("--max-size", type=int, default=2 << 20)
     ap.add_argument("--runtime-threads", type=int, default=512)
-    ap.add_argument("--runtime-blocks", type=int, default=8)
+    ap.add_argument("--runtime-blocks", type=int, default=None, help="one-shot launch blocks (default: the runtime's)")
     ap.add_argument(
         "--gather-rows",
         default="6,16,96",
@@ -304,7 +304,7 @@ def main() -> None:
         max_size=args.max_size,
         max_gather_bytes=16 << 20,
         threads=args.runtime_threads,
-        blocks=args.runtime_blocks,
+        **({} if args.runtime_blocks is None else {"blocks": args.runtime_blocks}),
     )
     runtime.prepare((dtype,), padded_gather=True)
     sizes = [int(s) for s in args.sizes.split(",") if int(s) <= args.max_size]
@@ -504,7 +504,7 @@ def main() -> None:
                 "blocks": args.blocks,
                 "graph_ops": args.graph_ops,
                 "runtime_threads": args.runtime_threads,
-                "runtime_blocks": args.runtime_blocks,
+                "runtime_blocks": stats["blocks"],
                 "timing": "CUDA events around one call on the caller's stream; the graph arm replays graph_ops collectives per call and reports per-collective time",
                 "summary": "*_us is the median of paired per-sample maxima across ranks",
                 "ratio_direction": "ratio_nccl_over_roce_* = nccl_us / roce_*_us and ratio_nccl_graph_over_roce_graph = nccl_graph_us / roce_graph_us; above 1 means one-shot is faster",

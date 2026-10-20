@@ -40,7 +40,8 @@ One pinned region per rank: `recv[src][slot]`, `flag[src][slot][lane]`,
    missing peer, its lane and the time waited, then stops the GPU;
 4. all-reduce sums the local input and every peer slot in fixed rank order
    (bit-identical across ranks); all-gather writes the concatenated layout
-   directly;
+   directly (its own shard's block while staging, so this phase reads only
+   the peers);
 5. the last block to finish advances a device-resident epoch, so the sequence
    number is a runtime value and graph replay is correct.
 

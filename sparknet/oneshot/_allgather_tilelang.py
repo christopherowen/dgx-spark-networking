@@ -2,7 +2,8 @@
 
 Same transport and protocol as the all-reduce with the reduction replaced by
 a strided copy that writes the concatenated output directly (dim-0 and
-last-dim concatenation). Generated as CUDA source by TileLang with the
+last-dim concatenation). Staging also writes the rank's own shard to its
+block of the output, so the data phase reads only the peers. Generated as CUDA source by TileLang with the
 protocol steps in ``_device.py``; the buffers are the kernel's arguments and
 ``run`` takes a ``Launch``.
 """
@@ -32,7 +33,6 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
     lanes, neighbor_lanes = _lanes(hca_count, ring4)
     source = render_source(world_size=world_size, rank=rank, slots=slots, flag_stride=flag_stride,
                            hca_count=lanes, neighbor_lanes=neighbor_lanes)
-    pack_words = PACK_BYTES // 4
     resident = _resident_blocks(threads)
 
     @tilelang.jit(pass_configs=_pass_configs())
@@ -73,13 +73,13 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 index = bx * threads + tx
                 stride = T.alloc_var(T.int32)
                 stride = grid_x * threads
-                # 1. stage the local shard into the pinned send slot
+                # 1. stage the local shard into the pinned send slot and its own column block of the output
                 count = T.alloc_var(T.int32)
                 count = T.max(0, (shard_packs - index + stride - 1) // stride)
                 for i in T.serial(count):
-                    pack = index + i * stride
-                    T.call_extern("roce_copy_pack", T.address_of(inp[pack * pack_words]),
-                                  T.call_extern("roce_ptr", region_base + T.cast(send_slot + pack * PACK_BYTES, T.int64), dtype="handle"), dtype="handle")
+                    T.call_extern("roce_stage_gather_pack", T.address_of(inp[0]),
+                                  T.call_extern("roce_ptr", region_base + T.cast(send_slot, T.int64), dtype="handle"),
+                                  index + i * stride, row_packs, T.address_of(out[0]), dtype="handle")
                 T.sync_threads()
                 # 2. the last block to finish staging rings the proxy doorbell
                 if tx == 0:
@@ -91,7 +91,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 T.sync_threads()
                 # 4. concatenate: shard s occupies column block s of every output row
                 for i in T.serial(count):
-                    T.call_extern("roce_gather_pack", T.address_of(inp[0]), T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
+                    T.call_extern("roce_gather_pack", T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
                                   T.cast(slot_bytes, T.int64), seq, index + i * stride, row_packs,
                                   T.address_of(out[0]), dtype="handle")
                 # 5. the last block to finish publishes the next epoch

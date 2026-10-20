@@ -42,6 +42,8 @@ FUNCTIONS = (
     "roce_reduce_pack_f32",
     "roce_reduce_pack_f16",
     "roce_reduce_pack_bf16",
+    "roce_gather_dest",
+    "roce_stage_gather_pack",
     "roce_gather_pack",
     "roce_globaltimer",
     "roce_trace_record",
@@ -382,19 +384,53 @@ __device__ __forceinline__ void roce_reduce_pack_bf16(const void *input, const v
     roce_st_global_pack((roce_byte *)output + offset, out);
 }
 
-// Phase 4 (all-gather): shard s of pack copy_index lands at column block s of
-// its output row (row_packs == shard_packs for a dim-0 concatenation).
-__device__ __forceinline__ void roce_gather_pack(const void *input, const void *recv, long long slot_bytes,
-                                                 roce_u32 seq, int copy_index, int row_packs, void *output) {
+// The output pack of source ``source`` for gather pack ``copy_index``: shard s
+// occupies column block s of every output row (row_packs == shard_packs for a
+// dim-0 concatenation).
+__device__ __forceinline__ roce_byte *roce_gather_dest(void *output, int copy_index, int row_packs, int source) {
     int row = copy_index / row_packs;
     int col = copy_index - row * row_packs;
-    long long out_row_packs = (long long)ROCE_WORLD * row_packs;
+    return (roce_byte *)output + (((long long)row * ROCE_WORLD + source) * row_packs + col) * ROCE_PACK_BYTES;
+}
+
+// Phase 1 (all-gather): stage one pack of the local shard into the send slot
+// and write it to this rank's column block of the output, so the data phase
+// reads only the peers.
+__device__ __forceinline__ void roce_stage_gather_pack(const void *input, void *send, int copy_index, int row_packs,
+                                                       void *output) {
     long long offset = (long long)copy_index * ROCE_PACK_BYTES;
+    roce_pack p = roce_ld_global_pack((const roce_byte *)input + offset);
+    roce_st_global_pack((roce_byte *)send + offset, p);
+    roce_st_global_pack(roce_gather_dest(output, copy_index, row_packs, ROCE_RANK), p);
+}
+
+// Phase 4 (all-gather): copy pack copy_index of every peer's shard to its
+// column block. The loads of a group of peers are all issued before its first
+// store: a store orders the loads after it, so a load-store pair per peer
+// would make every peer a round trip of its own to the pinned region. Groups
+// of four bound the registers.
+#define ROCE_GATHER_GROUP 4
+__device__ __forceinline__ void roce_gather_pack(const void *recv, long long slot_bytes, roce_u32 seq, int copy_index,
+                                                 int row_packs, void *output) {
+    long long offset = (long long)copy_index * ROCE_PACK_BYTES;
+    long long slot = (long long)(seq & 1u);
 #pragma unroll
-    for (int source = 0; source < ROCE_WORLD; source++) {
-        roce_pack p = roce_source_pack(source, input, recv, slot_bytes, seq, offset);
-        roce_byte *dest = (roce_byte *)output + ((long long)row * out_row_packs + (long long)source * row_packs + col) * ROCE_PACK_BYTES;
-        roce_st_global_pack(dest, p);
+    for (int first = 0; first < ROCE_WORLD - 1; first += ROCE_GATHER_GROUP) {
+        roce_pack p[ROCE_GATHER_GROUP];
+#pragma unroll
+        for (int k = 0; k < ROCE_GATHER_GROUP; k++) {
+            int peer = (ROCE_RANK + 1 + first + k) % ROCE_WORLD;
+            if (first + k < ROCE_WORLD - 1) {
+                p[k] = roce_ld_relaxed_sys_pack((const roce_byte *)recv + ((long long)peer * ROCE_SLOTS + slot) * slot_bytes + offset);
+            }
+        }
+#pragma unroll
+        for (int k = 0; k < ROCE_GATHER_GROUP; k++) {
+            int peer = (ROCE_RANK + 1 + first + k) % ROCE_WORLD;
+            if (first + k < ROCE_WORLD - 1) {
+                roce_st_global_pack(roce_gather_dest(output, copy_index, row_packs, peer), p[k]);
+            }
+        }
     }
 }
 """

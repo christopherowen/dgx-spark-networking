@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- **One pack a thread in the data phase.** The launch grid gives every
+  thread one 16-byte pack, up to 64 blocks of 512 threads (512 KiB a slot in
+  one pass); 0.4.0 gave about two packs a thread on at most 8 blocks. The
+  data phase reads the peers' slots from pinned host memory, and beside the
+  model's L2 prefetch each such round trip waits out the DRAM queue (about
+  6 us on a GB10, under 1 us without it); a thread's packs are serial round
+  trips. The header's own reduce beside a 20 MiB bulk prefetch, three ranks:
+  10.7 to 6.7 us at 60 KiB, 15.6 to 8.3 at 160 KiB, 33.9 to 10.2 at
+  480 KiB (`evidence/2026-10-20-wide-read`). The runtime refuses a grid the
+  device cannot hold at once: blocks waiting for peers keep their SMs while
+  the doorbell waits for every block to stage. `blocks` is in the setup
+  handshake, so ranks of different versions fail at construction.
+- **The all-gather's data phase is one round trip.** It issued a load and a
+  store per source, and a store orders the loads after it, so every peer was
+  a round trip of its own. Every peer's load of a pack now issues before the
+  first store (groups of four peers bound the registers), and staging writes
+  the rank's own shard to its block of the output, so the data phase reads
+  only the peers. Three ranks beside the prefetch: 17.9 to 6.8 us at 60 KiB,
+  39.3 to 10.8 at 480 KiB.
+- Every launcher still compiles to 40 registers (2 to 16 ranks, every
+  dtype, ring4, traced); the all-reduce kernels are unchanged and the
+  all-gather kernels use no local memory.
+- `benchmarks/benchmark_oneshot.py` uses the runtime's grid limit unless
+  `--runtime-blocks` is given.
+
 ## 0.4.0 (2026-10-16)
 
 - **One kernel family: TileLang.** The vendored CuTe DSL kernels

@@ -51,7 +51,7 @@ SUPPORTED_WORLD_SIZES = tuple(range(2, 17))
 DEFAULT_MAX_SIZE = 2 * 1024 * 1024
 DEFAULT_MAX_GATHER_BYTES = 16 * 1024 * 1024
 DEFAULT_THREADS = 512
-DEFAULT_BLOCKS = 8
+DEFAULT_BLOCKS = 64
 DEFAULT_GID_INDEX = 3
 # Polls of a peer flag before the kernel gives up (each poll is a system-scope
 # load of host memory, roughly a microsecond): about 20 s.
@@ -343,8 +343,16 @@ def _align_up(value: int, alignment: int) -> int:
 
 
 def _grid_blocks(size_packs: int, threads: int, max_blocks: int) -> int:
-    """Choose a power-of-two grid with about two 16-byte packs per thread."""
-    packs_per_block = 2 * int(threads)
+    """Choose a power-of-two grid with one 16-byte pack per thread, up to ``max_blocks``.
+
+    The data phase reads the peers' slots from pinned host memory, and beside
+    the model's L2 prefetch every round trip there waits out the DRAM queue
+    (about 6 us on the GB10, 2026-10-20). A thread's packs are serial round
+    trips, so the grid spreads the message one pack to a thread (64 blocks of
+    512 threads hold 512 KiB); two packs a thread on at most 8 blocks cost
+    10 us instead of 6.5 at 60 KiB and 35 instead of 10 at 480 KiB.
+    """
+    packs_per_block = int(threads)
     required = max(1, (int(size_packs) + packs_per_block - 1) // packs_per_block)
     return min(1 << (required - 1).bit_length(), int(max_blocks))
 
@@ -414,6 +422,13 @@ class RoceOneshotAllReduce:
             # free-running 32-bit counter, which survives the counter wrap only
             # for a power-of-two block count.
             raise ValueError("blocks must be a positive power of two")
+        properties = torch.cuda.get_device_properties(self.device)
+        resident = properties.multi_processor_count * (properties.max_threads_per_multi_processor // int(threads))
+        if int(blocks) > resident:
+            # Blocks that wait for the peers keep their SMs while the doorbell
+            # waits for every block to stage, so the whole grid must fit at once.
+            raise ValueError(f"blocks must fit on the device at once: {int(blocks)} blocks of {int(threads)} "
+                             f"threads, room for {resident}")
         self.max_size = int(max_size)
         self.dispatch_max_bytes = self.max_size
         self.max_gather_bytes = int(max_gather_bytes)

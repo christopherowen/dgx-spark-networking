@@ -135,6 +135,32 @@ class KernelFamilyTest(unittest.TestCase):
         self.assertIn("from ._allgather_tilelang import get_launcher", kernels)
 
 
+class LaunchGeometryTest(unittest.TestCase):
+    def setUp(self):
+        self.grid = _functions(ROCE / "runtime.py", {"_grid_blocks"}, {})["_grid_blocks"]
+        tree = ast.parse((ROCE / "runtime.py").read_text())
+        constants = {target.id: node.value.value for node in tree.body if isinstance(node, ast.Assign)
+                     and isinstance(node.value, ast.Constant) for target in node.targets if isinstance(target, ast.Name)}
+        self.threads, self.blocks = constants["DEFAULT_THREADS"], constants["DEFAULT_BLOCKS"]
+
+    def test_one_pack_per_thread_up_to_the_grid_limit(self):
+        # Beside the model's L2 prefetch every round trip to the pinned region waits out
+        # the DRAM queue, and a thread's packs are serial round trips (2026-10-20 sweep).
+        for kib, blocks in ((10, 2), (30, 4), (60, 8), (160, 32), (480, 64), (960, 64)):
+            self.assertEqual(self.grid(kib * 1024 // 16, self.threads, self.blocks), blocks, kib)
+        self.assertEqual(self.grid(1, self.threads, self.blocks), 1)
+        for packs in range(1, 1 << 18, 997):
+            grid = self.grid(packs, self.threads, self.blocks)
+            self.assertEqual(grid & (grid - 1), 0, packs)
+            self.assertTrue(grid * self.threads >= packs or grid == self.blocks, packs)
+            self.assertTrue(grid == 1 or (grid // 2) * self.threads < packs, packs)
+
+    def test_default_grid_is_resident_on_a_gb10(self):
+        # Blocks waiting for peers keep their SMs while the doorbell waits for every block
+        # to stage: the whole grid must fit at once (48 SMs of 1,536 threads).
+        self.assertLessEqual(self.blocks, 48 * (1536 // self.threads))
+
+
 class TopologyResolverTest(unittest.TestCase):
     def setUp(self):
         namespace = dict(vars(typing), os=os, json=json, MAX_STRIPES=2, MAX_LOCAL_HCAS=4,
