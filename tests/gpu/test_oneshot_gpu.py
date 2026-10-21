@@ -67,9 +67,14 @@ def _tolerance(dtype: torch.dtype, world: int) -> tuple[float, float]:
 
 
 def test_payload_is_striped_across_every_hca(runtime):
-    """One peer payload is split evenly across both QSFP PCIe functions (direct cliques)."""
-    if len(runtime.hca_names) < 2:
-        pytest.skip("requires two RoCE interfaces for one QSFP port")
+    """Every peer payload is split evenly across the HCAs routed to that peer (direct cliques).
+
+    A pair reaches its peer over both QSFP PCIe functions, so each HCA carries half
+    of it. The triangle opens four functions and reaches each peer over its own two,
+    so each HCA carries half of one peer's payload.
+    """
+    if runtime.stripe_count < 2:
+        pytest.skip("requires every peer to be routed over two RoCE interfaces")
     if runtime.topology != "direct":
         # A ring posts each payload to two neighbours only and relays the opposite
         # rank's halves; the probe's counter checks and the simulator's byte balance
@@ -87,8 +92,15 @@ def test_payload_is_striped_across_every_hca(runtime):
     torch.cuda.synchronize()
     torch.testing.assert_close(out, torch.full_like(out, world * (world + 1) // 2))
 
-    expected_bytes = (world - 1) * nbytes // len(runtime.hca_names)
-    expected_writes = world - 1
+    # Each lane of a peer's route carries one stripe (nbytes divides evenly) and
+    # completes one signalled write, its stripe's flag.
+    hcas = before["hcas"]
+    expected_bytes = [0] * len(hcas)
+    expected_writes = [0] * len(hcas)
+    for route in before["peer_hca_routes"].values():
+        for name in route:
+            expected_bytes[hcas.index(name)] += nbytes // len(route)
+            expected_writes[hcas.index(name)] += 1
     deadline = time.monotonic() + 5
     while True:
         after = runtime.stats()
@@ -104,13 +116,15 @@ def test_payload_is_striped_across_every_hca(runtime):
                 after["writes_completed_per_hca"], before_writes, strict=True
             )
         ]
-        if all(delta >= expected_writes for delta in write_deltas):
+        if all(
+            delta >= want for delta, want in zip(write_deltas, expected_writes, strict=True)
+        ):
             break
         assert time.monotonic() < deadline, after
         time.sleep(0.001)
-    assert byte_deltas == [expected_bytes] * len(runtime.hca_names)
-    assert all(delta >= expected_writes for delta in write_deltas)
-    assert after["stripe_hcas"] == list(range(len(runtime.hca_names)))
+    assert byte_deltas == expected_bytes
+    # The stripe lanes the runtime reports are the lanes the proxy posts.
+    assert after["stripe_hcas"] == list(range(after["path_slots"]))
     dist.barrier()
 
 
