@@ -26,8 +26,8 @@ or judge model quality.
 On the build host and in the serving image:
 
 ```sh
-pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.4.0                 # CPU tooling: topology, nccl, policy, probe planning
-pip install 'dgx-spark-networking[runtime] @ git+https://github.com/christopherowen/dgx-spark-networking@v0.4.0'  # on the nodes: torch, cuda-python, tilelang
+pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.5.0                 # CPU tooling: topology, nccl, policy, probe planning
+pip install 'dgx-spark-networking[runtime] @ git+https://github.com/christopherowen/dgx-spark-networking@v0.5.0'  # on the nodes: torch, cuda-python, tilelang
 ```
 
 The package itself has no dependencies, and the NCCL patch series ships in

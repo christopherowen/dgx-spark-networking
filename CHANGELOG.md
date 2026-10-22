@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-22)
 
 - **A wider data phase with one poller.** The launch grid gives every thread
   one 16-byte pack, up to 64 blocks of 512 threads (0.4.0: about two packs a
@@ -32,6 +32,10 @@
   eight-rank all-reduce keeps the one spill it had in 0.4.0.
 - `benchmarks/benchmark_oneshot.py` uses the runtime's grid limit unless
   `--runtime-blocks` is given.
+- The GPU suite's striping test expects each HCA to carry only the peers
+  routed over it. On the triangle each peer has its own two HCAs, so the test
+  waited for every peer on every HCA and timed out (triangle GPU suite
+  2026-10-21: 72 passed).
 
 ## 0.4.0 (2026-10-16)
 

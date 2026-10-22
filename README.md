@@ -108,7 +108,7 @@ fit the map.
 
 **Serving.** The deployment repository
 ([spark-ds41f](https://github.com/christopherowen/spark-ds41f)) serves its
-r6n image, promoted on 2026-10-15 (TP4) and 2026-10-16 (TP3). The image
+r6x image, promoted on 2026-10-19 (TP4, then TP3 at 1M context). The image
 installs this package's 0.4.0 sources (the release commit adds only the
 version and documentation), and its vLLM fork constructs `sparknet.integration.vllm.SparknetOneShotAllReduce` (its
 vLLM patch 0038, the one-file switch described in
@@ -116,7 +116,10 @@ vLLM patch 0038, the one-file switch described in
 for the TP3 triangle recipe (`oneshot-direct`, `tp3-triangle`) on three
 Sparks and the TP4 1M recipe (`oneshot-ring4`, `tp4-ring`) on the four-node
 ring. Both were benchmarked at their recipe limits on that image before
-promotion.
+promotion. 0.5.0's wider data phase passed a TP3 serving A/B on that image
+(decode step time about 1.6 percent lower, outputs identical;
+`evidence/2026-10-20-wide-read`) and is in spark-ds41f's next release
+candidate; the four-node ring has not run it yet.
 
 **Vendored, verified.** The one-shot sources are vendored verbatim from the
 hardware-qualified tree of spark-ds41f (b12x `f8069b2c` plus its eleven
@@ -148,7 +151,7 @@ the TileLang port is the kernel it will be written into.
 ## Install
 
 ```sh
-pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.4.0
+pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.5.0
 ```
 
 The package has no dependencies: the CLI and the topology, profile, policy
