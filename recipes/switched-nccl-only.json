@@ -36,36 +36,32 @@
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1",
       "NCCL_IB_TC": "106",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_TRAFFIC_CLASS": "106",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx2": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1",
       "NCCL_IB_TC": "106",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_TRAFFIC_CLASS": "106",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx3": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1",
       "NCCL_IB_TC": "106",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_TRAFFIC_CLASS": "106",
       "TP_SOCKET_IFNAME": "enP7s7"
     },
     "dgx4": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1",
       "NCCL_IB_TC": "106",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
-      "SPARKNET_ROCE_TRAFFIC_CLASS": "106",
       "TP_SOCKET_IFNAME": "enP7s7"
     }
   }

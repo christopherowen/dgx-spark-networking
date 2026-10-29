@@ -77,18 +77,19 @@ not prepared before a capture raises. Serving images warm the TileLang cache
 
 ## Environment
 
-Each setting has one `SPARKNET_ROCE_*` name; the HCA list, GID index and
-traffic class fall back to NCCL's own settings.
+Each setting has one `SPARKNET_ROCE_*` name. NCCL's `NCCL_IB_HCA` and
+`NCCL_IB_TC` are not read (the renderer writes both libraries' settings from
+one map); the GID index still falls back to `NCCL_IB_GID_INDEX`.
 
 | Name | Meaning |
 | --- | --- |
 | `SPARKNET_ROCE_TOPOLOGY` | `direct`, `ring4` or `mesh4` |
 | `SPARKNET_ROCE_PEER_HCAS` | JSON `{peer rank: [local HCAs in stripe order]}`; neighbours only for ring4 |
-| `SPARKNET_ROCE_HCA` | explicit HCA list for direct cliques (falls back to `NCCL_IB_HCA`) |
+| `SPARKNET_ROCE_HCA` | explicit HCA list for direct cliques: one or two exact device names, comma-separated; NCCL's `=`, `^` and `:port` syntax is refused |
+| `SPARKNET_ROCE_TRAFFIC_CLASS` | IP DSCP/ECN byte of every queue pair (default 0; rendered as 106 behind a switch) |
 | `SPARKNET_ROCE_GID_INDEX` | IPv4 RoCE v2 GID slot (falls back to `NCCL_IB_GID_INDEX`, default 3) |
 | `SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES` | dispatch ceiling, at most the registered capacity |
 | `SPARKNET_ROCE_TIMEOUT_MS` | how long a collective wait may see nothing from a peer before it stops the GPU (default 10,000) |
-| `SPARKNET_ROCE_TRAFFIC_CLASS` | DSCP/ECN byte for every QP (falls back to `NCCL_IB_TC`, default 0) |
 | `SPARKNET_ROCE_CACHE_DIR` | where the proxy `.so` is built (default `<XDG cache>/sparknet/roce`) |
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
 | `SPARKNET_ROCE_KERNELS` | removed in 0.4.0 and refused: the TileLang kernels are the only family (see Kernels below) |

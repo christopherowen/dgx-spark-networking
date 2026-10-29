@@ -55,7 +55,7 @@
     "dgx1": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"3\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"1\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
       "SPARKNET_ROCE_TOPOLOGY": "ring4",
@@ -64,7 +64,7 @@
     "dgx2": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"0\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"2\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
       "SPARKNET_ROCE_TOPOLOGY": "ring4",
@@ -73,7 +73,7 @@
     "dgx3": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"1\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"3\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
       "SPARKNET_ROCE_TOPOLOGY": "ring4",
@@ -82,7 +82,7 @@
     "dgx4": {
       "GLOO_SOCKET_IFNAME": "enP7s7",
       "NCCL_IB_HCA": "=roceP2p1s0f0,roceP2p1s0f1,rocep1s0f0,rocep1s0f1",
-      "NCCL_SOCKET_IFNAME": "enP7s7",
+      "NCCL_SOCKET_IFNAME": "=enP7s7",
       "SPARKNET_ROCE_GID_INDEX": "3",
       "SPARKNET_ROCE_PEER_HCAS": "{\"2\":[\"rocep1s0f1\",\"roceP2p1s0f1\"],\"0\":[\"rocep1s0f0\",\"roceP2p1s0f0\"]}",
       "SPARKNET_ROCE_TOPOLOGY": "ring4",

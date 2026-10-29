@@ -60,7 +60,7 @@ sparknet topology discover dgx1 dgx2 dgx3 dgx4 --ssh-user spark --out site \
   --management-ip dgx1=192.0.2.1 --management-ip dgx2=192.0.2.2 \
   --management-ip dgx3=192.0.2.3 --management-ip dgx4=192.0.2.4 --management-interface enP7s7
 sparknet topology discover dgx1 dgx2 dgx3 --fabric switched --ssh-user spark --out site \
-  --management-ip dgx1=192.0.2.1 --management-ip dgx2=192.0.2.2 --management-ip dgx3=192.0.2.3 --traffic-class 106
+  --management-ip dgx1=192.0.2.1 --management-ip dgx2=192.0.2.2 --management-ip dgx3=192.0.2.3
 ```
 
 Keep the site map out of git (`nodes.json` and `*.local.json` are ignored);
@@ -105,9 +105,12 @@ sparknet topology render nodes.json dgx3 --transport oneshot-ring4 --profile tp4
 The output is the complete fabric-related environment of that rank: the
 profile's NCCL and one-shot settings, the ring policy for neighbour rings,
 `NCCL_IB_HCA` with exact device names, the peer map or the rail list, the GID
-index, the traffic class and the socket interfaces. Put it in the container's
-environment verbatim. Every setting has exactly one name, `SPARKNET_ROCE_*`
-(or NCCL's own `NCCL_*`).
+index, the traffic class behind a switch and the socket interfaces. Put it in
+the container's environment verbatim. Every setting has exactly one name,
+`SPARKNET_ROCE_*` (or NCCL's own `NCCL_*`), and the renderer writes both from
+the same map. A deployment that also sets the renderer's keys by hand
+(`NCCL_IB_HCA`, `NCCL_IB_TC`, the routing `SPARKNET_ROCE_*` keys) can check
+its own environment with `sparknet.topology.base_problems`.
 
 Rendering refuses a profile that does not fit the map's transport or node
 count, and an environment that contradicts the fabric policy (for example a
@@ -396,7 +399,7 @@ sequence-parallel threshold, which is a model-scheduling change.
 | `SWITCHLESS_BIDIRECTIONAL needs ...` in the NCCL log | channel count not even or not a multiple of four for mode 2 | `sparknet nccl validate` |
 | NCCL hangs with every rank waiting, AArch64 | unpatched NCCL (missing the CTS fence) | image's `libnccl.so.2` hash against the built one |
 | the probe fails `actual transport counters disagree with the dispatch policy` | the engine or the probe routed a size to the wrong backend; environment and runtime limits differ | the rendered environment versus `runtime.stats()` |
-| retransmissions in `roce_adp_retrans` during the probe | lossy fabric: a switch without PFC/ECN, or NIC forwarding (`oneshot-mesh4`) | `roce_traffic_class`, switch configuration, use the host relay |
+| retransmissions in `roce_adp_retrans` during the probe | lossy fabric: a switch without PFC/ECN, or NIC forwarding (`oneshot-mesh4`) | the switch's DSCP 26 mapping and PFC, the hosts' `dcb` mapping, use the host relay |
 
 ## 10. Reference
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- **The renderer is the one source of the fabric's settings.** Behind a
+  switch both backends mark RoCE with traffic class 106 (DSCP 26,
+  ECN-capable transport), the class a switch makes lossless; cabled links
+  send 0. It is no longer a setting: a node map with `roce_traffic_class` is
+  refused with the reason, and `topology discover --traffic-class` is gone.
+  `NCCL_SOCKET_IFNAME` is rendered exact (`=name`), so NCCL cannot take
+  another interface that shares the prefix. `management_interface` must name
+  one wired device (not loopback, a container bridge or overlay, or
+  wireless), and every switched rail needs its own subnet on a node.
+  `base_problems` reports settings a deployment wrote by hand that the
+  renderer owns (`NCCL_IB_HCA`, `NCCL_IB_TC`, the routing `SPARKNET_ROCE_*`
+  keys), so a recipe can refuse them instead of carrying a second copy.
+- **sparknet reads only its own variables for devices and marking.**
+  `SPARKNET_ROCE_HCA` takes one or two exact device names; NCCL's selection
+  syntax (`=`, `^`, `:port`) is refused instead of read differently (0.5.0
+  stripped `=` and `^`, so an exclusion list `^dev` selected `dev`).
+  `NCCL_IB_HCA` and `NCCL_IB_TC` are no longer read; the renderer writes
+  both libraries' settings from the same map. The GID index still falls
+  back to `NCCL_IB_GID_INDEX`.
+
 ## 0.5.0 (2026-10-22)
 
 - **A wider data phase with one poller.** The launch grid gives every thread

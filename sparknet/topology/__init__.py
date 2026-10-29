@@ -2,6 +2,7 @@
 
 from .nodes import (
     SCHEMA_VERSION,
+    SWITCHED_TRAFFIC_CLASS,
     TRANSPORTS,
     expected_peers,
     gid_subnet_problems,
@@ -14,12 +15,14 @@ from .nodes import (
     problems,
     subset,
 )
-from .render import RING_ENV, node_environment
+from .render import RING_ENV, base_problems, node_environment
 
 __all__ = [
     "RING_ENV",
     "SCHEMA_VERSION",
+    "SWITCHED_TRAFFIC_CLASS",
     "TRANSPORTS",
+    "base_problems",
     "expected_peers",
     "gid_subnet_problems",
     "head_node",

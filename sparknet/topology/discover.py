@@ -159,7 +159,7 @@ def collect_rails(host: str, *, ssh_user: str | None = None, gid_index: int = 3)
 
 def generate_switched_nodes(
     rails: dict[str, dict[str, dict]], hosts: list[str], *, management_ips: dict[str, str], ssh_user: str,
-    management_interface: str | None = None, gid_index: int = 3, traffic_class: int | None = None,
+    management_interface: str | None = None, gid_index: int = 3,
 ) -> tuple[dict, list[str]]:
     """A switched node map from each host's active rails; rail subnets come from the live addresses.
 
@@ -184,8 +184,6 @@ def generate_switched_nodes(
             continue
         node = {"name": host, "rank": rank, "management_ip": management_ips[host], "head": rank == 0,
                 "roce_gid_index": gid_index, "roce_hcas": roce, "nccl_hcas": ordered, "roce_subnets": subnets}
-        if traffic_class is not None:
-            node["roce_traffic_class"] = traffic_class
         if management_interface:
             node["management_interface"] = management_interface
         nodes.append(node)

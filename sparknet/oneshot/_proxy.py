@@ -25,18 +25,21 @@ BLOB_STRUCT_ERR = "roce proxy blob size mismatch"
 
 
 def _traffic_class() -> int:
-    """IP DSCP/ECN byte for every RoCE queue pair, resolved once at setup."""
-    for name in ("SPARKNET_ROCE_TRAFFIC_CLASS", "NCCL_IB_TC"):
-        raw = os.getenv(name)
-        if raw is not None:
-            try:
-                value = int(raw, 0)
-            except ValueError:
-                raise ValueError(f"{name} must be an integer from 0 to 255") from None
-            if not 0 <= value <= 255:
-                raise ValueError(f"{name} must be an integer from 0 to 255")
-            return value
-    return 0
+    """IP DSCP/ECN byte for every RoCE queue pair, resolved once at setup.
+
+    ``SPARKNET_ROCE_TRAFFIC_CLASS``, else 0; NCCL's ``NCCL_IB_TC`` is not read.
+    """
+    name = "SPARKNET_ROCE_TRAFFIC_CLASS"
+    raw = os.getenv(name)
+    if raw is None:
+        return 0
+    try:
+        value = int(raw, 0)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer from 0 to 255") from None
+    if not 0 <= value <= 255:
+        raise ValueError(f"{name} must be an integer from 0 to 255")
+    return value
 
 
 def _cache_dir() -> Path:
