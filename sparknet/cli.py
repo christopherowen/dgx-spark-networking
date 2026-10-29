@@ -127,8 +127,7 @@ def _discover_switched(args) -> int:
         return 0
     ips = dict(item.split("=", 1) for item in args.management_ip)
     document, problems = discover.generate_switched_nodes(rails, args.hosts, management_ips=ips, ssh_user=args.ssh_user or "spark",
-                                                          management_interface=args.management_interface, gid_index=args.gid_index,
-                                                          traffic_class=args.traffic_class)
+                                                          management_interface=args.management_interface, gid_index=args.gid_index)
     for problem in problems:
         print("WARNING:", problem, file=sys.stderr)
     errors = topology.problems(document, "oneshot-switched")
@@ -359,7 +358,6 @@ def parser() -> argparse.ArgumentParser:
     d.add_argument("--management-ip", action="append", metavar="HOST=IP")
     d.add_argument("--management-interface")
     d.add_argument("--gid-index", type=int, default=3)
-    d.add_argument("--traffic-class", type=int)
     d.set_defaults(func=cmd_topology_discover)
     ts = t.add_parser("subset", help="carve a pair or a triangle out of a cabled map (ranks in the order given)")
     ts.add_argument("nodes")

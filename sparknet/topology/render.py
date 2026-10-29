@@ -11,6 +11,7 @@ from .nodes import (
     nccl_hcas,
     node_hcas,
     roce_topology,
+    traffic_class,
     uses_oneshot,
 )
 
@@ -48,6 +49,8 @@ RING_ENV = {
 FORBIDDEN_RING_KEYS = ("NCCL_ALGO_PLUGIN", "NCCL_TUNER_PLUGIN", "NCCL_GRAPH_FILE", "NCCL_TOPO_FILE")
 
 _ROCE_KEYS = ("PEER_HCAS", "TOPOLOGY", "HCA", "GID_INDEX", "TRAFFIC_CLASS")
+# NCCL settings the renderer writes from the node map and the transport.
+OWNED_KEYS = ("NCCL_IB_HCA", "NCCL_IB_TC")
 
 
 def node_environment(
@@ -85,14 +88,23 @@ def node_environment(
     if "roce_gid_index" in node:
         env["NCCL_IB_GID_INDEX"] = str(node["roce_gid_index"])
         put("GID_INDEX", str(node["roce_gid_index"]))
-    if "roce_traffic_class" in node:
-        env["NCCL_IB_TC"] = str(node["roce_traffic_class"])
-        put("TRAFFIC_CLASS", str(node["roce_traffic_class"]))
+    marking = traffic_class(transport)
+    if marking is not None:
+        env["NCCL_IB_TC"] = str(marking)
+        if uses_oneshot(transport):
+            put("TRAFFIC_CLASS", str(marking))
     iface = node.get("management_interface")
     if iface:
-        for key in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "TP_SOCKET_IFNAME"):
-            env[key] = iface
+        # '=' makes NCCL match the interface name exactly rather than by prefix.
+        env.update(NCCL_SOCKET_IFNAME="=" + iface, GLOO_SOCKET_IFNAME=iface, TP_SOCKET_IFNAME=iface)
     return env
+
+
+def base_problems(base: dict[str, str]) -> list[str]:
+    """Settings a deployment wrote by hand that the renderer owns: they would duplicate or contradict the node map."""
+    owned = set(OWNED_KEYS) | {f"SPARKNET_ROCE_{name}" for name in _ROCE_KEYS}
+    return [f"{key} is rendered from the node map and the transport; remove it from the environment"
+            for key in sorted(base) if key in owned]
 
 
 def environment_problems(env: dict[str, str], transport: str, node_count: int) -> list[str]:
@@ -119,4 +131,5 @@ def environment_problems(env: dict[str, str], transport: str, node_count: int) -
     return errors
 
 
-__all__ = ["FORBIDDEN_RING_KEYS", "RING_ENV", "environment_problems", "node_environment"]
+__all__ = ["FORBIDDEN_RING_KEYS", "OWNED_KEYS", "RING_ENV", "base_problems", "environment_problems",
+           "node_environment"]
