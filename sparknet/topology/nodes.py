@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
+import re
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -34,8 +35,19 @@ SWITCHED_TRANSPORTS = ("oneshot-switched", "nccl-switched")
 CABLED_TRANSPORTS = DIRECT_TRANSPORTS + RING_TRANSPORTS
 ONESHOT_TRANSPORTS = ("oneshot-direct", "oneshot-ring4", "oneshot-mesh4", "oneshot-switched")
 MAX_SWITCHED_NODES = 16  # the proxy's ROCE_MAX_PEERS
+# DSCP 26 with ECN-capable transport, ECT(0): (26 << 2) | 2. A switch puts it in
+# its lossless class; cabled links have no switch and send 0, the default.
+SWITCHED_TRAFFIC_CLASS = 106
 _NODE_FIELDS = {"name", "rank", "management_ip", "head", "roce_peer_hcas", "roce_subnets", "roce_hcas", "nccl_hcas",
-                "roce_gid_index", "roce_traffic_class", "management_interface", "mesh_ports", "mesh_hairpin_queue_size"}
+                "roce_gid_index", "management_interface", "mesh_ports", "mesh_hairpin_queue_size"}
+_RETIRED_FIELDS = {
+    "roce_traffic_class": f"the traffic class follows the fabric ({SWITCHED_TRAFFIC_CLASS} switched, 0 cabled); "
+                          "delete the field",
+}
+# A socket interface is one wired device: loopback, container bridges and
+# overlays, and wireless devices cannot carry the bootstrap reliably.
+VIRTUAL_INTERFACES = ("lo", "docker", "br-", "veth", "virbr", "tailscale", "wl")
+_INTERFACE_NAME = re.compile(r"[a-zA-Z0-9_.-]{1,15}")
 
 
 def load(path: str | Path) -> dict:
@@ -76,6 +88,11 @@ def fabric_kind(transport: str, node_count: int) -> str:
 
 def uses_oneshot(transport: str) -> bool:
     return transport in ONESHOT_TRANSPORTS
+
+
+def traffic_class(transport: str) -> int | None:
+    """The traffic class both backends mark RoCE with: the lossless class behind a switch, else unset (0)."""
+    return SWITCHED_TRAFFIC_CLASS if transport in SWITCHED_TRANSPORTS else None
 
 
 def roce_topology(transport: str) -> str:
@@ -169,18 +186,19 @@ def problems(nodes: dict, transport: str, *, mesh_paths: int = 2) -> list[str]:
         if any(not isinstance(v, str) or not v for v in values) or len(set(values)) != count:
             errors.append(f"nodes must have distinct nonempty {field} values")
     for node in entries:
-        unknown = set(node) - _NODE_FIELDS
+        for field in sorted(set(node) & set(_RETIRED_FIELDS)):
+            errors.append(f"{node.get('name')}: {field}: {_RETIRED_FIELDS[field]}")
+        unknown = set(node) - _NODE_FIELDS - set(_RETIRED_FIELDS)
         if unknown:
             errors.append(f"{node.get('name')}: unknown fields {sorted(unknown)}")
         gid = node.get("roce_gid_index", 3)
         if type(gid) is not int or gid < 0:
             errors.append(f"{node.get('name')}: roce_gid_index must be a nonnegative integer")
-        tc = node.get("roce_traffic_class")
-        if tc is not None and (type(tc) is not int or not 0 <= tc <= 255):
-            errors.append(f"{node.get('name')}: roce_traffic_class must be an integer from 0 to 255")
         iface = node.get("management_interface")
-        if iface is not None and (not isinstance(iface, str) or not iface):
-            errors.append(f"{node.get('name')}: management_interface must be a nonempty string")
+        if iface is not None and (not isinstance(iface, str) or not _INTERFACE_NAME.fullmatch(iface)
+                                  or iface.startswith(VIRTUAL_INTERFACES)):
+            errors.append(f"{node.get('name')}: management_interface must name one wired interface, not a "
+                          "loopback, container, overlay or wireless device")
     heads = [n for n in entries if n.get("head")]
     if len(heads) != 1 or heads[0]["rank"] != 0:
         errors.append("exactly one head node is required, at rank 0")
@@ -212,11 +230,15 @@ def _switched_problems(entries: list[dict], transport: str) -> list[str]:
         if not set(roce) <= set(nccl):
             errors.append(f"{name}: nccl_hcas must include every roce_hcas rail")
         subnets = node.get("roce_subnets", {})
+        own: set[str] = set()
         for index, hca in enumerate(nccl):
             net = _subnet(subnets.get(hca))
             if net is None:
                 errors.append(f"{name}: roce_subnets[{hca}] must name the rail's IPv4 /24 network")
                 continue
+            if str(net) in own:
+                errors.append(f"{name}: each rail needs its own subnet; {net} is on two")
+            own.add(str(net))
             rails.setdefault(index, set()).add(str(net))
         widths.add((len(roce), len(nccl)))
     if len(widths) > 1:
@@ -335,7 +357,7 @@ def subset(nodes: dict, names: list[str]) -> dict:
                  and node.get("roce_subnets", {}).get(hca) in peer_subnets]
         new = {"name": node["name"], "rank": new_rank[node["name"]], "management_ip": node["management_ip"],
                "head": new_rank[node["name"]] == 0}
-        for key in ("roce_gid_index", "roce_traffic_class", "management_interface"):
+        for key in ("roce_gid_index", "management_interface"):
             if key in node:
                 new[key] = node[key]
         new["roce_peer_hcas"] = dict(sorted(routes.items(), key=lambda item: int(item[0])))
@@ -389,7 +411,8 @@ def gid_subnet_problems(node: dict, gid_index: int, show_gids_output: str) -> li
 
 __all__ = [
     "CABLED_TRANSPORTS", "DIRECT_TRANSPORTS", "MAX_SWITCHED_NODES", "RING_TRANSPORTS", "ONESHOT_TRANSPORTS",
-    "SCHEMA_VERSION", "SWITCHED_TRANSPORTS", "TRANSPORTS", "expected_peers", "fabric_kind", "gid_subnet_problems",
-    "head_node", "load", "logical_peer_hcas", "mesh_path_specs", "nccl_hcas", "node_by_name", "node_by_rank",
-    "node_hcas", "problems", "roce_topology", "uses_oneshot",
+    "SCHEMA_VERSION", "SWITCHED_TRAFFIC_CLASS", "SWITCHED_TRANSPORTS", "TRANSPORTS", "VIRTUAL_INTERFACES",
+    "expected_peers", "fabric_kind", "gid_subnet_problems", "head_node", "load", "logical_peer_hcas",
+    "mesh_path_specs", "nccl_hcas", "node_by_name", "node_by_rank", "node_hcas", "problems", "roce_topology",
+    "traffic_class", "uses_oneshot",
 ]

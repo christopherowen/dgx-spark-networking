@@ -7,15 +7,18 @@
 | Two nodes on one cable (optionally a second cable on the other port) | `roce_peer_hcas` with one peer; `nccl_hcas` lists the second cable's functions; subnets `10.12.1/2` and, for the second cable, `10.12.3/4` | `oneshot-direct`, `nccl-direct` |
 | Three nodes in a triangle | `roce_peer_hcas` with both peers, port 0 to the next node, port 1 to the previous | `oneshot-direct`, `nccl-direct` |
 | Four nodes in a loop | `roce_peer_hcas` with the two neighbours only, ranks in cable order | `oneshot-ring4`, `nccl-ring`, `oneshot-mesh4` |
-| Two to sixteen nodes behind a switch | `roce_hcas` (one or two rails for one-shot), `nccl_hcas` (every rail), one subnet per rail shared by all nodes, optional `roce_traffic_class` | `oneshot-switched`, `nccl-switched` |
+| Two to sixteen nodes behind a switch | `roce_hcas` (one or two rails for one-shot), `nccl_hcas` (every rail), one subnet per rail shared by all nodes, each rail its own | `oneshot-switched`, `nccl-switched` |
 
 One-shot stripes one peer payload over at most two local functions, so on a
 two-cable pair or a dual-rail switch it uses one port's two PCIe paths and
 NCCL uses everything in `nccl_hcas`. On a switched fabric the runtime runs
 its clique mode: the same rails reach every peer, and NCCL keeps its own
 topology and algorithm selection (trees allowed). A switch usually needs
-lossless RoCE (PFC or ECN); `roce_traffic_class` renders `NCCL_IB_TC` and
-`SPARKNET_ROCE_TRAFFIC_CLASS` so both backends mark packets the same way.
+lossless RoCE (PFC or ECN), so behind a switch both backends mark every
+packet with DSCP 26 and ECN-capable transport, traffic class 106 (`NCCL_IB_TC`,
+`SPARKNET_ROCE_TRAFFIC_CLASS`); the switch and the hosts map DSCP 26 to the
+priority with PFC on it. This is not a setting: cabled links have no switch
+and send 0. A map that still carries `roce_traffic_class` is refused.
 The examples live under `sparknet/topology/examples/`.
 
 ## Node map
@@ -43,8 +46,9 @@ The examples live under `sparknet/topology/examples/`.
   use two subnets.
 - `roce_gid_index` selects the node's IPv4 RoCE v2 GID slot for both
   one-shot and NCCL; it may differ between nodes.
-- `management_interface` renders `NCCL_SOCKET_IFNAME`, `GLOO_SOCKET_IFNAME`
-  and `TP_SOCKET_IFNAME`.
+- `management_interface` renders `NCCL_SOCKET_IFNAME` (exact, `=name`),
+  `GLOO_SOCKET_IFNAME` and `TP_SOCKET_IFNAME`. It names one wired device:
+  loopback, container bridges and overlays, and wireless devices are refused.
 
 `sparknet topology validate` reports every configuration mistake;
 `sparknet probe doctor` adds the live checks on a node (device present and

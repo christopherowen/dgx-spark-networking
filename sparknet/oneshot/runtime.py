@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -81,19 +82,26 @@ _DTYPE_NAMES = {
 }
 
 
-def _env_list(*names: str) -> tuple[str, ...]:
-    """First non-empty comma-separated list among the environment variables ``names``."""
-    for name in names:
-        raw = os.getenv(name)
-        if raw:
-            items = []
-            for item in raw.split(","):
-                item = item.strip().lstrip("=^")
-                if item:
-                    items.append(item.split(":")[0])
-            if items:
-                return tuple(items)
-    return ()
+_DEVICE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def _hca_names(name: str) -> tuple[str, ...]:
+    """The device names in ``name``: a comma-separated list of exact RDMA device names, at most two.
+
+    NCCL's selection syntax (a prefix, ``=``, ``^`` or ``:port``) is refused rather
+    than read differently: each library reads its own variable.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return ()
+    items = tuple(item.strip() for item in raw.split(","))
+    bad = [item for item in items if not _DEVICE_NAME.fullmatch(item)]
+    if bad:
+        raise ValueError(f"{name} takes exact RDMA device names separated by commas, not NCCL's '=', '^' or "
+                         f"':port' syntax; got {raw!r}")
+    if len(items) > MAX_STRIPES or len(set(items)) != len(items):
+        raise ValueError(f"{name} names one or two distinct devices, got {raw!r}")
+    return items
 
 
 def _env_int(*names: str, default: int) -> int:
@@ -114,11 +122,10 @@ def _env_str(*names: str, default: str) -> str:
     return default
 
 
-# Each setting has one ``SPARKNET_ROCE_*`` name. The GID index and HCAs fall
-# back to NCCL's own settings, so one fabric configuration serves both
-# libraries in the same process.
+# Each setting has one ``SPARKNET_ROCE_*`` name; the renderer writes NCCL's
+# beside it from the same node map. The GID index still falls back to NCCL's.
 ENV_GID_INDEX = ("SPARKNET_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX")
-ENV_HCA = ("SPARKNET_ROCE_HCA", "NCCL_IB_HCA")
+ENV_HCA = "SPARKNET_ROCE_HCA"
 ENV_PEER_HCAS = ("SPARKNET_ROCE_PEER_HCAS",)
 ENV_TIMEOUT_MS = ("SPARKNET_ROCE_TIMEOUT_MS",)
 ENV_TOPOLOGY = ("SPARKNET_ROCE_TOPOLOGY",)
@@ -150,13 +157,13 @@ def default_gid_index() -> int:
 def discover_hcas(gid_index: Optional[int] = None) -> tuple[str, ...]:
     """Return the RDMA devices to use, at most two.
 
-    ``SPARKNET_ROCE_HCA`` (or NCCL's ``NCCL_IB_HCA``) selects explicitly; otherwise
-    every active device with a populated GID at ``gid_index`` is used.
+    ``SPARKNET_ROCE_HCA`` selects explicitly; otherwise every active device with
+    a populated GID at ``gid_index`` is used. ``NCCL_IB_HCA`` is NCCL's and is not read.
     """
 
-    explicit = _env_list(*ENV_HCA)
+    explicit = _hca_names(ENV_HCA)
     if explicit:
-        return explicit[:2]
+        return explicit
     gid_index = default_gid_index() if gid_index is None else int(gid_index)
     found = []
     root = Path("/sys/class/infiniband")

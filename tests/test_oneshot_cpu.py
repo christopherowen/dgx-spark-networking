@@ -161,6 +161,41 @@ class LaunchGeometryTest(unittest.TestCase):
         self.assertLessEqual(self.blocks, 48 * (1536 // self.threads))
 
 
+class DeviceSettingTest(unittest.TestCase):
+    """sparknet reads its own variables only, and refuses NCCL's selection syntax rather than misreading it."""
+
+    def setUp(self):
+        namespace = dict(vars(typing), os=os, re=re, MAX_STRIPES=2, _DEVICE_NAME=re.compile(r"[A-Za-z0-9_.-]+"))
+        _functions(ROCE / "runtime.py", {"_hca_names"}, namespace)
+        self.hca_names = namespace["_hca_names"]
+        self.traffic_class = _functions(ROCE / "_proxy.py", {"_traffic_class"}, {"os": os})["_traffic_class"]
+        self.saved = {k: os.environ.pop(k, None) for k in
+                      ("SPARKNET_ROCE_HCA", "NCCL_IB_HCA", "SPARKNET_ROCE_TRAFFIC_CLASS", "NCCL_IB_TC")}
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+
+    def test_exact_names_only(self):
+        self.assertEqual(self.hca_names("SPARKNET_ROCE_HCA"), ())
+        os.environ["SPARKNET_ROCE_HCA"] = "rocep1s0f0, roceP2p1s0f0"
+        self.assertEqual(self.hca_names("SPARKNET_ROCE_HCA"), ("rocep1s0f0", "roceP2p1s0f0"))
+        for value in ("=rocep1s0f0", "^rocep1s0f1", "rocep1s0f0:1", "rocep1s0f0,", "a,b,c", "a,a"):
+            with self.subTest(value=value):
+                os.environ["SPARKNET_ROCE_HCA"] = value
+                with self.assertRaises(ValueError):
+                    self.hca_names("SPARKNET_ROCE_HCA")
+
+    def test_nccl_variables_are_not_read(self):
+        os.environ["NCCL_IB_TC"] = "106"
+        self.assertEqual(self.traffic_class(), 0)
+        os.environ["SPARKNET_ROCE_TRAFFIC_CLASS"] = "106"
+        self.assertEqual(self.traffic_class(), 106)
+        self.assertNotIn('"NCCL_IB_HCA"', (ROCE / "runtime.py").read_text())
+
+
 class TopologyResolverTest(unittest.TestCase):
     def setUp(self):
         namespace = dict(vars(typing), os=os, json=json, MAX_STRIPES=2, MAX_LOCAL_HCAS=4,

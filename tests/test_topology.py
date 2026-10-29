@@ -115,8 +115,19 @@ class NodeMapTest(unittest.TestCase):
         fresh["nodes"][0]["nccl_hcas"] = ["rocep1s0f1"]
         self.assertTrue(any("must include every roce_hcas rail" in p for p in topology.problems(fresh, "oneshot-switched")))
         fresh = example("switched")
-        fresh["nodes"][3]["roce_traffic_class"] = 300
-        self.assertTrue(any("roce_traffic_class" in p for p in topology.problems(fresh, "oneshot-switched")))
+        fresh["nodes"][3]["roce_traffic_class"] = 106
+        self.assertTrue(any("roce_traffic_class" in p and "delete the field" in p
+                            for p in topology.problems(fresh, "oneshot-switched")))
+        fresh = example("switched")
+        fresh["nodes"][1]["roce_subnets"]["roceP2p1s0f0"] = fresh["nodes"][1]["roce_subnets"]["rocep1s0f0"]
+        self.assertTrue(any("each rail needs its own subnet" in p for p in topology.problems(fresh, "oneshot-switched")))
+
+    def test_management_interface_is_one_wired_device(self):
+        for iface in ("lo", "docker0", "br-1a2b", "veth9", "virbr0", "tailscale0", "wlP9s9", "", "a" * 16, "eth0 x"):
+            with self.subTest(iface=iface):
+                fresh = example("switched")
+                fresh["nodes"][0]["management_interface"] = iface
+                self.assertTrue(any("one wired interface" in p for p in topology.problems(fresh, "oneshot-switched")))
 
     def test_ring_requires_neighbours_in_rank_order(self):
         node = self.four["nodes"][0]
@@ -191,7 +202,10 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(env["SPARKNET_ROCE_TOPOLOGY"], "ring4")
         self.assertTrue(env["NCCL_IB_HCA"].startswith("="))
         self.assertEqual(env["NCCL_ALGO"], "Ring")
-        self.assertEqual(env["NCCL_SOCKET_IFNAME"], "enP7s7")
+        self.assertEqual(env["NCCL_SOCKET_IFNAME"], "=enP7s7")
+        self.assertEqual((env["GLOO_SOCKET_IFNAME"], env["TP_SOCKET_IFNAME"]), ("enP7s7", "enP7s7"))
+        self.assertNotIn("NCCL_IB_TC", env)
+        self.assertNotIn("SPARKNET_ROCE_TRAFFIC_CLASS", env)
         self.assertEqual(env["SPARKNET_ROCE_GID_INDEX"], "3")
         self.assertEqual(render.environment_problems({**env, "NCCL_MIN_NCHANNELS": "4", "NCCL_MAX_NCHANNELS": "4"}, "oneshot-ring4", 4), [])
 
@@ -229,7 +243,18 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(render.environment_problems(env, "oneshot-switched", 4), [])
         env = render.node_environment(switched, switched["nodes"][0], transport="nccl-switched")
         self.assertNotIn("SPARKNET_ROCE_HCA", env)
+        self.assertEqual(env["NCCL_IB_TC"], "106")
+        self.assertNotIn("SPARKNET_ROCE_TRAFFIC_CLASS", env)
         self.assertTrue(render.environment_problems(dict(env, SPARKNET_ROCE_HCA="x"), "nccl-switched", 4))
+
+    def test_settings_the_renderer_owns_are_refused_in_the_base(self):
+        self.assertEqual(render.base_problems({"NCCL_DEBUG": "WARN", "SPARKNET_ROCE_TIMEOUT_MS": "10000",
+                                               "SPARKNET_ROCE_GID_INDEX": "3"}), [])
+        for key in ("NCCL_IB_HCA", "NCCL_IB_TC", "SPARKNET_ROCE_HCA", "SPARKNET_ROCE_PEER_HCAS",
+                    "SPARKNET_ROCE_TOPOLOGY", "SPARKNET_ROCE_TRAFFIC_CLASS"):
+            with self.subTest(key=key):
+                [problem] = render.base_problems({key: "x"})
+                self.assertIn(key, problem)
 
     def test_ring_policy_rejects_each_unsafe_override(self):
         env = render.node_environment(self.four, self.four["nodes"][0], transport="nccl-ring",
@@ -320,11 +345,11 @@ class DiscoverTest(unittest.TestCase):
                            for hca, (port, path) in discover.INTERFACES_BY_HCA.items()}
         rails["dgx3"]["roceP2p1s0f1"]["state"] = "1: DOWN"
         document, problems = discover.generate_switched_nodes(rails, ["dgx1", "dgx2", "dgx3"], management_ips={h: f"192.0.2.{i}" for i, h in enumerate(["dgx1", "dgx2", "dgx3"], start=1)},
-                                                              ssh_user="spark", traffic_class=106)
+                                                              ssh_user="spark")
         self.assertEqual(problems, [])
         self.assertEqual(document["nodes"][0]["roce_hcas"], ["rocep1s0f0", "roceP2p1s0f0"])
         self.assertEqual(document["nodes"][0]["roce_subnets"]["rocep1s0f1"], "10.101.1.0/24")
-        self.assertEqual(document["nodes"][0]["roce_traffic_class"], 106)
+        self.assertNotIn("roce_traffic_class", document["nodes"][0])
         # dgx3's fourth rail is down, so the rail counts differ and validation says so.
         self.assertTrue(any("same rail counts" in p for p in topology.problems(document, "oneshot-switched")))
         rails["dgx3"]["roceP2p1s0f1"]["state"] = "4: ACTIVE"
