@@ -248,7 +248,8 @@ class RenderTest(unittest.TestCase):
         self.assertTrue(render.environment_problems(dict(env, SPARKNET_ROCE_HCA="x"), "nccl-switched", 4))
 
     def test_settings_the_renderer_owns_are_refused_in_the_base(self):
-        self.assertEqual(render.base_problems({"NCCL_DEBUG": "WARN", "SPARKNET_ROCE_TIMEOUT_MS": "10000"}), [])
+        self.assertEqual(render.base_problems({"NCCL_DEBUG": "WARN", "SPARKNET_ROCE_TIMEOUT_MS": "10000",
+                                               "SPARKNET_ROCE_GID_INDEX": "3"}), [])
         for key in ("NCCL_IB_HCA", "NCCL_IB_TC", "SPARKNET_ROCE_HCA", "SPARKNET_ROCE_PEER_HCAS",
                     "SPARKNET_ROCE_TOPOLOGY", "SPARKNET_ROCE_TRAFFIC_CLASS"):
             with self.subTest(key=key):
