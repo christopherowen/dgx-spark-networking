@@ -102,7 +102,8 @@ def node_environment(
 
 def base_problems(base: dict[str, str]) -> list[str]:
     """Settings a deployment wrote by hand that the renderer owns: they would duplicate or contradict the node map."""
-    owned = set(OWNED_KEYS) | {f"SPARKNET_ROCE_{name}" for name in _ROCE_KEYS}
+    # The GID index is still a deployment setting until GIDs are found by address.
+    owned = set(OWNED_KEYS) | {f"SPARKNET_ROCE_{name}" for name in _ROCE_KEYS if name != "GID_INDEX"}
     return [f"{key} is rendered from the node map and the transport; remove it from the environment"
             for key in sorted(base) if key in owned]
 
