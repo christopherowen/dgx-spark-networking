@@ -95,7 +95,7 @@ class KernelFamilyTest(unittest.TestCase):
                     "cvt.f32.bf16", "cvt.f32.f16", "cvt.rn.bf16.f32", "cvt.rn.f16x2.f32"):
             self.assertIn(ptx, source, ptx)
         # Every extern the TileLang kernels name exists in the header.
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
             text = (ROCE / module_name).read_text()
             for name in sorted(set(re.findall(r'T\.call_extern\("(roce_[a-z0-9_]+)"', text))):
                 self.assertIn(name, device.FUNCTIONS, (module_name, name))
@@ -103,7 +103,7 @@ class KernelFamilyTest(unittest.TestCase):
                 self.assertIn(name, device.FUNCTIONS, (module_name, name))
 
     def test_tilelang_modules_import_without_a_gpu_stack(self):
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_kernels.py", "_device.py", "_freeze.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py", "_kernels.py", "_device.py", "_freeze.py"):
             tree = ast.parse((ROCE / module_name).read_text())
             top_level = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
             top_level |= {(node.module or "").split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom) and node.level == 0}
@@ -118,7 +118,7 @@ class KernelFamilyTest(unittest.TestCase):
     def test_tilelang_kernels_declare_full_residency(self):
         # Without a minimum blocks-per-SM bound nvcc spends 54 to 56 registers and the
         # all-reduce loses ~15 us per launch in a decode step (2026-10-05 profiles).
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
             text = (ROCE / module_name).read_text()
             self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
@@ -127,12 +127,16 @@ class KernelFamilyTest(unittest.TestCase):
         runtime = (ROCE / "runtime.py").read_text()
         self.assertIn("reduce_launcher(*self._launcher_key(dtype))", runtime)
         self.assertIn("gather_launcher(*self._gather_launcher_key())", runtime)
+        self.assertIn("reducescatter_launcher(*self._reducescatter_launcher_key(dtype))", runtime)
+        self.assertIn("exchange_launcher(*self._gather_launcher_key())", runtime)
         self.assertIn("kernel_setting_problems(os.environ)", runtime)
         self.assertIn('if "kernels" in _ignored:', runtime)
         self.assertNotIn("kernel_family", runtime)
         kernels = (ROCE / "_kernels.py").read_text()
         self.assertIn("from ._oneshot_tilelang import get_launcher", kernels)
         self.assertIn("from ._allgather_tilelang import get_launcher", kernels)
+        self.assertIn("from ._reducescatter_tilelang import get_launcher", kernels)
+        self.assertIn("from ._exchange_tilelang import get_launcher", kernels)
 
 
 class LaunchGeometryTest(unittest.TestCase):
@@ -259,7 +263,7 @@ class LauncherGeometryTest(unittest.TestCase):
         source = (ROCE / "runtime.py").read_text()
         tree = ast.parse(source)
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RoceOneshotAllReduce")
-        for name in ("_launcher_key", "_gather_launcher_key"):
+        for name in ("_launcher_key", "_gather_launcher_key", "_reducescatter_launcher_key"):
             fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
             self.assertIn("self.topology == 'ring4'", ast.unparse(fn))
         prepare = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "prepare")
@@ -352,7 +356,7 @@ class FailStopTest(unittest.TestCase):
                  "roce_fence_sc_sys()", "roce_trap()"]
         positions = [branch.index(step, branch.index(order[i - 1]) + 1 if i else 0) for i, step in enumerate(order)]
         self.assertEqual(positions, sorted(positions))
-        for module in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+        for module in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
             source = (ROCE / module).read_text()
             self.assertNotIn("poison", source, module)
             self.assertNotIn("spin_limit", source, module)

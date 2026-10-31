@@ -655,3 +655,93 @@ def test_all_gather_graph_replay_mixed_with_all_reduce(runtime):
         )
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float16])
+@pytest.mark.parametrize("rows_per_rank", [1, 16, 256, 768])
+def test_reduce_scatter_matches_reference(runtime, dtype, rows_per_rank):
+    """Reduce-scatter along dim 0 matches fixed-rank-order reduction of the rank's shard,
+    including multi-slice pipelining when rows_per_rank exceeds one transport slot."""
+    world = dist.get_world_size()
+    rank = dist.get_rank()
+    cols = 4096
+    torch.manual_seed(2026 + rank + rows_per_rank)
+    inp = torch.randn(rows_per_rank * world, cols, dtype=dtype, device=runtime.device)
+    assert runtime.should_reduce_scatter(inp, dim=0)
+    gathered_inputs = [torch.empty_like(inp) for _ in range(world)]
+    dist.all_gather(gathered_inputs, inp)
+    shard_slice = slice(rank * rows_per_rank, (rank + 1) * rows_per_rank)
+    acc = gathered_inputs[0][shard_slice].float()
+    for p in range(1, world):
+        acc = acc + gathered_inputs[p][shard_slice].float()
+    expected = acc.to(dtype)
+    out = runtime.reduce_scatter(inp, dim=0)
+    torch.cuda.synchronize()
+    runtime.check_health()
+    assert torch.equal(out, expected)
+
+
+@pytest.mark.parametrize("rows_per_rank", [1, 16, 256, 768])
+@pytest.mark.parametrize("copy_self", [False, True])
+def test_exchange_matches_all_to_all(runtime, rows_per_rank, copy_self):
+    """Peer-specific exchange matches all-to-all across single-slot and multi-slice inputs."""
+    world = dist.get_world_size()
+    rank = dist.get_rank()
+    cols = 4096
+    torch.manual_seed(3030 + rank + rows_per_rank)
+    chunks = torch.randn(world, rows_per_rank, cols, dtype=torch.bfloat16, device=runtime.device)
+    parts = torch.full_like(chunks, -7.0)
+    assert runtime.should_exchange(chunks, parts)
+    gathered = [torch.empty_like(chunks) for _ in range(world)]
+    dist.all_gather(gathered, chunks)
+    runtime.exchange(chunks, out=parts, copy_self=copy_self)
+    torch.cuda.synchronize()
+    runtime.check_health()
+    for p in range(world):
+        if p == rank and not copy_self:
+            assert torch.all(parts[p] == -7.0)
+        else:
+            assert torch.equal(parts[p], gathered[p][rank])
+
+
+@pytest.mark.parametrize("rows,total_delta", [(7, 0), (7, -3), (17, -10), (256, 0), (768, -100)])
+def test_all_to_all_rows_matches_reference(runtime, rows, total_delta):
+    """Active-row all-to-all exchanges ``rows``-row blocks of ``inp`` into ``(world, rows, ...)``."""
+    world = dist.get_world_size()
+    rank = dist.get_rank()
+    total = world * rows + total_delta
+    cols = 1024
+    torch.manual_seed(4040 + rank + rows)
+    inp = torch.randn(total, cols, dtype=torch.bfloat16, device=runtime.device)
+    assert runtime.should_all_to_all_rows(inp, rows)
+    gathered = [torch.empty_like(inp) for _ in range(world)]
+    dist.all_gather(gathered, inp)
+    out = runtime.all_to_all_rows(inp, rows)
+    torch.cuda.synchronize()
+    runtime.check_health()
+    assert out.shape == (world, rows, cols)
+    mine = max(0, min(rows, total - rank * rows))
+    for p in range(world):
+        assert torch.equal(out[p, :mine], gathered[p][rank * rows : rank * rows + mine])
+
+
+def test_sliced_all_gather_exceeding_slot_capacity(runtime):
+    """Pipelined all-gather (sliced=True) handles shards larger than max_gather_bytes."""
+    world = dist.get_world_size()
+    rank = dist.get_rank()
+    cols = 4096
+    rows = (runtime.max_gather_bytes // (cols * 2)) + 64
+    torch.manual_seed(5050 + rank)
+    inp = torch.randn(rows, cols, dtype=torch.bfloat16, device=runtime.device)
+    assert not runtime.should_all_gather(inp, 0, sliced=False)
+    assert runtime.should_all_gather(inp, 0, sliced=True)
+    assert runtime.should_all_gather(inp, -1, sliced=True)
+    gathered = [torch.empty_like(inp) for _ in range(world)]
+    dist.all_gather(gathered, inp)
+    for dim in (0, -1):
+        expected = torch.cat(gathered, dim=dim)
+        out = runtime.all_gather(inp, dim=dim, sliced=True)
+        torch.cuda.synchronize()
+        runtime.check_health()
+        assert torch.equal(out, expected)
+
+
+
