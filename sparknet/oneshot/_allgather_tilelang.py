@@ -48,6 +48,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
             shard_packs: T.int32,
             nbytes: T.int32,
             row_packs: T.int32,
+            dst_stride_packs: T.int32,
             recv_off: T.int32,
             flag_off: T.int32,
             send_off: T.int32,
@@ -81,7 +82,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 for i in T.serial(count):
                     T.call_extern("roce_stage_gather_pack", T.address_of(inp[0]),
                                   T.call_extern("roce_ptr", region_base + T.cast(send_slot, T.int64), dtype="handle"),
-                                  index + i * stride, row_packs, T.address_of(out[0]), dtype="handle")
+                                  index + i * stride, row_packs, T.address_of(out[0]), dst_stride_packs, dtype="handle")
                 T.sync_threads()
                 # 2. the last block to finish staging rings the proxy doorbell
                 if tx == 0:
@@ -102,7 +103,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 for i in T.serial(count):
                     T.call_extern("roce_gather_pack", T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),
                                   T.cast(slot_bytes, T.int64), seq, index + i * stride, row_packs,
-                                  T.address_of(out[0]), dtype="handle")
+                                  T.address_of(out[0]), dst_stride_packs, dtype="handle")
                 # 5. the last block to finish publishes the next epoch
                 T.call_extern("roce_fence_sc_gpu", dtype="handle")
                 T.sync_threads()
@@ -152,9 +153,11 @@ def get_launcher(
 
     def run(launch: Launch) -> None:
         """Launch the compiled kernel on the current stream (bound through the tensor arguments)."""
+        dst_stride = int(launch.dst_peer_packs) if launch.dst_peer_packs else int(launch.row_packs)
         kernel(
             launch.input, launch.output, launch.counters, int(launch.region.data_ptr()),
-            int(launch.size_packs), int(launch.nbytes), int(launch.row_packs), int(launch.recv_off), int(launch.flag_off),
+            int(launch.size_packs), int(launch.nbytes), int(launch.row_packs), dst_stride,
+            int(launch.recv_off), int(launch.flag_off),
             int(launch.send_off), int(launch.ctrl_off), int(launch.slot_bytes), int(launch.stage_index),
             int(launch.tail_index), int(launch.rung_index), int(launch.arrival_index), int(launch.grid_x),
         )

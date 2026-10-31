@@ -46,6 +46,11 @@ class Launch:
     grid_x: int
     row_packs: int = 0  # all-gather only: packs per row of the shard (dim-0 gathers: the shard's packs)
     trace_base: int = 0  # all-reduce trace file address (pinned, device-visible), 0 when untraced
+    src_peer_packs: int = 0  # reduce-scatter / exchange: pack stride between peer blocks in input
+    dst_peer_packs: int = 0  # all-gather / exchange: pack stride between peer blocks in output
+    total_src_packs: int = 0  # exchange / all-to-all: valid pack count in input
+    valid_out_packs: int = -1  # exchange / all-to-all: valid pack count per peer in output (-1 = size_packs)
+    copy_self: int = 0  # exchange / all-to-all: copy this rank's own block into output
 
 
 def kernel_setting_problems(environ: Mapping[str, str]) -> list[str]:
@@ -70,5 +75,27 @@ def gather_launcher(*key) -> Callable[..., None]:
     return get_launcher(*key)
 
 
-__all__ = ["Launch", "PACK_BYTES", "REMOVED_KERNEL_SETTING", "gather_launcher", "kernel_setting_problems",
-           "reduce_launcher"]
+def reducescatter_launcher(*key) -> Callable[..., None]:
+    """The compiled reduce-scatter launcher for ``key`` (dtype, world, rank, geometry)."""
+    from ._reducescatter_tilelang import get_launcher
+
+    return get_launcher(*key)
+
+
+def exchange_launcher(*key) -> Callable[..., None]:
+    """The compiled all-to-all exchange launcher for ``key`` (world, rank, geometry)."""
+    from ._exchange_tilelang import get_launcher
+
+    return get_launcher(*key)
+
+
+__all__ = [
+    "Launch",
+    "PACK_BYTES",
+    "REMOVED_KERNEL_SETTING",
+    "exchange_launcher",
+    "gather_launcher",
+    "kernel_setting_problems",
+    "reduce_launcher",
+    "reducescatter_launcher",
+]

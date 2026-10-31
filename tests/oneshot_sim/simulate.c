@@ -18,11 +18,11 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static roce_ctx_t *ranks[4];
 static uint32_t rng = 1;
 static unsigned random_u32(void) { rng ^= rng << 13; rng ^= rng >> 17; return rng ^= rng << 5; }
-static int world, ring4, stripes, rotate;
+static int world, ring4, stripes, rotate, exchange_mode;
 static uint64_t messages;
 static unsigned posted_in_round[4];
 static uint32_t posted_seq[4];
-static uint64_t direct_bytes[4][4], relay_bytes[4][4];
+static uint64_t direct_bytes[4][4], relay_bytes[4][4], stage_bytes[4][4];
 static unsigned written_seq[4][4][4096 / 16];
 static unsigned char written_valid[4][4][4096 / 16];
 
@@ -72,6 +72,10 @@ int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *wr, struct ibv_send_wr 
                 if (origin == qp->source) {
                     assert(qp->dest == (origin + 1) % 4 || qp->dest == (origin + 3) % 4);
                     direct_bytes[origin][qp->dest] += t->bytes;
+                } else if (origin == qp->dest) {
+                    assert(exchange_mode);
+                    assert(qp->dest == (qp->source + 1) % 4 || qp->dest == (qp->source + 3) % 4);
+                    stage_bytes[qp->source][qp->dest] += t->bytes;
                 } else {
                     assert(qp->dest == (origin + 2) % 4);
                     relay_bytes[qp->source][qp->dest] += t->bytes;
@@ -136,14 +140,17 @@ static int receive_lanes(int rank, int peer) {
     return peer_width(world, rank, peer, stripes);
 }
 static uint8_t pattern(int source, uint32_t seq, size_t i) { return (uint8_t)(source * 53 + seq * 7 + i * 11); }
+static uint8_t pattern_ex(int source, int dest, uint32_t seq, size_t i) { return (uint8_t)(source * 53 + dest * 19 + seq * 7 + i * 11); }
 static unsigned size_at(uint32_t seq) {
     const unsigned sizes[] = {16, 32, 48, 4096, 128, 64, 4000};
-    return sizes[seq % 7];
+    const unsigned ex_sizes[] = {16, 32, 48, 1024, 128, 64, 960};
+    return (exchange_mode ? ex_sizes : sizes)[seq % 7];
 }
 static void setup(uint32_t seed) {
     memset(posted_in_round, 0, sizeof(posted_in_round));
     memset(direct_bytes, 0, sizeof(direct_bytes));
     memset(relay_bytes, 0, sizeof(relay_bytes));
+    memset(stage_bytes, 0, sizeof(stage_bytes));
     memset(written_valid, 0, sizeof(written_valid));
     uint64_t layout[7];
     assert(!roce_layout(world, 4096, layout));
@@ -223,9 +230,14 @@ static void run(unsigned count, uint32_t seed) {
             uint32_t seq=next[r]; unsigned bytes=size_at(seq);
             if(!active[r] && done[r]<count && random_u32()%5==0) {
                 uint8_t *send=c->region+c->send_off+(seq&1)*c->slot_bytes;
-                for(unsigned i=0;i<bytes;i++) send[i]=pattern(r,seq,i);
+                if (exchange_mode) {
+                    for(int p=0;p<world;p++) if(p!=r)
+                        for(unsigned i=0;i<bytes;i++) send[(size_t)p*bytes+i]=pattern_ex(r,p,seq,i);
+                } else {
+                    for(unsigned i=0;i<bytes;i++) send[i]=pattern(r,seq,i);
+                }
                 uint32_t *ctrl=(uint32_t *)(c->region+c->ctrl_off);
-                __atomic_store_n(&ctrl[4+(seq&1)],bytes,__ATOMIC_RELEASE);
+                __atomic_store_n(&ctrl[4+(seq&1)],exchange_mode?(bytes|ROCE_MODE_EXCHANGE):bytes,__ATOMIC_RELEASE);
                 __atomic_store_n(ctrl,seq,__ATOMIC_RELEASE); active[r]=1;
             }
             if(active[r]) {
@@ -235,7 +247,8 @@ static void run(unsigned count, uint32_t seed) {
                 if(ready) {
                     for(int p=0;p<world;p++) if(p!=r) {
                         uint8_t *recv=c->region+c->recv_off+((size_t)p*2+(seq&1))*c->slot_bytes;
-                        for(unsigned i=0;i<bytes;i++) assert(recv[i]==pattern(p,seq,i));
+                        for(unsigned i=0;i<bytes;i++)
+                            assert(recv[i]==(exchange_mode?pattern_ex(p,r,seq,i):pattern(p,seq,i)));
                     }
                     done[r]++; next[r]++; active[r]=0; remaining--;
                 }
@@ -256,6 +269,11 @@ static void run(unsigned count, uint32_t seed) {
             uint64_t a=relay_bytes[r][next], b=relay_bytes[r][prev];
             // At most one 16-byte remainder per lane and collective.
             assert((a>b?a-b:b-a) <= (uint64_t)count*stripes*16);
+            if (exchange_mode) {
+                assert(stage_bytes[r][next] == relay_bytes[next][(r+2)%4]);
+                assert(stage_bytes[r][prev] == relay_bytes[prev][(r+2)%4]);
+                assert(stage_bytes[r][next] + stage_bytes[r][prev] == total);
+            }
         }
     }
     cleanup();
@@ -264,6 +282,7 @@ static void failures(void) {
     setup(0); roce_ctx_t *c=ranks[0];
     atomic_store(&c->running,1);
     assert(post_op(c,1,4096+16)==-1);
+    assert(post_op(c,1,(1024+16)|ROCE_MODE_EXCHANGE)==-1);
     atomic_store(&c->running,0);
     assert(!roce_start(c));
     uint32_t *ctrl=(uint32_t *)(c->region+c->ctrl_off);
@@ -358,14 +377,19 @@ static void placement(void) {
 int main(void) {
     for(stripes=1;stripes<=2;stripes++) {
         world=3;ring4=0;run(1000,0);
+        exchange_mode=1;run(500,0);exchange_mode=0;
         world=4;ring4=1;run(3000,0);run(1000,UINT32_MAX-100);
+        exchange_mode=1;run(1000,0);run(500,UINT32_MAX-100);exchange_mode=0;
         failures(); independent_directions();
         world=4;ring4=2;run(3000,0);run(1000,UINT32_MAX-100);
+        exchange_mode=1;run(500,0);exchange_mode=0;
     }
     stripes=4;world=4;ring4=2;run(3000,0);run(1000,UINT32_MAX-100);
-    rotate=1;run(3000,0);run(1000,UINT32_MAX-100);rotate=0;
+    exchange_mode=1;run(500,0);exchange_mode=0;
+    rotate=1;run(3000,0);run(1000,UINT32_MAX-100);
+    exchange_mode=1;run(500,0);exchange_mode=0;rotate=0;
     placement();
-    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 26000 collectives, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement (%llu writes)\n", (unsigned long long)messages);
+    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 31000 collectives, broadcast+exchange, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement (%llu writes)\n", (unsigned long long)messages);
 }
 
 /* Setup/teardown stubs. Contexts are supplied by setup; no fake successful NIC discovery. */

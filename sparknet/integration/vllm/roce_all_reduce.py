@@ -85,6 +85,9 @@ class SparknetOneShotAllReduce:
         self._runtime = None
         self._announced = False
         self._announced_gather = False
+        self._announced_reduce_scatter = False
+        self._announced_exchange = False
+        self._announced_a2a = False
         self.global_ranks = tuple(int(r) for r in (global_ranks if global_ranks is not None else range(self.world_size)))
         if len(self.global_ranks) != self.world_size:
             raise ValueError("RoCE global ranks must match the process group")
@@ -199,7 +202,7 @@ class SparknetOneShotAllReduce:
         return self._runtime.all_reduce(inp)
 
     def should_all_gather(self, inp: torch.Tensor, dim: int) -> bool:
-        return not self.disabled and self._runtime.should_all_gather(inp, dim)
+        return not self.disabled and self._runtime.should_all_gather(inp, dim, sliced=True)
 
     def all_gather(self, inp: torch.Tensor, dim: int) -> torch.Tensor:
         if not self._announced_gather:
@@ -207,7 +210,40 @@ class SparknetOneShotAllReduce:
             log = logger.info if self.rank == 0 else logger.debug
             log("one-shot all-gather is live: first routed shard is %s %s along dim %d; input shard dispatch limit=%d bytes.",
                 tuple(inp.shape), str(inp.dtype).replace("torch.", ""), dim, self.all_gather_max_bytes)
-        return self._runtime.all_gather(inp, dim=dim)
+        return self._runtime.all_gather(inp, dim=dim, sliced=True)
+
+    def should_reduce_scatter(self, inp: torch.Tensor, dim: int = 0) -> bool:
+        return not self.disabled and self._runtime.should_reduce_scatter(inp, dim=dim)
+
+    def reduce_scatter(self, inp: torch.Tensor, dim: int = 0) -> torch.Tensor:
+        if not self._announced_reduce_scatter:
+            self._announced_reduce_scatter = True
+            log = logger.info if self.rank == 0 else logger.debug
+            log("one-shot reduce-scatter is live: first routed input is %s %s along dim %d.",
+                tuple(inp.shape), str(inp.dtype).replace("torch.", ""), dim)
+        return self._runtime.reduce_scatter(inp, dim=dim)
+
+    def should_exchange(self, chunks: torch.Tensor, parts: torch.Tensor | None = None) -> bool:
+        return not self.disabled and self._runtime.should_exchange(chunks, parts)
+
+    def exchange_into(self, chunks: torch.Tensor, parts: torch.Tensor) -> torch.Tensor:
+        if not self._announced_exchange:
+            self._announced_exchange = True
+            log = logger.info if self.rank == 0 else logger.debug
+            log("one-shot exchange is live: first routed tensor is %s %s.",
+                tuple(chunks.shape), str(chunks.dtype).replace("torch.", ""))
+        return self._runtime.exchange(chunks, out=parts)
+
+    def should_all_to_all_rows(self, inp: torch.Tensor, rows: int) -> bool:
+        return not self.disabled and self._runtime.should_all_to_all_rows(inp, rows)
+
+    def all_to_all_rows(self, inp: torch.Tensor, rows: int) -> torch.Tensor:
+        if not self._announced_a2a:
+            self._announced_a2a = True
+            log = logger.info if self.rank == 0 else logger.debug
+            log("one-shot all-to-all rows is live: first routed tensor is %s %s (rows=%d).",
+                tuple(inp.shape), str(inp.dtype).replace("torch.", ""), rows)
+        return self._runtime.all_to_all_rows(inp, rows)
 
     def supports_fused_add_rms_norm(self) -> bool:
         return False

@@ -60,6 +60,13 @@
 #define ROCE_PORT 1
 #define ROCE_SEND_DEPTH 256
 #define ROCE_ABI_VERSION 10
+// High bit of the doorbell byte count: each peer p receives its own chunk
+// staged at send[slot] + p * chunk_bytes (reduce-scatter and all-to-all
+// exchange). In ring4 relay mode the opposite rank's two stripe halves are
+// staged into the two neighbours' unused self-receive slots (recv[m][slot] and
+// flag[m][slot][fragment]) on hop 1 and forwarded into opp's recv[rank][slot]
+// on hop 2, so the GPU flag wait is unchanged.
+#define ROCE_MODE_EXCHANGE 0x80000000u
 // Model graphs leave sub-millisecond gaps between collectives.  Keep the
 // proxy hot across those gaps; sleeping there adds one scheduler wakeup to
 // every collective on the graph's critical path.
@@ -781,7 +788,7 @@ static int post_peer(roce_ctx_t *c, uint32_t seq, uint32_t nbytes,
     return 0;
 }
 
-static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
+static int relay_both_directions_mode(roce_ctx_t *c, uint32_t seq, uint32_t nbytes, int exchange) {
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
     volatile uint32_t *ctrl = (volatile uint32_t *)(c->region + c->ctrl_off);
@@ -810,8 +817,10 @@ static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
             int next = (c->rank + 1) % c->world;
             int origin = direction == 0 ? prev : next;
             int destination = direction == 0 ? next : prev;
+            int stage_slot = exchange ? c->rank : origin;
+            int stage_lane = exchange ? fragment : lane;
             uint32_t *flag = (uint32_t *)(c->region + c->flag_off +
-                (((size_t)origin * ROCE_SLOTS + (seq & 1u)) * flag_lanes(c) + lane) * ROCE_FLAG_STRIDE);
+                (((size_t)stage_slot * ROCE_SLOTS + (seq & 1u)) * flag_lanes(c) + stage_lane) * ROCE_FLAG_STRIDE);
             uint32_t observed = __atomic_load_n(flag, __ATOMIC_ACQUIRE);
             if ((int32_t)(observed - seq) > 0) {
                 snprintf(c->err, sizeof(c->err), "relay slot overwritten: rank %d seq %u saw %u", origin, seq, observed);
@@ -835,7 +844,7 @@ static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
             if (direction == 0) packs = first;
             else { offset += first; packs -= first; }
             uint8_t *received = c->region + c->recv_off +
-                ((size_t)origin * ROCE_SLOTS + (seq & 1u)) * c->slot_bytes;
+                ((size_t)stage_slot * ROCE_SLOTS + (seq & 1u)) * c->slot_bytes;
             // Preserve the original source's slot. Its N+2 cannot begin until
             // the opposite GPU has consumed BOTH fragments of N. Zero-length
             // fragments still publish a flag, including the 16-byte case.
@@ -860,8 +869,15 @@ static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
     }
 }
 
-static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
-    if (nbytes == 0 || nbytes % 16 != 0 || nbytes > c->slot_bytes) {
+static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
+    return relay_both_directions_mode(c, seq, nbytes, 0);
+}
+
+static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t raw_nbytes) {
+    int exchange = (raw_nbytes & ROCE_MODE_EXCHANGE) != 0;
+    uint32_t nbytes = raw_nbytes & ~ROCE_MODE_EXCHANGE;
+    size_t required = exchange ? (size_t)c->world * (size_t)nbytes : (size_t)nbytes;
+    if (nbytes == 0 || nbytes % 16 != 0 || required > c->slot_bytes) {
         snprintf(c->err, sizeof(c->err), "invalid RoCE payload size %u (slot %zu)", nbytes, c->slot_bytes);
         return -1;
     }
@@ -878,21 +894,44 @@ static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
                 int h = (first + offset) % c->n_hca;
                 for (int p = 0; p < c->world; p++) {
                     if (p == c->rank || ((p == opposite) != want_opposite)) continue;
+                    uint8_t *peer_send = send + (exchange ? (size_t)p * nbytes : 0);
                     for (int lane = 0; lane < peer_width(c->world, c->rank, p, c->n_stripes); lane++)
                         if (c->route_hca[p][lane] == h &&
-                            post_path(c, seq, nbytes, c->rank, p, send, lane) != 0) return -1;
+                            post_path(c, seq, nbytes, c->rank, p, peer_send, lane) != 0) return -1;
                 }
             }
         }
     } else {
-    for (int p = 0; p < c->world; p++) {
-        if (adjacent(c->world, c->rank, p, c->ring4) &&
-            post_peer(c, seq, nbytes, c->rank, p, send) != 0) return -1;
-    }
+        if (c->ring4 == 1 && exchange) {
+            // Post the opposite rank's two disjoint halves first so the
+            // neighbours can relay hop 2 while the direct neighbour payloads
+            // traverse hop 1 on the same QPs.
+            int next = (c->rank + 1) % c->world;
+            int prev = (c->rank + c->world - 1) % c->world;
+            int opp = (c->rank + 2) % c->world;
+            uint8_t *opp_send = send + (size_t)opp * nbytes;
+            for (int lane = 0; lane < c->n_stripes; lane++) {
+                uint32_t offset, packs;
+                stripe_range(nbytes, c->n_stripes, lane, &offset, &packs);
+                uint32_t first = (packs + ((seq + (uint32_t)lane) & 1u)) / 2;
+                if (post_fragment(c, seq, next, next, opp_send, lane,
+                                  (uint64_t)offset * 16, first * 16, 2 * lane) != 0)
+                    return -1;
+                if (post_fragment(c, seq, prev, prev, opp_send, lane,
+                                  (uint64_t)(offset + first) * 16, (packs - first) * 16, 2 * lane + 1) != 0)
+                    return -1;
+            }
+        }
+        for (int p = 0; p < c->world; p++) {
+            if (adjacent(c->world, c->rank, p, c->ring4)) {
+                uint8_t *peer_send = send + (exchange ? (size_t)p * nbytes : 0);
+                if (post_peer(c, seq, nbytes, c->rank, p, peer_send) != 0) return -1;
+            }
+        }
     }
     trace_mark(c, seq, TRACE_POSTED);
     if (c->ring4 == 1) {
-        if (relay_both_directions(c, seq, nbytes) != 0) return -1;
+        if (relay_both_directions_mode(c, seq, nbytes, exchange) != 0) return -1;
         trace_mark(c, seq, TRACE_RELAYED);
     }
     c->ops_posted += 1;
