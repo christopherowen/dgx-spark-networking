@@ -774,17 +774,21 @@ static void stripe_range(uint32_t nbytes, int width, int lane,
 
 static int post_path(roce_ctx_t *c, uint32_t seq, uint32_t nbytes,
                      int origin, int p, uint8_t *send, int lane) {
+    int width = peer_width(c->world, c->rank, p, c->n_stripes);
+    int slice = c->ring4 ? lane : (int)(((uint32_t)lane + seq + (uint32_t)origin + (uint32_t)p) % (uint32_t)width);
     uint32_t offset, packs;
-    stripe_range(nbytes, peer_width(c->world, c->rank, p, c->n_stripes),
-                 lane, &offset, &packs);
+    stripe_range(nbytes, width, slice, &offset, &packs);
     return post_fragment(c, seq, origin, p, send, lane,
                          (uint64_t)offset * 16, packs * 16, lane);
 }
 
 static int post_peer(roce_ctx_t *c, uint32_t seq, uint32_t nbytes,
                      int origin, int p, uint8_t *send) {
-    for (int lane = 0; lane < peer_width(c->world, c->rank, p, c->n_stripes); lane++)
+    int width = peer_width(c->world, c->rank, p, c->n_stripes);
+    for (int i = 0; i < width; i++) {
+        int lane = (int)(((uint32_t)i + seq + (uint32_t)origin + (uint32_t)p) % (uint32_t)width);
         if (post_path(c, seq, nbytes, origin, p, send, lane) != 0) return -1;
+    }
     return 0;
 }
 
@@ -869,7 +873,7 @@ static int relay_both_directions_mode(roce_ctx_t *c, uint32_t seq, uint32_t nbyt
     }
 }
 
-static int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
+static inline int relay_both_directions(roce_ctx_t *c, uint32_t seq, uint32_t nbytes) {
     return relay_both_directions_mode(c, seq, nbytes, 0);
 }
 
@@ -922,7 +926,8 @@ static int post_op(roce_ctx_t *c, uint32_t seq, uint32_t raw_nbytes) {
                     return -1;
             }
         }
-        for (int p = 0; p < c->world; p++) {
+        for (int step = 1; step < c->world; step++) {
+            int p = (c->rank + step) % c->world;
             if (adjacent(c->world, c->rank, p, c->ring4)) {
                 uint8_t *peer_send = send + (exchange ? (size_t)p * nbytes : 0);
                 if (post_peer(c, seq, nbytes, c->rank, p, peer_send) != 0) return -1;

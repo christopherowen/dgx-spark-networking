@@ -44,6 +44,20 @@ int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *wr, struct ibv_send_wr 
         assert(ordinal < 8);
         assert(qp->hca == (r + (int)(seq & 3u) + (int)(ordinal % 4)) % 4);
         assert((qp->dest == (r+2)%4) == ((ordinal / 4 + (seq & 1u)) % 2));
+    } else if (ring4 == 0) {
+        struct ibv_send_wr *last = wr;
+        while (last->next) last = last->next;
+        uint32_t seq;
+        memcpy(&seq, (void *)(uintptr_t)last->sg_list->addr, sizeof(seq));
+        int r = qp->source;
+        unsigned per_op = (unsigned)((world - 1) * stripes);
+        if (!posted_in_round[r] || posted_seq[r] != seq) {
+            assert(!posted_in_round[r] || posted_in_round[r] == per_op);
+            posted_seq[r] = seq; posted_in_round[r] = 0;
+        }
+        unsigned ordinal = posted_in_round[r]++;
+        assert(ordinal < per_op);
+        assert(qp->dest == (r + 1 + (int)(ordinal / (unsigned)stripes)) % world);
     }
     pthread_mutex_lock(&lock);
     for (; wr; wr = wr->next) {
@@ -258,6 +272,13 @@ static void run(unsigned count, uint32_t seed) {
     // Wait for the final operation to be posted on every proxy before teardown.
     // GPU completion alone need not mean its own host proxy has finished.
     for(int i=0;i<1000;i++) progress();
+    if (ring4 == 0 && stripes == 2) {
+        for (int r = 0; r < world; r++) {
+            uint64_t lane0 = ranks[r]->hca[0].bytes_posted + ranks[r]->hca[2].bytes_posted;
+            uint64_t lane1 = ranks[r]->hca[1].bytes_posted + ranks[r]->hca[3].bytes_posted;
+            assert((lane0 > lane1 ? lane0 - lane1 : lane1 - lane0) <= (uint64_t)(world - 1) * 16);
+        }
+    }
     if (ring4 == 1) {
         uint64_t total = 0;
         for (unsigned i=1;i<=count;i++) total += size_at(seed+i);
