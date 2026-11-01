@@ -202,7 +202,7 @@ class SparknetOneShotAllReduce:
         return self._runtime.all_reduce(inp)
 
     def should_all_gather(self, inp: torch.Tensor, dim: int) -> bool:
-        return not self.disabled and self._runtime.should_all_gather(inp, dim, sliced=True)
+        return not self.disabled and self._runtime.should_all_gather(inp, dim)
 
     def all_gather(self, inp: torch.Tensor, dim: int) -> torch.Tensor:
         if not self._announced_gather:
@@ -210,10 +210,14 @@ class SparknetOneShotAllReduce:
             log = logger.info if self.rank == 0 else logger.debug
             log("one-shot all-gather is live: first routed shard is %s %s along dim %d; input shard dispatch limit=%d bytes.",
                 tuple(inp.shape), str(inp.dtype).replace("torch.", ""), dim, self.all_gather_max_bytes)
-        return self._runtime.all_gather(inp, dim=dim, sliced=True)
+        return self._runtime.all_gather(inp, dim=dim)
 
     def should_reduce_scatter(self, inp: torch.Tensor, dim: int = 0) -> bool:
-        return not self.disabled and self._runtime.should_reduce_scatter(inp, dim=dim)
+        return (
+            not self.disabled
+            and inp.numel() * inp.element_size() <= self._runtime._slot_bytes
+            and self._runtime.should_reduce_scatter(inp, dim=dim)
+        )
 
     def reduce_scatter(self, inp: torch.Tensor, dim: int = 0) -> torch.Tensor:
         if not self._announced_reduce_scatter:
@@ -224,7 +228,11 @@ class SparknetOneShotAllReduce:
         return self._runtime.reduce_scatter(inp, dim=dim)
 
     def should_exchange(self, chunks: torch.Tensor, parts: torch.Tensor | None = None) -> bool:
-        return not self.disabled and self._runtime.should_exchange(chunks, parts)
+        return (
+            not self.disabled
+            and chunks.numel() * chunks.element_size() <= self._runtime._slot_bytes
+            and self._runtime.should_exchange(chunks, parts)
+        )
 
     def exchange_into(self, chunks: torch.Tensor, parts: torch.Tensor) -> torch.Tensor:
         if not self._announced_exchange:
@@ -235,7 +243,11 @@ class SparknetOneShotAllReduce:
         return self._runtime.exchange(chunks, out=parts)
 
     def should_all_to_all_rows(self, inp: torch.Tensor, rows: int) -> bool:
-        return not self.disabled and self._runtime.should_all_to_all_rows(inp, rows)
+        return (
+            not self.disabled
+            and inp.numel() * inp.element_size() <= self._runtime._slot_bytes
+            and self._runtime.should_all_to_all_rows(inp, rows)
+        )
 
     def all_to_all_rows(self, inp: torch.Tensor, rows: int) -> torch.Tensor:
         if not self._announced_a2a:
