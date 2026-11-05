@@ -673,10 +673,12 @@ def test_pdl_generated_sources_wait_before_epoch(runtime):
         closure = dict(zip(launch.__code__.co_freevars,
                            (cell.cell_contents for cell in launch.__closure__), strict=True))
         source = closure["kernel"].get_kernel_source()
-        kernels = re.split(r"__global__\s+void\s+", source)[1:]
-        assert kernels, "no generated CUDA kernel"
+        # Generated CUDA also contains a forward declaration; inspect the
+        # definition, whose opening brace occurs before any semicolon.
+        kernels = list(re.finditer(r"__global__\s+void\s+[^;{]+\{", source))
+        assert len(kernels) == 1, "expected one generated CUDA kernel definition"
         for kernel in kernels:
-            body = kernel[kernel.index("{") + 1:]
+            body = source[kernel.end():]
             wait = body.index("cudaGridDependencySynchronize()")
             trigger = body.index("cudaTriggerProgrammaticLaunchCompletion()")
             epoch = body.index("roce_ld_relaxed_gpu_u32(")
