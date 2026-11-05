@@ -682,7 +682,8 @@ def test_pdl_generated_sources_wait_before_epoch(runtime):
             wait = body.index("cudaGridDependencySynchronize()")
             trigger = body.index("cudaTriggerProgrammaticLaunchCompletion()")
             epoch = body.index("roce_ld_relaxed_gpu_u32(")
-            assert wait < trigger < epoch
+            assert wait < epoch and wait < trigger
+            assert trigger > body.index('roce_wait_peers(')
             early = body[:wait]
             assert "roce_" not in early
             assert not re.search(r"\b(?:inp|out|counters)\s*\[", early)

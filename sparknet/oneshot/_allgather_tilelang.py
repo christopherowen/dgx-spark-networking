@@ -66,7 +66,6 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 # The input, output and protocol epoch all belong to the prior
                 # launch until it completes. Match the all-reduce's PDL chain.
                 T.pdl_sync()
-                T.pdl_trigger()
                 tx = T.get_thread_binding()
                 epoch = T.alloc_var(T.uint32)
                 epoch = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[0]), dtype=T.uint32)
@@ -103,6 +102,8 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                 if bx == 0:
                     if tx == 0:
                         T.call_extern("roce_st_release_gpu_u32", T.address_of(counters[arrival_index]), seq, dtype="handle")
+                # Experimental arrived trigger: keep the peer-wait window available to side work.
+                T.pdl_trigger()
                 # 4. concatenate: shard s occupies column block s of every output row
                 for i in T.serial(count):
                     T.call_extern("roce_gather_pack", T.call_extern("roce_ptr", region_base + T.cast(recv_off, T.int64), dtype="handle"),

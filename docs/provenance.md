@@ -90,3 +90,5 @@ NVIDIA-DOCA/gpunetio at `586453728bca`, patches from
 
 b12x and SparkRing: Apache-2.0. NCCL and DOCA GPUNetIO: BSD-3-Clause. See
 `NOTICE`.
+
+Experimental launch-placement arm: trigger after arrived phase, over source fb027b4. Only trigger placement changes; tensor access still waits before the epoch, with unchanged transport, arithmetic and timeouts. This arm is unqualified and is retained for comparison under the collective launch experiment.
