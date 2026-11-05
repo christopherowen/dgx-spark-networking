@@ -54,6 +54,12 @@ Not carried: the relay streaming and progress-window patches (0012 to 0014,
 measured slower), the mesh4 host marker and TC tooling (not recommended),
 the b12x preparation session.
 
+The one-shot all-reduce and all-gather PDL candidate adds a dependency wait
+before the first protocol access and a trigger after that wait. It changes
+launch scheduling only; device protocol helpers, proxy, wire ABI and arithmetic
+are unchanged. This is a hardware change pending fabric qualification, tracked
+in spark-ds41f `experiments/2026-11-05-collective-pdl`.
+
 ## NCCL (`sparknet/nccl/patches`)
 
 NCCL `v2.30.7-1`; the series is spark-ds41f's `nccl-adaptive` series (patch head

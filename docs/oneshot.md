@@ -66,6 +66,18 @@ instead of lengthening it (docs/integration.md).
 **Streams.** Collectives on different streams are ordered with an event;
 inside a capture every collective uses the capture stream.
 
+**Programmatic dependent launch (candidate, hardware qualification pending).**
+The all-reduce and all-gather kernels wait on their stream dependency before
+reading or writing any tensor or protocol state, including the epoch. Only
+then do they trigger the next dependent launch. This permits a neighbour's
+launch to overlap kernel execution; its memory accesses still wait for
+completion. The wait must not move below the epoch load: that could reuse an
+earlier operation's sequence and slot even if the tensor loads wait correctly.
+The grid-residency bound, peer timeouts, both rails, rank-order additions and
+slot protocol are unchanged. Reduce-scatter and exchange keep their existing
+launches. No topology is qualified for this candidate until the GPU suite and
+probe pass on that fabric; the CPU simulator cannot establish GPU ordering.
+
 **Memory.** The pinned region is `world_size x 2` receive slots plus 2 send
 slots of `max(max_size, max_gather_bytes)` bytes, plus flags. `prepare`
 allocates two `max_size` alignment buffers and, with `padded_gather`, the
