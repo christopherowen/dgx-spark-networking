@@ -149,8 +149,8 @@ class KernelFamilyTest(unittest.TestCase):
                 if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
                     break
                 calls.append(ast.unparse(statement.value.func))
-            self.assertEqual(calls[:4], ["T.annotate_min_blocks_per_sm", "T.import_source",
-                                        "T.pdl_sync", "T.pdl_trigger"], module_name)
+            self.assertEqual(calls[:3], ["T.annotate_min_blocks_per_sm", "T.import_source",
+                                        "T.pdl_sync"], module_name)
 
     def test_runtime_routes_launchers_to_the_tilelang_kernels(self):
         runtime = (ROCE / "runtime.py").read_text()

@@ -111,7 +111,6 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                 # still be advancing it. Trigger only after that wait, so a
                 # chain cannot fill the device with waiting successor grids.
                 T.pdl_sync()
-                T.pdl_trigger()
                 tx = T.get_thread_binding()
                 # Every block reads the epoch before any block can advance it:
                 # the advance happens only after all blocks arrived at the tail.
@@ -149,6 +148,8 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
                         T.call_extern("roce_st_release_gpu_u32", T.address_of(counters[rung_index]), seq, dtype="handle")
                         if traced:
                             T.call_extern("roce_trace_stamp", trace_base, seq, w_doorbell, dtype="handle")
+                # Experimental staged trigger: keep the peer-wait window available to side work.
+                T.pdl_trigger()
                 # 3. block 0 waits for every peer's payload-stripe flags, the other blocks for block 0
                 if traced:
                     T.call_extern("roce_wait_peers", bx, tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
