@@ -140,12 +140,18 @@ def main(argv: list[str] | None = None) -> int:
     args, _ = parser.parse_known_args(argv)
     if args.world_size < 2:
         parser.error("a fault scenario needs at least two ranks")
+    # This fault probe owns a separate rendezvous port. torchrun children inherit
+    # TORCHELASTIC_USE_AGENT_STORE=True, which would make every rank a client
+    # of a nonexistent agent on that port. Give this group its own store.
+    timeout = timedelta(seconds=120)
+    store = dist.TCPStore(args.master_addr, args.master_port, args.world_size,
+                          is_master=args.rank == 0, timeout=timeout)
     dist.init_process_group(
         "gloo",
-        init_method=f"tcp://{args.master_addr}:{args.master_port}",
+        store=store,
         rank=args.rank,
         world_size=args.world_size,
-        timeout=timedelta(seconds=120),
+        timeout=timeout,
     )
     report = {"rank": args.rank, "scenario": args.scenario, "timeout_ms": FAULT_TIMEOUT_MS}
     report.update({"eager": eager, "graph": graph}[args.scenario](args.rank, args.world_size))
