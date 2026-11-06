@@ -107,6 +107,11 @@ def _build(dtype_name: str, world_size: int, rank: int, threads: int, slots: int
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
                 T.import_source(source)
+                # Wait before reading even the epoch: a previous collective may
+                # still be advancing it. Trigger only after that wait, so a
+                # chain cannot fill the device with waiting successor grids.
+                T.pdl_sync()
+                T.pdl_trigger()
                 tx = T.get_thread_binding()
                 # Every block reads the epoch before any block can advance it:
                 # the advance happens only after all blocks arrived at the tail.

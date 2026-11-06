@@ -11,10 +11,9 @@ from every node of a DGX Spark cluster::
 Without a torchrun environment the tests skip.
 """
 
-from __future__ import annotations
-
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -664,6 +663,111 @@ def test_all_gather_graph_replay_mixed_with_all_reduce(runtime):
         torch.testing.assert_close(
             reduced, expected_reduce, rtol=2e-2, atol=2e-2 * world
         )
+
+
+def test_pdl_generated_sources_wait_before_epoch(runtime):
+    """The compiler must keep protocol and tensor accesses below the PDL wait."""
+    launchers = [runtime._reduce_launcher(torch.float32, capturing=False),
+                 runtime._resolve_gather_launcher(capturing=False)]
+    for launch in launchers:
+        closure = dict(zip(launch.__code__.co_freevars,
+                           (cell.cell_contents for cell in launch.__closure__), strict=True))
+        source = closure["kernel"].get_kernel_source()
+        # Generated CUDA also contains a forward declaration; inspect the
+        # definition, whose opening brace occurs before any semicolon.
+        kernels = list(re.finditer(r"__global__\s+void\s+[^;{]+\{", source))
+        assert len(kernels) == 1, "expected one generated CUDA kernel definition"
+        for kernel in kernels:
+            body = source[kernel.end():]
+            wait = body.index("cudaGridDependencySynchronize()")
+            trigger = body.index("cudaTriggerProgrammaticLaunchCompletion()")
+            epoch = body.index("roce_ld_relaxed_gpu_u32(")
+            assert wait < trigger < epoch
+            early = body[:wait]
+            assert "roce_" not in early
+            assert not re.search(r"\b(?:inp|out|counters)\s*\[", early)
+
+
+@pytest.mark.parametrize("captured", [False, True])
+@pytest.mark.parametrize("elements", [256, 16384])
+def test_pdl_chain_waits_for_inputs_and_epoch(runtime, captured, elements):
+    """Delayed PDL producers, mixed collectives and a PDL consumer keep exact bits.
+
+    Adjacent collectives share the epoch and alternate their send slots. A wait
+    after the epoch load is too late, even when the tensor loads wait correctly.
+    Rank-dependent delays also exercise arrival skew without a host barrier
+    between the individual collectives.
+    """
+    import tilelang
+    import tilelang.language as T
+
+    world, rank = dist.get_world_size(), dist.get_rank()
+
+    @tilelang.jit
+    def copy_kernel(n: int, spin: int):
+        @T.prim_func
+        def pdl_delayed_copy(
+            src: T.Tensor((n,), T.float32),
+            dst: T.Tensor((n,), T.float32),
+        ):
+            with T.Kernel(T.ceildiv(n, 256), threads=256) as bx:
+                T.pdl_sync()
+                T.pdl_trigger()
+                i = bx * 256 + T.get_thread_binding()
+                acc = T.alloc_var(T.float32, init=src[i])
+                for _ in T.serial(spin):
+                    acc = acc * 0.999999 + 0.000001
+                dst[i] = T.if_then_else(acc == 12345.5, -999.0, src[i])
+
+        return pdl_delayed_copy
+
+    producer = copy_kernel(elements, 10000 * (rank + 1))
+    consumer = copy_kernel(elements * world, 0)
+    seed = torch.full((elements,), rank + 1.0, device=runtime.device)
+    staged = torch.empty_like(seed)
+    reduced = torch.empty_like(seed)
+    gathered = torch.empty(elements * world, device=runtime.device)
+    observed = torch.empty_like(gathered)
+
+    def chain():
+        producer(seed, staged)
+        # Alternate operations and send slots repeatedly, without an
+        # intervening ATen kernel that would hide a missing dependency wait.
+        for _ in range(3):
+            runtime.all_reduce(staged, out=reduced)
+            runtime.all_gather(reduced, dim=0, out=gathered)
+        consumer(gathered, observed)
+
+    stream = torch.cuda.Stream(device=runtime.device)
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        chain()
+    torch.cuda.current_stream().wait_stream(stream)
+    torch.cuda.synchronize()
+    dist.barrier()
+    graph = None
+    if captured:
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream), runtime.capture(stream=stream):
+            chain()
+
+    for replay in range(20):
+        values = [100000000.0, -100000000.0] + [float(r + replay) for r in range(2, world)]
+        seed.fill_(values[rank])
+        staged.fill_(float("nan"))
+        reduced.fill_(float("nan"))
+        gathered.fill_(float("nan"))
+        observed.fill_(float("nan"))
+        if graph is None:
+            chain()
+        else:
+            graph.replay()
+        torch.cuda.synchronize()
+        runtime.check_health()
+        expected = torch.tensor(values[0], dtype=torch.float32)
+        for value in values[1:]:
+            expected += value
+        assert torch.equal(observed, torch.full_like(observed, expected))
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float16])

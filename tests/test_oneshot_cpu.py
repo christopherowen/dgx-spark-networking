@@ -128,6 +128,30 @@ class KernelFamilyTest(unittest.TestCase):
             self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
 
+    def test_pdl_wait_precedes_protocol_access_and_trigger(self):
+        """Starting a successor early must not read the prior op's epoch or slots.
+
+        Only compile-time annotations may precede the wait. In particular, a
+        wait moved below an extern epoch read violates slot lifetime even if
+        all tensor loads remain below it. Generated CUDA and graph replay are
+        checked separately on hardware; this is the source-level guard.
+        """
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py"):
+            tree = ast.parse((ROCE / module_name).read_text())
+            kernels = [node for node in ast.walk(tree) if isinstance(node, ast.With)
+                       and any(isinstance(item.context_expr, ast.Call)
+                               and ast.unparse(item.context_expr.func) == "T.Kernel"
+                               for item in node.items)]
+            self.assertEqual(len(kernels), 1)
+            body = kernels[0].body
+            calls = []
+            for statement in body:
+                if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+                    break
+                calls.append(ast.unparse(statement.value.func))
+            self.assertEqual(calls[:4], ["T.annotate_min_blocks_per_sm", "T.import_source",
+                                        "T.pdl_sync", "T.pdl_trigger"], module_name)
+
     def test_runtime_routes_launchers_to_the_tilelang_kernels(self):
         runtime = (ROCE / "runtime.py").read_text()
         self.assertIn("reduce_launcher(*self._launcher_key(dtype))", runtime)

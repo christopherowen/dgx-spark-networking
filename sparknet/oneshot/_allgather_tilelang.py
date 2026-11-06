@@ -63,6 +63,10 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
                 T.import_source(source)
+                # The input, output and protocol epoch all belong to the prior
+                # launch until it completes. Match the all-reduce's PDL chain.
+                T.pdl_sync()
+                T.pdl_trigger()
                 tx = T.get_thread_binding()
                 epoch = T.alloc_var(T.uint32)
                 epoch = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[0]), dtype=T.uint32)
