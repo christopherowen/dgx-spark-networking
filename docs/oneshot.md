@@ -363,3 +363,13 @@ keyword are refused.
   fault injection in eager and graph mode.
 - `benchmarks/benchmark_oneshot.py`: latency against NCCL with a receipt.
 - `sparknet probe collectives`: the policy on the actual fabric.
+
+The fail-stop probe creates its own TCPStore on its dedicated rendezvous port,
+with rank zero as server. It does not inherit torchrun's agent-store choice:
+otherwise every child can try to connect to an agent that does not exist on
+that port and time out before reaching the fault scenario. The CPU-only
+regression in `tests/integration/test_failstop_rendezvous.py` runs a real Gloo
+collective through the probe's setup with the inherited agent-store flag set;
+it never initializes CUDA. Run it where PyTorch is installed with
+`python -m unittest discover -s tests/integration`. This setup check does not
+replace the native GPU fail-stop tests.
