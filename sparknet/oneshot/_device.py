@@ -35,6 +35,7 @@ FUNCTIONS = (
     "roce_wait_until_eq_acquire_sys",
     "roce_trap",
     "roce_ptr",
+    "roce_same_ptr",
     "roce_copy_pack",
     "roce_doorbell",
     "roce_doorbell_exchange",
@@ -75,6 +76,8 @@ struct roce_pack { roce_u32 w[4]; };
 // The pinned host region reaches the kernel as a base address (TileLang's FFI
 // takes only device tensors as buffer arguments); this turns it into a pointer.
 __device__ __forceinline__ roce_byte *roce_ptr(long long address) { return (roce_byte *)(size_t)address; }
+
+__device__ __forceinline__ int roce_same_ptr(const void *a, const void *b) { return a == b; }
 
 __device__ __forceinline__ roce_u32 roce_ld_relaxed_gpu_u32(const void *p) {
     roce_u32 v;
@@ -200,7 +203,9 @@ __device__ __forceinline__ void roce_st_global_pack(void *dst, roce_pack p) {
 }
 
 __device__ __forceinline__ void roce_copy_pack(const void *src, void *dst) {
-    roce_st_global_pack(dst, roce_ld_global_pack(src));
+    if (src != dst) {
+        roce_st_global_pack(dst, roce_ld_global_pack(src));
+    }
 }
 
 // Conversions: round-to-nearest-even packing of the float32 sums.
@@ -460,7 +465,9 @@ __device__ __forceinline__ void roce_stage_gather_pack(const void *input, void *
                                                        void *output, int dst_stride_packs = 0) {
     long long offset = (long long)copy_index * ROCE_PACK_BYTES;
     roce_pack p = roce_ld_global_pack((const roce_byte *)input + offset);
-    roce_st_global_pack((roce_byte *)send + offset, p);
+    if (input != send) {
+        roce_st_global_pack((roce_byte *)send + offset, p);
+    }
     roce_st_global_pack(roce_gather_dest(output, copy_index, row_packs, ROCE_RANK, dst_stride_packs), p);
 }
 

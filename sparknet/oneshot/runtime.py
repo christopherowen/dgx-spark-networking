@@ -425,6 +425,18 @@ def _exchange(local: object, group: ProcessGroup) -> list[object]:
     return gathered
 
 
+class _CudaSlotView:
+    """Zero-copy ``__cuda_array_interface__`` view over device-accessible pinned host memory."""
+
+    def __init__(self, ptr: int, nbytes: int) -> None:
+        self.__cuda_array_interface__ = {
+            "shape": (int(nbytes),),
+            "typestr": "|u1",
+            "data": (int(ptr), False),
+            "version": 3,
+        }
+
+
 class RoceOneshotAllReduce:
     """One-shot RDMA all-reduce over the DGX Spark 200 GbE fabric."""
 
@@ -563,6 +575,15 @@ class RoceOneshotAllReduce:
         self._flag_base = host_ptr + self._layout.flag_off
         self._send_base = host_ptr + self._layout.send_off
         self._ctrl_base = host_ptr + self._layout.ctrl_off
+        self._host_seq = 0
+        with torch.cuda.device(self.device):
+            self._send_dev = tuple(
+                torch.as_tensor(
+                    _CudaSlotView(self._send_base + slot * self._slot_bytes, self._slot_bytes),
+                    device=self.device,
+                )
+                for slot in range(self._layout.slots)
+            )
         # ctrl record: seq, nbytes, error seq, missing peer, nbytes per slot
         # (the proxy uses these when it has to catch up), the missing HCA,
         # the wait timeout (host-written) and the time a timed-out wait waited.
@@ -893,6 +914,7 @@ class RoceOneshotAllReduce:
         stage_index, tail_index = self._counter_indices(grid_blocks)
         inp_words = src if raw_words else self._words(src)
         out_words = dst if raw_words else self._words(dst)
+        self._host_seq += 1
         return Launch(
             input=inp_words, output=out_words, size_packs=nbytes // PACK_BYTES, nbytes=nbytes,
             region=self._region, recv_off=self._layout.recv_off, flag_off=self._layout.flag_off,
@@ -981,6 +1003,33 @@ class RoceOneshotAllReduce:
 
 
     # -- execution ----------------------------------------------------------------
+
+    def next_send_buffer(
+        self,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+        *,
+        slot: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Return a zero-copy CUDA tensor view into the pinned send slot of the next collective launch."""
+        if self._closed or self._proxy is None:
+            raise RuntimeError("RoCE runtime is closed")
+        shape_tuple = tuple(int(d) for d in shape)
+        numel = 1
+        for d in shape_tuple:
+            numel *= d
+        elem_size = torch.tensor([], dtype=dtype).element_size()
+        nbytes = numel * elem_size
+        if nbytes <= 0 or nbytes > self._slot_bytes or nbytes % PACK_BYTES != 0:
+            raise ValueError(
+                f"send buffer size {nbytes} bytes must be a positive multiple of {PACK_BYTES} within {self._slot_bytes}"
+            )
+        target_slot = (
+            ((self._host_seq + 1) % self._layout.slots)
+            if slot is None
+            else (int(slot) % self._layout.slots)
+        )
+        return self._send_dev[target_slot][:nbytes].view(dtype).view(shape_tuple)
 
     def all_reduce(
         self,

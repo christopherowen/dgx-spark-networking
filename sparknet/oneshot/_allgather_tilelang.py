@@ -63,6 +63,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
                 T.import_source(source)
+                T.pdl_sync()
                 tx = T.get_thread_binding()
                 epoch = T.alloc_var(T.uint32)
                 epoch = T.call_extern("roce_ld_relaxed_gpu_u32", T.address_of(counters[0]), dtype=T.uint32)
@@ -91,6 +92,7 @@ def _build(world_size: int, rank: int, threads: int, slots: int, flag_stride: in
                                          T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"), T.cast(nbytes, T.uint32), seq, dtype=T.uint32)
                     if rang != T.uint32(0):
                         T.call_extern("roce_st_release_gpu_u32", T.address_of(counters[rung_index]), seq, dtype="handle")
+                T.pdl_trigger()
                 # 3. block 0 waits for every peer's payload-stripe flags, the other blocks for block 0
                 T.call_extern("roce_wait_peers", bx, tx, T.call_extern("roce_ptr", region_base + T.cast(flag_off, T.int64), dtype="handle"), seq,
                               T.call_extern("roce_ptr", region_base + T.cast(ctrl_off, T.int64), dtype="handle"),

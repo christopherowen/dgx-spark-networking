@@ -128,6 +128,31 @@ class KernelFamilyTest(unittest.TestCase):
             self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
 
+    def test_tilelang_kernels_emit_pdl_sync_and_trigger(self):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
+            text = (ROCE / module_name).read_text()
+            sync_pos = text.find("T.pdl_sync()")
+            trigger_pos = text.find("T.pdl_trigger()")
+            first_addr = text.find("T.address_of(")
+            doorbell_pos = text.find("roce_doorbell")
+            wait_pos = text.find("roce_wait_peers")
+            self.assertGreater(sync_pos, 0, module_name)
+            self.assertGreater(first_addr, sync_pos, module_name)
+            self.assertGreater(trigger_pos, doorbell_pos, module_name)
+            self.assertLess(trigger_pos, wait_pos, module_name)
+
+    def test_direct_send_slot_guard(self):
+        device = (ROCE / "_device.py").read_text()
+        self.assertIn("if (src != dst)", device)
+        self.assertIn("if (input != send)", device)
+        self.assertIn("roce_same_ptr(const void *a, const void *b)", device)
+        oneshot = (ROCE / "_oneshot_tilelang.py").read_text()
+        self.assertIn('"roce_same_ptr"', oneshot)
+        runtime = (ROCE / "runtime.py").read_text()
+        self.assertIn("def next_send_buffer(", runtime)
+        adapter = (ROOT / "sparknet" / "integration" / "vllm" / "roce_all_reduce.py").read_text()
+        self.assertIn("def next_send_buffer(", adapter)
+
     def test_runtime_routes_launchers_to_the_tilelang_kernels(self):
         runtime = (ROCE / "runtime.py").read_text()
         self.assertIn("reduce_launcher(*self._launcher_key(dtype))", runtime)
