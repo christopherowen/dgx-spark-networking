@@ -83,6 +83,7 @@ def _build(
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
                 T.import_source(source)
+                T.pdl_sync()
                 tx = T.get_thread_binding()
                 epoch = T.alloc_var(T.uint32)
                 epoch = T.call_extern(
@@ -139,6 +140,7 @@ def _build(
                             seq,
                             dtype="handle",
                         )
+                T.pdl_trigger()
                 # 3. block 0 waits for every peer's payload-stripe flags, the other blocks for block 0
                 T.call_extern(
                     "roce_wait_peers",

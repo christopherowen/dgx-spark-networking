@@ -755,4 +755,32 @@ def test_sliced_all_gather_exceeding_slot_capacity(runtime):
         assert torch.equal(out, expected)
 
 
+def test_direct_send_buffer_zero_copy_all_reduce_and_all_gather(runtime):
+    """Producer writing directly into ``next_send_buffer`` skips the Phase 1 staging copy."""
+    world = dist.get_world_size()
+    rank = dist.get_rank()
+    rtol, atol = _tolerance(torch.bfloat16, world)
+    for step in range(4):
+        torch.manual_seed(6060 + 17 * step + rank)
+        ref = torch.randn(16, 5120, dtype=torch.bfloat16, device=runtime.device)
+        expected = ref.clone()
+        dist.all_reduce(expected)
+        direct_in = runtime.next_send_buffer(ref.shape, ref.dtype)
+        direct_in.copy_(ref)
+        out = runtime.all_reduce(direct_in)
+        torch.cuda.synchronize()
+        runtime.check_health()
+        torch.testing.assert_close(out, expected, rtol=rtol, atol=atol)
+
+        g_ref = torch.randn(16, 1280, dtype=torch.bfloat16, device=runtime.device)
+        parts = [torch.empty_like(g_ref) for _ in range(world)]
+        dist.all_gather(parts, g_ref)
+        g_expected = torch.cat(parts, dim=-1)
+        g_direct = runtime.next_send_buffer(g_ref.shape, g_ref.dtype)
+        g_direct.copy_(g_ref)
+        g_out = runtime.all_gather(g_direct, dim=-1)
+        torch.cuda.synchronize()
+        runtime.check_health()
+        assert torch.equal(g_out, g_expected)
+    dist.barrier()
 

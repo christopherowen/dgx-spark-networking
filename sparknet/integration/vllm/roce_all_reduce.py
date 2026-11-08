@@ -190,6 +190,18 @@ class SparknetOneShotAllReduce:
     def should_custom_ar(self, inp: torch.Tensor) -> bool:
         return not self.disabled and self._runtime.should_allreduce(inp)
 
+    def next_send_buffer(
+        self,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+        *,
+        slot: int | None = None,
+    ) -> torch.Tensor | None:
+        """Zero-copy CUDA tensor view into the next collective's pinned send slot, or None when disabled."""
+        if self.disabled or self._runtime is None:
+            return None
+        return self._runtime.next_send_buffer(shape, dtype, slot=slot)
+
     def custom_all_reduce(self, inp: torch.Tensor) -> torch.Tensor | None:
         if not self.should_custom_ar(inp):
             return None
