@@ -433,5 +433,34 @@ class FailStopTest(unittest.TestCase):
             self.assertNotIn("spin_limit", source, module)
 
 
+
+    def _stage_methods(self):
+        tree = ast.parse((ROCE / "runtime.py").read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RoceOneshotAllReduce")
+        methods = [
+            n for n in cls.body
+            if isinstance(n, ast.FunctionDef)
+            and n.name in {"_collective_stage_rows", "_collective_max_blocks"}
+        ]
+        namespace = dict(os=os, Optional=typing.Optional)
+        exec(compile(ast.Module(body=methods, type_ignores=[]), "runtime.py", "exec"), namespace)
+        return namespace["_collective_stage_rows"], namespace["_collective_max_blocks"]
+
+    def test_collective_stage_rows_and_block_cap(self):
+        stage_rows_fn, max_blocks_fn = self._stage_methods()
+        rt = types.SimpleNamespace(_slot_bytes=4 * 1024 * 1024, _blocks=64)
+        # 16 MiB total collective (512 local rows, 8192 B/row, world_size=4 -> 32768 B collective/row)
+        rows, stages = stage_rows_fn(rt, 512, 4 * 8192, slot_row_bytes=8192)
+        self.assertEqual((rows, stages), (128, 4))
+        # Reduce-scatter / exchange: slot_row_bytes defaults to collective_row_bytes
+        rows_rs, stages_rs = stage_rows_fn(rt, 512, 4 * 8192)
+        self.assertEqual((rows_rs, stages_rs), (128, 4))
+        # Single-stage <= 4 MiB total collective
+        rows_small, stages_small = stage_rows_fn(rt, 64, 4 * 8192)
+        self.assertEqual((rows_small, stages_small), (64, 1))
+        # Default collective CTA cap is 8 blocks (2 SMs on GB10)
+        self.assertEqual(max_blocks_fn(rt, 4, 16 * 1024 * 1024), 8)
+
+
 if __name__ == "__main__":
     unittest.main()
