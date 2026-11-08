@@ -51,6 +51,8 @@ class Launch:
     total_src_packs: int = 0  # exchange / all-to-all: valid pack count in input
     valid_out_packs: int = -1  # exchange / all-to-all: valid pack count per peer in output (-1 = size_packs)
     copy_self: int = 0  # exchange / all-to-all: copy this rank's own block into output
+    num_stages: int = 1  # number of pipeline stages in one kernel launch
+    stage_packs: int = 0  # max 16-byte packs per stage (0 = size_packs)
 
 
 def kernel_setting_problems(environ: Mapping[str, str]) -> list[str]:

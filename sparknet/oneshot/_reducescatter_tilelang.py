@@ -3,7 +3,8 @@
 Stages each peer p's chunk (p != rank) into send[slot] + p * chunk_bytes, rings
 the proxy doorbell in exchange mode (ROCE_MODE_EXCHANGE), waits for every peer's
 stripe flags, and reduces the local chunk and every peer's received chunk in
-fixed rank order with float32 accumulation into out.
+fixed rank order with float32 accumulation into out. Multi-stage launches
+execute all stages inside a single persistent kernel across the two slots.
 """
 
 # No postponed annotations: TileLang evaluates the prim_func's annotations
@@ -79,6 +80,8 @@ def _build(
             rung_index: T.int32,
             arrival_index: T.int32,
             grid_x: T.int32,
+            num_stages: T.int32,
+            stage_packs: T.int32,
         ):
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
@@ -89,103 +92,112 @@ def _build(
                     "roce_ld_relaxed_gpu_u32", T.address_of(counters[0]), dtype=T.uint32
                 )
                 seq = T.alloc_var(T.uint32)
-                seq = epoch + T.uint32(1)
                 slot = T.alloc_var(T.int32)
-                slot = T.cast(seq & T.uint32(1), T.int32)
                 send_slot = T.alloc_var(T.int32)
-                send_slot = send_off + slot * slot_bytes
                 index = T.alloc_var(T.int32)
                 index = bx * threads + tx
                 stride = T.alloc_var(T.int32)
                 stride = grid_x * threads
-                # 1. stage each peer's chunk into its slice of the pinned send slot
+                stage_offset = T.alloc_var(T.int32)
+                cur_packs = T.alloc_var(T.int32)
                 count = T.alloc_var(T.int32)
-                count = T.max(0, (chunk_packs - index + stride - 1) // stride)
-                for i in T.serial(count):
+                rang = T.alloc_var(T.uint32)
+                pack = T.alloc_var(T.int32)
+
+                for s in T.serial(num_stages):
+                    seq = epoch + T.uint32(1) + T.cast(s, T.uint32)
+                    slot = T.cast(seq & T.uint32(slots - 1), T.int32)
+                    send_slot = send_off + slot * slot_bytes
+                    stage_offset = s * stage_packs
+                    cur_packs = T.min(stage_packs, chunk_packs - stage_offset)
+                    count = T.max(0, (cur_packs - index + stride - 1) // stride)
+
+                    for i in T.serial(count):
+                        T.call_extern(
+                            "roce_stage_scatter_pack",
+                            T.address_of(inp[stage_offset * pack_words]),
+                            T.call_extern(
+                                "roce_ptr",
+                                region_base + T.cast(send_slot, T.int64),
+                                dtype="handle",
+                            ),
+                            index + i * stride,
+                            cur_packs,
+                            src_peer_packs,
+                            dtype="handle",
+                        )
+                    T.sync_threads()
+                    if tx == 0:
+                        rang = T.call_extern(
+                            "roce_doorbell_exchange",
+                            T.address_of(counters[stage_index]),
+                            T.cast(grid_x, T.uint32),
+                            T.call_extern(
+                                "roce_ptr",
+                                region_base + T.cast(ctrl_off, T.int64),
+                                dtype="handle",
+                            ),
+                            T.cast(cur_packs * PACK_BYTES, T.uint32),
+                            seq,
+                            dtype=T.uint32,
+                        )
+                        if rang != T.uint32(0):
+                            T.call_extern(
+                                "roce_st_release_gpu_u32",
+                                T.address_of(counters[rung_index]),
+                                seq,
+                                dtype="handle",
+                            )
+
                     T.call_extern(
-                        "roce_stage_scatter_pack",
-                        T.address_of(inp[0]),
+                        "roce_wait_peers",
+                        bx,
+                        tx,
                         T.call_extern(
                             "roce_ptr",
-                            region_base + T.cast(send_slot, T.int64),
+                            region_base + T.cast(flag_off, T.int64),
                             dtype="handle",
                         ),
-                        index + i * stride,
-                        chunk_packs,
-                        src_peer_packs,
-                        dtype="handle",
-                    )
-                T.sync_threads()
-                # 2. the last block to finish staging rings the proxy doorbell in exchange mode
-                if tx == 0:
-                    rang = T.alloc_var(T.uint32)
-                    rang = T.call_extern(
-                        "roce_doorbell_exchange",
-                        T.address_of(counters[stage_index]),
-                        T.cast(grid_x, T.uint32),
+                        seq,
                         T.call_extern(
                             "roce_ptr",
                             region_base + T.cast(ctrl_off, T.int64),
                             dtype="handle",
                         ),
-                        T.cast(chunk_bytes, T.uint32),
-                        seq,
-                        dtype=T.uint32,
-                    )
-                    if rang != T.uint32(0):
-                        T.call_extern(
-                            "roce_st_release_gpu_u32",
-                            T.address_of(counters[rung_index]),
-                            seq,
-                            dtype="handle",
-                        )
-                # 3. block 0 waits for every peer's payload-stripe flags, the other blocks for block 0
-                T.call_extern(
-                    "roce_wait_peers",
-                    bx,
-                    tx,
-                    T.call_extern(
-                        "roce_ptr",
-                        region_base + T.cast(flag_off, T.int64),
-                        dtype="handle",
-                    ),
-                    seq,
-                    T.call_extern(
-                        "roce_ptr",
-                        region_base + T.cast(ctrl_off, T.int64),
-                        dtype="handle",
-                    ),
-                    T.address_of(counters[rung_index]),
-                    T.address_of(counters[arrival_index]),
-                    dtype="handle",
-                )
-                T.sync_threads()
-                if bx == 0:
-                    if tx == 0:
-                        T.call_extern(
-                            "roce_st_release_gpu_u32",
-                            T.address_of(counters[arrival_index]),
-                            seq,
-                            dtype="handle",
-                        )
-                # 4. reduce this rank's chunk (from inp) and the peers' chunks in fixed rank order
-                for i in T.serial(count):
-                    pack = index + i * stride
-                    T.call_extern(
-                        reduce_pack,
-                        T.address_of(inp[rank * src_peer_packs * pack_words]),
-                        T.call_extern(
-                            "roce_ptr",
-                            region_base + T.cast(recv_off, T.int64),
-                            dtype="handle",
-                        ),
-                        T.cast(slot_bytes, T.int64),
-                        seq,
-                        T.address_of(out[0]),
-                        T.cast(pack, T.int64) * PACK_BYTES,
+                        T.address_of(counters[rung_index]),
+                        T.address_of(counters[arrival_index]),
                         dtype="handle",
                     )
-                # 5. the last block to finish reduction publishes the next epoch
+                    T.sync_threads()
+                    if bx == 0:
+                        if tx == 0:
+                            T.call_extern(
+                                "roce_st_release_gpu_u32",
+                                T.address_of(counters[arrival_index]),
+                                seq,
+                                dtype="handle",
+                            )
+
+                    for i in T.serial(count):
+                        pack = index + i * stride
+                        T.call_extern(
+                            reduce_pack,
+                            T.address_of(
+                                inp[(rank * src_peer_packs + stage_offset) * pack_words]
+                            ),
+                            T.call_extern(
+                                "roce_ptr",
+                                region_base + T.cast(recv_off, T.int64),
+                                dtype="handle",
+                            ),
+                            T.cast(slot_bytes, T.int64),
+                            seq,
+                            T.address_of(out[stage_offset * pack_words]),
+                            T.cast(pack, T.int64) * PACK_BYTES,
+                            dtype="handle",
+                        )
+                    T.sync_threads()
+
                 T.call_extern("roce_fence_sc_gpu", dtype="handle")
                 T.sync_threads()
                 if tx == 0:
@@ -194,7 +206,7 @@ def _build(
                         T.address_of(counters[tail_index]),
                         T.cast(grid_x, T.uint32),
                         T.address_of(counters[0]),
-                        seq,
+                        epoch + T.cast(num_stages, T.uint32),
                         dtype="handle",
                     )
 
@@ -264,7 +276,7 @@ def get_launcher(
         device_index,
         ring4,
     )
-    cache_key = process_key[:7] + process_key[8:]
+    cache_key = process_key[:-2] + (bool(ring4),)
     raise_if_kernel_resolution_frozen(
         "tilelang.jit", target="oneshot_reducescatter", cache_key=cache_key
     )
@@ -280,17 +292,18 @@ def get_launcher(
 
     def run(launch: Launch) -> None:
         """Launch the compiled kernel on the current stream (bound through the tensor arguments)."""
+        chunk_packs = int(launch.size_packs)
         src_stride = (
-            int(launch.src_peer_packs)
-            if launch.src_peer_packs
-            else int(launch.size_packs)
+            int(launch.src_peer_packs) if launch.src_peer_packs else chunk_packs
         )
+        num_stages = int(launch.num_stages) if launch.num_stages > 0 else 1
+        stage_packs = int(launch.stage_packs) if launch.stage_packs > 0 else chunk_packs
         kernel(
             launch.input,
             launch.output,
             launch.counters,
             int(launch.region.data_ptr()),
-            int(launch.size_packs),
+            chunk_packs,
             int(launch.nbytes),
             src_stride,
             int(launch.recv_off),
@@ -303,10 +316,14 @@ def get_launcher(
             int(launch.rung_index),
             int(launch.arrival_index),
             int(launch.grid_x),
+            num_stages,
+            stage_packs,
         )
 
     _PREPARED_LAUNCHERS.add(process_key)
     return run
 
+
+launcher = get_launcher
 
 __all__ = ["PACK_BYTES", "get_launcher", "is_launcher_prepared"]
