@@ -94,7 +94,7 @@ one map); the GID index still falls back to `NCCL_IB_GID_INDEX`.
 | `SPARKNET_ROCE_MESH_ROTATE` | mesh4 only: rotate posting order (measured no benefit; keep 0) |
 | `SPARKNET_ROCE_KERNELS` | removed in 0.4.0 and refused: the TileLang kernels are the only family (see Kernels below) |
 | `SPARKNET_ROCE_TRACE` | `1`: per-op timing trace of the all-reduce, see `sparknet.oneshot.trace` |
-| `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number pins it to that core; `big` confines it to the big-core cluster, the cores above the midpoint between the smallest and largest `cpu_capacity` (GB10: the ten Cortex-X925 at 997 to 1024, excluding the ten Cortex-A725 at 718 to 731). `stats()` reports `proxy_cpus` and `proxy_cpu_observed`. Measured on the probe (see below), a candidate for the recipe environment pending a serving benchmark |
+| `SPARKNET_ROCE_PROXY_CPU` | proxy thread placement: unset or `none` leaves it to the scheduler; a CPU number or comma/range list (e.g. `19` or `5-9,15-19`) pins it to those cores; `big` confines it to the performance-core cluster intersected with `sched_getaffinity` (cores above the midpoint of `cpufreq/cpuinfo_max_freq` or `cpu_capacity`, GB10: the ten Cortex-X925 at 3.9 GHz / capacity 997 to 1024, excluding the ten Cortex-A725 at 2.808 GHz / capacity 718 to 731); `fast`, `auto` or `dedicated` pins it to the highest performance core in `sched_getaffinity` (GB10: CPU 19). `stats()` reports `proxy_cpus` and `proxy_cpu_observed`. Measured on the probe (see below), a candidate for the recipe environment pending a serving benchmark |
 
 The capacity and all-gather limits are constructor arguments; the vLLM
 adapter reads `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES` and

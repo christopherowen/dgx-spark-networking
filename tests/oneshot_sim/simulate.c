@@ -470,13 +470,57 @@ static void placement(void) {
     assert(resolve_proxy_cpus("-1", mask, err, sizeof err) == -1);
     assert(resolve_proxy_cpus("1000000", mask, err, sizeof err) == -1);
     int big = resolve_proxy_cpus("big", mask, err, sizeof err);
-    assert(big >= 1 || strstr(err, "cpu_capacity"));  // hosts without cpu_capacity refuse "big"
+    assert(big >= 1 || strstr(err, "cpu_capacity"));  // hosts without sysfs perf metrics refuse "big"
     if (big >= 1) {
         int selected = 0;
-        for (long cpu = 0; cpu < CPU_SETSIZE; cpu++) selected += mask_test(mask, cpu);
-        assert(selected == big);
+        long highest_big = -1;
+        for (long cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+            if (mask_test(mask, cpu)) {
+                selected++;
+                highest_big = cpu;
+            }
+        }
+        assert(selected == big && highest_big >= 0);
+        uint64_t fast_mask[ROCE_CPU_WORDS];
+        assert(resolve_proxy_cpus("fast", fast_mask, err, sizeof err) == 1);
+        assert(mask_test(fast_mask, highest_big));
+        assert(resolve_proxy_cpus("auto", fast_mask, err, sizeof err) == 1);
+        assert(mask_test(fast_mask, highest_big));
+        assert(resolve_proxy_cpus("dedicated", fast_mask, err, sizeof err) == 1);
+        assert(mask_test(fast_mask, highest_big));
+    }
+    if (sysconf(_SC_NPROCESSORS_CONF) >= 2) {
+        assert(resolve_proxy_cpus("0-1", mask, err, sizeof err) == 2 && mask_test(mask, 0) && mask_test(mask, 1));
+        assert(resolve_proxy_cpus("0,1", mask, err, sizeof err) == 2 && mask_test(mask, 0) && mask_test(mask, 1));
+        assert(resolve_proxy_cpus("1-0", mask, err, sizeof err) == -1);
+        assert(resolve_proxy_cpus("0,", mask, err, sizeof err) == -1);
     }
 #ifdef __linux__
+    if (big >= 2) {
+        cpu_set_t orig_set, sub_set;
+        CPU_ZERO(&orig_set);
+        if (sched_getaffinity(0, sizeof(orig_set), &orig_set) == 0) {
+            long first_big = -1, second_big = -1;
+            for (long cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+                if (mask_test(mask, cpu)) {
+                    if (first_big < 0) first_big = cpu;
+                    else if (second_big < 0) { second_big = cpu; break; }
+                }
+            }
+            if (first_big >= 0 && second_big >= 0) {
+                CPU_ZERO(&sub_set);
+                CPU_SET(first_big, &sub_set);
+                if (sched_setaffinity(0, sizeof(sub_set), &sub_set) == 0) {
+                    uint64_t sub_mask[ROCE_CPU_WORDS];
+                    assert(resolve_proxy_cpus("big", sub_mask, err, sizeof err) == 1);
+                    assert(mask_test(sub_mask, first_big) && !mask_test(sub_mask, second_big));
+                    assert(resolve_proxy_cpus("fast", sub_mask, err, sizeof err) == 1);
+                    assert(mask_test(sub_mask, first_big));
+                    sched_setaffinity(0, sizeof(orig_set), &orig_set);
+                }
+            }
+        }
+    }
     world = 3; ring4 = 0; stripes = 1; rotate = 0;
     setup(0);
     mask_set(ranks[0]->proxy_cpu_mask, 0);

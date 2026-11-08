@@ -45,6 +45,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -182,30 +185,73 @@ static void mask_set(uint64_t *mask, long cpu) { mask[cpu / 64] |= (uint64_t)1 <
 
 static int mask_test(const uint64_t *mask, long cpu) { return (int)((mask[cpu / 64] >> (cpu % 64)) & 1u); }
 
-static long cpu_capacity(long cpu) {
-    char path[96];
-    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", cpu);
+static long read_sysfs_long(const char *path) {
     FILE *f = fopen(path, "r");
     if (f == NULL) {
         return -1;
     }
-    long capacity = -1;
-    if (fscanf(f, "%ld", &capacity) != 1) {
-        capacity = -1;
+    long value = -1;
+    if (fscanf(f, "%ld", &value) != 1) {
+        value = -1;
     }
     fclose(f);
-    return capacity;
+    return value;
+}
+
+static long cpu_max_freq_khz(long cpu) {
+    char path[112];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", cpu);
+    return read_sysfs_long(path);
+}
+
+static long cpu_capacity(long cpu) {
+    char path[96];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", cpu);
+    return read_sysfs_long(path);
+}
+
+static long cpu_perf_score(long cpu) {
+    long freq = cpu_max_freq_khz(cpu);
+    if (freq > 0) {
+        return freq;
+    }
+    return cpu_capacity(cpu);
+}
+
+static void get_allowed_cpu_mask(uint64_t *allowed, long ncpu) {
+    memset(allowed, 0, ROCE_CPU_WORDS * sizeof(uint64_t));
+#ifdef __linux__
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        int any = 0;
+        for (long cpu = 0; cpu < ncpu; cpu++) {
+            if (CPU_ISSET(cpu, &set)) {
+                mask_set(allowed, cpu);
+                any = 1;
+            }
+        }
+        if (any) {
+            return;
+        }
+    }
+#endif
+    for (long cpu = 0; cpu < ncpu; cpu++) {
+        mask_set(allowed, cpu);
+    }
 }
 
 // SPARKNET_ROCE_PROXY_CPU: unset, empty or "none" leaves the proxy thread to
-// the scheduler; a CPU number pins it to that core; "big" confines it to the
-// big-core cluster: every core whose sysfs cpu_capacity lies above the
-// midpoint between the smallest and the largest capacity (the GB10 reports
-// its ten Cortex-X925 cores at 997 to 1024 and its ten Cortex-A725 cores at
-// 718 to 731; a homogeneous host selects every core). An unpinned poller can
-// land on a little core, and a single-core pin would compete with whatever
-// the serving process keeps on that core. Fills the mask and returns the
-// number of CPUs selected (0 = unpinned), or -1 with err set.
+// the scheduler; a CPU number or comma-separated list/range (e.g. "19" or
+// "5-9,15-19") pins it to those cores; "big" confines it to the performance-core
+// cluster intersected with sched_getaffinity (every core whose sysfs
+// cpufreq/cpuinfo_max_freq or cpu_capacity lies above the host midpoint: on
+// GB10, the ten Cortex-X925 cores at 3.9 GHz / capacity 997..1024 vs. the ten
+// Cortex-A725 cores at 2.808 GHz / capacity 718..731); "fast", "auto" or
+// "dedicated" pins it to the highest-numbered performance core in
+// sched_getaffinity (CPU 19 on GB10) so the polling thread owns a dedicated
+// Cortex-X925 core without migrating across worker cores. Fills the mask and
+// returns the number of CPUs selected (0 = unpinned), or -1 with err set.
 static int resolve_proxy_cpus(const char *value, uint64_t *mask, char *err, size_t err_len) {
     memset(mask, 0, ROCE_CPU_WORDS * sizeof(uint64_t));
     if (value == NULL || value[0] == '\0' || strcmp(value, "none") == 0) {
@@ -215,49 +261,119 @@ static int resolve_proxy_cpus(const char *value, uint64_t *mask, char *err, size
     if (ncpu > CPU_SETSIZE) {
         ncpu = CPU_SETSIZE;
     }
-    if (strcmp(value, "big") == 0) {
+    int want_single_fast = (
+        strcmp(value, "fast") == 0 ||
+        strcmp(value, "auto") == 0 ||
+        strcmp(value, "dedicated") == 0
+    );
+    if (strcmp(value, "big") == 0 || want_single_fast) {
         long best = -1, worst = -1;
         for (long cpu = 0; cpu < ncpu; cpu++) {
-            long capacity = cpu_capacity(cpu);
-            if (capacity < 0) {
+            long score = cpu_perf_score(cpu);
+            if (score < 0) {
                 continue;
             }
-            if (capacity > best) {
-                best = capacity;
+            if (score > best) {
+                best = score;
             }
-            if (worst < 0 || capacity < worst) {
-                worst = capacity;
+            if (worst < 0 || score < worst) {
+                worst = score;
             }
         }
         if (best < 0) {
-            snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU=big: no cpu_capacity under /sys/devices/system/cpu");
+            snprintf(err, err_len,
+                     "SPARKNET_ROCE_PROXY_CPU=%s: no cpuinfo_max_freq or cpu_capacity under /sys/devices/system/cpu",
+                     value);
             return -1;
         }
+        uint64_t allowed[ROCE_CPU_WORDS];
+        get_allowed_cpu_mask(allowed, ncpu);
         long threshold = (best + worst) / 2;
         int count = 0;
+        long last_fast = -1;
         for (long cpu = 0; cpu < ncpu; cpu++) {
-            long capacity = cpu_capacity(cpu);
-            if (capacity >= 0 && (best == worst || capacity > threshold)) {
+            if (!mask_test(allowed, cpu)) {
+                continue;
+            }
+            long score = cpu_perf_score(cpu);
+            if (score >= 0 && (best == worst || score > threshold)) {
+                mask_set(mask, cpu);
+                last_fast = cpu;
+                count++;
+            }
+        }
+        if (count == 0) {
+            for (long cpu = 0; cpu < ncpu; cpu++) {
+                if (!mask_test(allowed, cpu)) {
+                    continue;
+                }
+                if (cpu_perf_score(cpu) >= 0) {
+                    mask_set(mask, cpu);
+                    last_fast = cpu;
+                    count++;
+                }
+            }
+        }
+        if (want_single_fast && last_fast >= 0) {
+            memset(mask, 0, ROCE_CPU_WORDS * sizeof(uint64_t));
+            mask_set(mask, last_fast);
+            return 1;
+        }
+        return count;
+    }
+    const char *p = value;
+    int count = 0;
+    while (*p != '\0') {
+        char *end = NULL;
+        long start = strtol(p, &end, 10);
+        if (end == p || start < 0 || start >= ncpu) {
+            snprintf(err, err_len,
+                     "SPARKNET_ROCE_PROXY_CPU must be none, big, fast, auto, dedicated or CPU number/range below %ld",
+                     ncpu);
+            return -1;
+        }
+        long stop = start;
+        p = end;
+        if (*p == '-') {
+            p++;
+            stop = strtol(p, &end, 10);
+            if (end == p || stop < start || stop >= ncpu) {
+                snprintf(err, err_len,
+                         "SPARKNET_ROCE_PROXY_CPU must be none, big, fast, auto, dedicated or CPU number/range below %ld",
+                         ncpu);
+                return -1;
+            }
+            p = end;
+        }
+        for (long cpu = start; cpu <= stop; cpu++) {
+            if (!mask_test(mask, cpu)) {
                 mask_set(mask, cpu);
                 count++;
             }
         }
-        return count;
+        if (*p == ',') {
+            p++;
+            if (*p == '\0') {
+                snprintf(err, err_len,
+                         "SPARKNET_ROCE_PROXY_CPU must be none, big, fast, auto, dedicated or CPU number/range below %ld",
+                         ncpu);
+                return -1;
+            }
+        } else if (*p != '\0') {
+            snprintf(err, err_len,
+                     "SPARKNET_ROCE_PROXY_CPU must be none, big, fast, auto, dedicated or CPU number/range below %ld",
+                     ncpu);
+            return -1;
+        }
     }
-    char *end = NULL;
-    long cpu = strtol(value, &end, 10);
-    if (end == value || *end != '\0' || cpu < 0 || cpu >= ncpu) {
-        snprintf(err, err_len, "SPARKNET_ROCE_PROXY_CPU must be none, big or a CPU number below %ld", ncpu);
-        return -1;
-    }
-    mask_set(mask, cpu);
-    return 1;
+    return count;
 }
 
 // Name the proxy thread and apply the requested placement from inside it.
 static int place_proxy_thread(roce_ctx_t *c) {
 #ifdef __linux__
     pthread_setname_np(pthread_self(), "sparknet-proxy");
+    prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0);
     if (c->proxy_cpu_count > 0) {
         cpu_set_t set;
         CPU_ZERO(&set);

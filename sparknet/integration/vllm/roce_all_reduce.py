@@ -110,6 +110,11 @@ class SparknetOneShotAllReduce:
 
         from sparknet import oneshot
 
+        # Default to a dedicated fast performance core on heterogeneous hosts
+        # (GB10 Cortex-X925 vs. Cortex-A725) when no explicit policy was set.
+        if "SPARKNET_ROCE_PROXY_CPU" not in os.environ:
+            os.environ["SPARKNET_ROCE_PROXY_CPU"] = "fast"
+
         try:
             # Exchange setup over the CPU (gloo) group: using the torch NCCL
             # group would create a torch NCCL communicator that vLLM otherwise
