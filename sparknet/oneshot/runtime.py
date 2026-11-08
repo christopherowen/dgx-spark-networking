@@ -874,6 +874,33 @@ class RoceOneshotAllReduce:
         span_elems = (self.world_size - 1) * int(peer_stride_elems) + int(chunk_elems)
         return torch.as_strided(tensor, (span_elems,), (1,)).view(torch.int32)
 
+    def _collective_stage_rows(
+        self,
+        local_rows: int,
+        collective_row_bytes: int,
+        slot_row_bytes: int | None = None,
+    ) -> tuple[int, int]:
+        """Return (stage_rows, num_stages) for a collective of local_rows rows."""
+        slot_unit = slot_row_bytes if slot_row_bytes is not None else collective_row_bytes
+        slot_max_rows = max(1, self._slot_bytes // slot_unit)
+        env_stage = int(os.environ.get("SPARKNET_ROCE_STAGE_BYTES", "4194304"))
+        if env_stage <= 0:
+            stage_rows = min(local_rows, slot_max_rows)
+        else:
+            stage_rows = max(
+                1,
+                min(local_rows, slot_max_rows, env_stage // collective_row_bytes),
+            )
+        num_stages = (local_rows + stage_rows - 1) // stage_rows
+        return stage_rows, num_stages
+
+    def _collective_max_blocks(self, num_stages: int, total_bytes: int) -> int:
+        """Return the CTA cap for SP prefill collectives to preserve SM occupancy."""
+        env_blocks = int(os.environ.get("SPARKNET_ROCE_COLLECTIVE_BLOCKS", "8"))
+        if env_blocks > 0:
+            return min(self._blocks, env_blocks)
+        return self._blocks
+
     def _launch(
         self,
         src: torch.Tensor,
@@ -887,14 +914,20 @@ class RoceOneshotAllReduce:
         valid_out_packs: int = -1,
         copy_self: int = 0,
         raw_words: bool = False,
+        num_stages: int = 1,
+        stage_packs: int = 0,
+        max_blocks: int = 0,
     ) -> Launch:
         """The family-neutral description of one collective launch."""
-        grid_blocks = _grid_blocks(nbytes // PACK_BYTES, self._threads, self._blocks)
+        size_packs = nbytes // PACK_BYTES
+        eff_packs = stage_packs if stage_packs > 0 else size_packs
+        block_cap = min(self._blocks, max_blocks) if max_blocks > 0 else self._blocks
+        grid_blocks = _grid_blocks(eff_packs, self._threads, block_cap)
         stage_index, tail_index = self._counter_indices(grid_blocks)
         inp_words = src if raw_words else self._words(src)
         out_words = dst if raw_words else self._words(dst)
         return Launch(
-            input=inp_words, output=out_words, size_packs=nbytes // PACK_BYTES, nbytes=nbytes,
+            input=inp_words, output=out_words, size_packs=size_packs, nbytes=nbytes,
             region=self._region, recv_off=self._layout.recv_off, flag_off=self._layout.flag_off,
             send_off=self._layout.send_off, ctrl_off=self._layout.ctrl_off, slot_bytes=self._slot_bytes,
             counters=self._counters, stage_index=stage_index, tail_index=tail_index,
@@ -902,6 +935,7 @@ class RoceOneshotAllReduce:
             grid_x=grid_blocks, row_packs=row_packs, trace_base=self._trace_base,
             src_peer_packs=src_peer_packs, dst_peer_packs=dst_peer_packs,
             total_src_packs=total_src_packs, valid_out_packs=valid_out_packs, copy_self=copy_self,
+            num_stages=num_stages, stage_packs=stage_packs,
         )
 
     def prepare(
@@ -1249,7 +1283,10 @@ class RoceOneshotAllReduce:
             with torch.cuda.device(self.device), context:
                 capturing = torch.cuda.is_current_stream_capturing()
                 nbytes = inp.numel() * inp.element_size()
-                if nbytes > self.max_gather_bytes:
+                direct = self._direct_gather_layout(inp, dim) and (
+                    out is None or out.data_ptr() % PACK_BYTES == 0
+                )
+                if direct or nbytes > self.max_gather_bytes:
                     if out is None:
                         out = torch.empty(shape, dtype=inp.dtype, device=inp.device)
                     launcher = self._resolve_gather_launcher(capturing)
@@ -1257,60 +1294,50 @@ class RoceOneshotAllReduce:
                     if dim == 0:
                         local_rows = inp.shape[0]
                         row_bytes = nbytes // local_rows
-                        max_rows = self._slot_bytes // row_bytes
                         full_shard_packs = nbytes // PACK_BYTES
-                        for lo in range(0, local_rows, max_rows):
-                            hi = min(local_rows, lo + max_rows)
-                            slice_bytes = (hi - lo) * row_bytes
-                            slice_packs = slice_bytes // PACK_BYTES
-                            out_slice = out[
-                                lo : (self.world_size - 1) * local_rows + hi
-                            ]
-                            self._launch_gather(
-                                launcher,
-                                inp[lo:hi],
-                                out_slice,
-                                slice_bytes,
-                                slice_packs,
-                                dst_peer_packs=full_shard_packs,
-                            )
+                        if not capturing and row_bytes % PACK_BYTES == 0 and 0 < row_bytes <= self._slot_bytes:
+                            stage_rows, num_stages = self._collective_stage_rows(local_rows, self.world_size * row_bytes, slot_row_bytes=row_bytes)
+                            stage_packs = (stage_rows * row_bytes) // PACK_BYTES
+                            max_blocks = self._collective_max_blocks(num_stages, self.world_size * nbytes)
+                        else:
+                            num_stages = 1
+                            stage_packs = full_shard_packs
+                            max_blocks = 0
+                        self._launch_gather(
+                            launcher,
+                            inp,
+                            out,
+                            nbytes,
+                            full_shard_packs,
+                            dst_peer_packs=full_shard_packs,
+                            num_stages=num_stages,
+                            stage_packs=stage_packs,
+                            max_blocks=max_blocks,
+                        )
                     else:
                         width = inp.shape[-1]
                         rows = inp.numel() // width
                         row_bytes = width * inp.element_size()
                         row_packs = row_bytes // PACK_BYTES
-                        max_rows = self._slot_bytes // row_bytes
-                        inp_2d = inp.view(rows, width)
-                        out_2d = out.view(rows, self.world_size * width)
-                        for lo in range(0, rows, max_rows):
-                            hi = min(rows, lo + max_rows)
-                            slice_bytes = (hi - lo) * row_bytes
-                            self._launch_gather(
-                                launcher,
-                                inp_2d[lo:hi],
-                                out_2d[lo:hi],
-                                slice_bytes,
-                                row_packs,
-                            )
-                    self._mark_stream(capturing)
-                    return out
-                # Both paths stage the shard contiguously and only the reader is
-                # strided, so ranks may take different paths for one collective.
-                direct = self._direct_gather_layout(inp, dim) and (
-                    out is None or out.data_ptr() % PACK_BYTES == 0
-                )
-                if direct:
-                    if out is None:
-                        out = torch.empty(shape, dtype=inp.dtype, device=inp.device)
-                    row_packs = (
-                        nbytes // PACK_BYTES
-                        if dim == 0
-                        else (inp.shape[-1] * inp.element_size()) // PACK_BYTES
-                    )
-                    self._order_stream(capturing)
-                    self._launch_gather(
-                        self._resolve_gather_launcher(capturing), inp, out, nbytes, row_packs,
-                    )
+                        if not capturing and 0 < row_bytes <= self._slot_bytes:
+                            stage_rows, num_stages = self._collective_stage_rows(rows, self.world_size * row_bytes, slot_row_bytes=row_bytes)
+                            stage_packs = stage_rows * row_packs
+                            max_blocks = self._collective_max_blocks(num_stages, self.world_size * nbytes)
+                        else:
+                            num_stages = 1
+                            stage_packs = nbytes // PACK_BYTES
+                            max_blocks = 0
+                        self._launch_gather(
+                            launcher,
+                            inp,
+                            out,
+                            nbytes,
+                            row_packs,
+                            dst_peer_packs=row_packs,
+                            num_stages=num_stages,
+                            stage_packs=stage_packs,
+                            max_blocks=max_blocks,
+                        )
                     self._mark_stream(capturing)
                     return out
                 # Padded path: pad each shard to a whole number of packs, gather
@@ -1369,12 +1396,11 @@ class RoceOneshotAllReduce:
         row_packs: int,
         *,
         dst_peer_packs: int = 0,
+        num_stages: int = 1,
+        stage_packs: int = 0,
+        max_blocks: int = 0,
     ) -> None:
         """Launch an already prepared all-gather kernel."""
-        # Same size-aware geometry as the all-reduce: a small shard (top-k
-        # values and ids, MTP logits) launches a few blocks instead of the
-        # full grid, and each power-of-two grid has its own arrival counters
-        # so gathers and reductions of any size may interleave in one graph.
         launcher(
             self._launch(
                 source,
@@ -1382,6 +1408,9 @@ class RoceOneshotAllReduce:
                 nbytes,
                 row_packs=row_packs,
                 dst_peer_packs=dst_peer_packs,
+                num_stages=num_stages,
+                stage_packs=stage_packs,
+                max_blocks=max_blocks,
             )
         )
         if not torch.cuda.is_current_stream_capturing():
@@ -1390,7 +1419,7 @@ class RoceOneshotAllReduce:
     # -- reduce-scatter & exchange ------------------------------------------------
 
     def should_reduce_scatter(self, inp: torch.Tensor, dim: int = 0) -> bool:
-        """Eligible: contiguous CUDA tensor of a supported dtype divisible along ``dim`` by ``world_size``."""
+        """Eligible: contiguous CUDA tensor of a supported dtype divisible along dim by world_size."""
         if self._closed or self._proxy is None:
             raise RuntimeError("RoCE runtime is closed")
         if inp.dtype not in SUPPORTED_DTYPES or not inp.is_cuda or inp.dim() == 0:
@@ -1423,7 +1452,7 @@ class RoceOneshotAllReduce:
         out: Optional[torch.Tensor] = None,
         stream: object = None,
     ) -> torch.Tensor:
-        """Reduce-scatter ``inp`` along ``dim`` (0) in fixed rank order with float32 accumulation."""
+        """Reduce-scatter inp along dim (0) in fixed rank order with float32 accumulation."""
         with self._lock:
             self.check_health()
             if not self.should_reduce_scatter(inp, dim):
@@ -1442,6 +1471,7 @@ class RoceOneshotAllReduce:
                 )
             nbytes = inp.numel() * inp.element_size()
             chunk_bytes = nbytes // self.world_size
+            row_bytes = chunk_bytes // local_rows
             context = (
                 torch.cuda.stream(stream) if stream is not None else _nullcontext()
             )
@@ -1450,7 +1480,14 @@ class RoceOneshotAllReduce:
                 launcher = self._reducescatter_launcher(inp.dtype, capturing)
                 if out is None:
                     out = torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
-                if nbytes <= self._slot_bytes:
+                can_pipeline = (
+                    not capturing
+                    and row_bytes % PACK_BYTES == 0
+                    and 0 < self.world_size * row_bytes <= self._slot_bytes
+                    and inp.data_ptr() % PACK_BYTES == 0
+                    and out.data_ptr() % PACK_BYTES == 0
+                )
+                if not can_pipeline and nbytes <= self._slot_bytes:
                     src = inp
                     if inp.data_ptr() % PACK_BYTES != 0:
                         src = self._aligned_scratch(0, inp)
@@ -1466,26 +1503,25 @@ class RoceOneshotAllReduce:
                         out.copy_(dst)
                     self._mark_stream(capturing)
                 else:
-                    row_bytes = chunk_bytes // local_rows
-                    max_rows = self._slot_bytes // (self.world_size * row_bytes)
+                    row_packs = row_bytes // PACK_BYTES
                     full_chunk_packs = chunk_bytes // PACK_BYTES
+                    stage_rows, num_stages = self._collective_stage_rows(
+                        local_rows, self.world_size * row_bytes
+                    )
+                    stage_packs = stage_rows * row_packs
+                    max_blocks = self._collective_max_blocks(num_stages, nbytes)
                     self._order_stream(capturing)
-                    for lo in range(0, local_rows, max_rows):
-                        hi = min(local_rows, lo + max_rows)
-                        slice_chunk_bytes = (hi - lo) * row_bytes
-                        inp_slice = inp[
-                            lo : (self.world_size - 1) * local_rows + hi
-                        ]
-                        launcher(
-                            self._launch(
-                                inp_slice,
-                                out[lo:hi],
-                                slice_chunk_bytes,
-                                src_peer_packs=full_chunk_packs,
-                            )
+                    launcher(
+                        self._launch(
+                            inp,
+                            out,
+                            chunk_bytes,
+                            src_peer_packs=full_chunk_packs,
+                            num_stages=num_stages,
+                            stage_packs=stage_packs,
+                            max_blocks=max_blocks,
                         )
-                        if not capturing:
-                            self.check_health()
+                    )
                     self._mark_stream(capturing)
         if not capturing:
             self.check_health()
@@ -1494,7 +1530,7 @@ class RoceOneshotAllReduce:
     def should_exchange(
         self, chunks: torch.Tensor, parts: Optional[torch.Tensor] = None
     ) -> bool:
-        """Eligible: ``(world_size, local_rows, ...)`` CUDA tensors with 16-byte-aligned peer slices."""
+        """Eligible: (world_size, local_rows, ...) CUDA tensors with 16-byte-aligned peer slices."""
         if self._closed or self._proxy is None:
             raise RuntimeError("RoCE runtime is closed")
         if not chunks.is_cuda or chunks.device != self.device or chunks.dim() < 2:
@@ -1546,7 +1582,7 @@ class RoceOneshotAllReduce:
         copy_self: bool = False,
         stream: object = None,
     ) -> torch.Tensor:
-        """Send ``chunks[p]`` to peer ``p`` and receive peer ``p``'s chunk into ``parts[p]``."""
+        """Send chunks[p] to peer p and receive peer p's chunk into parts[p]."""
         if parts is None and out is not None:
             parts = out
         with self._lock:
@@ -1563,6 +1599,8 @@ class RoceOneshotAllReduce:
                 return parts
             src_peer_packs = (int(chunks.stride(0)) * elem_size) // PACK_BYTES
             dst_peer_packs = (int(parts.stride(0)) * elem_size) // PACK_BYTES
+            local_rows = chunks.shape[1]
+            row_bytes = chunk_bytes // local_rows
             context = (
                 torch.cuda.stream(stream) if stream is not None else _nullcontext()
             )
@@ -1570,13 +1608,36 @@ class RoceOneshotAllReduce:
                 capturing = torch.cuda.is_current_stream_capturing()
                 launcher = self._resolve_exchange_launcher(capturing)
                 self._order_stream(capturing)
-                if self.world_size * chunk_bytes <= self._slot_bytes:
-                    src_words = self._span_words(
-                        chunks, int(chunks.stride(0)), chunks[0].numel()
+                src_words = self._span_words(
+                    chunks, int(chunks.stride(0)), chunks[0].numel()
+                )
+                dst_words = self._span_words(
+                    parts, int(parts.stride(0)), parts[0].numel()
+                )
+                if not capturing and row_bytes % PACK_BYTES == 0 and 0 < self.world_size * row_bytes <= self._slot_bytes:
+                    row_packs = row_bytes // PACK_BYTES
+                    stage_rows, num_stages = self._collective_stage_rows(
+                        local_rows, self.world_size * row_bytes
                     )
-                    dst_words = self._span_words(
-                        parts, int(parts.stride(0)), parts[0].numel()
+                    stage_packs = stage_rows * row_packs
+                    max_blocks = self._collective_max_blocks(
+                        num_stages, self.world_size * chunk_bytes
                     )
+                    launcher(
+                        self._launch(
+                            src_words,
+                            dst_words,
+                            chunk_bytes,
+                            src_peer_packs=src_peer_packs,
+                            dst_peer_packs=dst_peer_packs,
+                            copy_self=int(copy_self),
+                            raw_words=True,
+                            num_stages=num_stages,
+                            stage_packs=stage_packs,
+                            max_blocks=max_blocks,
+                        )
+                    )
+                else:
                     launcher(
                         self._launch(
                             src_words,
@@ -1588,41 +1649,13 @@ class RoceOneshotAllReduce:
                             raw_words=True,
                         )
                     )
-                else:
-                    local_rows = chunks.shape[1]
-                    row_bytes = chunk_bytes // local_rows
-                    max_rows = self._slot_bytes // (self.world_size * row_bytes)
-                    for lo in range(0, local_rows, max_rows):
-                        hi = min(local_rows, lo + max_rows)
-                        c_slice = chunks[:, lo:hi]
-                        p_slice = parts[:, lo:hi]
-                        slice_chunk_bytes = (hi - lo) * row_bytes
-                        src_words = self._span_words(
-                            c_slice, int(c_slice.stride(0)), c_slice[0].numel()
-                        )
-                        dst_words = self._span_words(
-                            p_slice, int(p_slice.stride(0)), p_slice[0].numel()
-                        )
-                        launcher(
-                            self._launch(
-                                src_words,
-                                dst_words,
-                                slice_chunk_bytes,
-                                src_peer_packs=src_peer_packs,
-                                dst_peer_packs=dst_peer_packs,
-                                copy_self=int(copy_self),
-                                raw_words=True,
-                            )
-                        )
-                        if not capturing:
-                            self.check_health()
                 self._mark_stream(capturing)
         if not capturing:
             self.check_health()
         return parts
 
     def should_all_to_all_rows(self, inp: torch.Tensor, rows: int) -> bool:
-        """Eligible: contiguous CUDA tensor with 16-byte rows and ``0 < inp.shape[0] <= world_size * rows``."""
+        """Eligible: contiguous CUDA tensor with 16-byte rows and 0 < inp.shape[0] <= world_size * rows."""
         if self._closed or self._proxy is None:
             raise RuntimeError("RoCE runtime is closed")
         if not inp.is_cuda or inp.device != self.device or inp.dim() < 1 or not inp.is_contiguous():
@@ -1652,7 +1685,7 @@ class RoceOneshotAllReduce:
         out: Optional[torch.Tensor] = None,
         stream: object = None,
     ) -> torch.Tensor:
-        """Exchange ``rows``-row blocks of ``inp`` into ``(world_size, rows, *inp.shape[1:])``."""
+        """Exchange rows-row blocks of inp into (world_size, rows, *inp.shape[1:])."""
         with self._lock:
             self.check_health()
             if not self.should_all_to_all_rows(inp, rows):
@@ -1674,6 +1707,7 @@ class RoceOneshotAllReduce:
             row_packs = row_bytes // PACK_BYTES
             full_chunk_packs = rows * row_packs
             chunk_bytes = rows * row_bytes
+            own_rows = max(0, min(rows, total - self.rank * rows))
             context = (
                 torch.cuda.stream(stream) if stream is not None else _nullcontext()
             )
@@ -1683,8 +1717,30 @@ class RoceOneshotAllReduce:
                 if out is None:
                     out = inp.new_empty(out_shape)
                 self._order_stream(capturing)
-                if self.world_size * chunk_bytes <= self._slot_bytes:
-                    own_rows = max(0, min(rows, total - self.rank * rows))
+                if not capturing and 0 < self.world_size * row_bytes <= self._slot_bytes:
+                    stage_rows, num_stages = self._collective_stage_rows(
+                        rows, self.world_size * row_bytes
+                    )
+                    stage_packs = stage_rows * row_packs
+                    max_blocks = self._collective_max_blocks(
+                        num_stages, self.world_size * chunk_bytes
+                    )
+                    launcher(
+                        self._launch(
+                            inp,
+                            out,
+                            chunk_bytes,
+                            src_peer_packs=full_chunk_packs,
+                            dst_peer_packs=full_chunk_packs,
+                            total_src_packs=total * row_packs,
+                            valid_out_packs=own_rows * row_packs,
+                            copy_self=1,
+                            num_stages=num_stages,
+                            stage_packs=stage_packs,
+                            max_blocks=max_blocks,
+                        )
+                    )
+                else:
                     launcher(
                         self._launch(
                             inp,
@@ -1697,36 +1753,6 @@ class RoceOneshotAllReduce:
                             copy_self=1,
                         )
                     )
-                else:
-                    max_rows = self._slot_bytes // (self.world_size * row_bytes)
-                    for lo in range(0, rows, max_rows):
-                        hi = min(rows, lo + max_rows)
-                        slice_rows = hi - lo
-                        slice_chunk_bytes = slice_rows * row_bytes
-                        inp_slice = inp[lo:] if lo < total else inp[:1]
-                        total_src_packs = max(0, total - lo) * row_packs
-                        own_slice_rows = max(
-                            0, min(slice_rows, total - (self.rank * rows + lo))
-                        )
-                        out_slice = out[:, lo:hi]
-                        dst_words = self._span_words(
-                            out_slice, int(out_slice.stride(0)), out_slice[0].numel()
-                        )
-                        launcher(
-                            self._launch(
-                                self._words(inp_slice),
-                                dst_words,
-                                slice_chunk_bytes,
-                                src_peer_packs=full_chunk_packs,
-                                dst_peer_packs=full_chunk_packs,
-                                total_src_packs=total_src_packs,
-                                valid_out_packs=own_slice_rows * row_packs,
-                                copy_self=1,
-                                raw_words=True,
-                            )
-                        )
-                        if not capturing:
-                            self.check_health()
                 self._mark_stream(capturing)
         if not capturing:
             self.check_health()
