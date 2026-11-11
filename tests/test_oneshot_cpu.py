@@ -133,6 +133,30 @@ class KernelFamilyTest(unittest.TestCase):
             self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
 
+    def test_tilelang_kernels_emit_pdl_sync_and_trigger(self):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
+            text = (ROCE / module_name).read_text()
+            sync_pos = text.find("T.pdl_sync()")
+            trigger_pos = text.find("T.pdl_trigger()")
+            first_addr = text.find("T.address_of(")
+            doorbell_pos = text.find("roce_doorbell")
+            wait_pos = text.find("roce_wait_peers")
+            self.assertGreater(sync_pos, 0, module_name)
+            self.assertGreater(first_addr, sync_pos, module_name)
+            self.assertGreater(trigger_pos, doorbell_pos, module_name)
+            self.assertLess(trigger_pos, wait_pos, module_name)
+            self.assertEqual(text.count("T.pdl_sync()"), 1, module_name)
+            self.assertEqual(text.count("T.pdl_trigger()"), 1, module_name)
+        # Multi-stage kernels trigger once, after the last stage's doorbell, so
+        # dependents do not hold SMs while stages remain.
+        for module_name in ("_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
+            text = (ROCE / module_name).read_text()
+            loop_pos = text.find("for s in T.serial(num_stages):")
+            guard = re.search(r"if s == num_stages - 1:\n\s+T\.pdl_trigger\(\)", text)
+            self.assertIsNotNone(guard, module_name)
+            self.assertGreater(guard.start(), loop_pos, module_name)
+            self.assertGreater(guard.start(), text.find("roce_doorbell"), module_name)
+
     def test_runtime_routes_launchers_to_the_tilelang_kernels(self):
         runtime = (ROCE / "runtime.py").read_text()
         self.assertIn("reduce_launcher(*self._launcher_key(dtype))", runtime)

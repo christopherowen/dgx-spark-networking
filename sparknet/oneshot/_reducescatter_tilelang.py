@@ -86,6 +86,8 @@ def _build(
             with T.Kernel(grid_x, threads=threads) as bx:
                 T.annotate_min_blocks_per_sm(resident)
                 T.import_source(source)
+                # PDL: wait for the producer grid before any global read (counters[0], inp)
+                T.pdl_sync()
                 tx = T.get_thread_binding()
                 epoch = T.alloc_var(T.uint32)
                 epoch = T.call_extern(
@@ -148,6 +150,10 @@ def _build(
                                 seq,
                                 dtype="handle",
                             )
+                    # PDL: after the last stage's doorbell let dependents launch (they read out
+                    # only after their own pdl_sync, which waits for this whole grid)
+                    if s == num_stages - 1:
+                        T.pdl_trigger()
 
                     T.call_extern(
                         "roce_wait_peers",
