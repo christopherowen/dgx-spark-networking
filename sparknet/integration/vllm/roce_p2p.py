@@ -116,7 +116,7 @@ class SparknetOneShotP2P:
         if not oneshot.is_supported(self.device):
             return "needs an integrated GPU with an active RDMA device", None
         try:
-            resolved_slot = int(slot_bytes) if slot_bytes is not None else parse_byte_size(_env(ENV_PP_SLOT_BYTES, "4MB"))
+            resolved_slot = int(slot_bytes) if slot_bytes is not None else parse_byte_size(_env(ENV_PP_SLOT_BYTES, "1MB"))
             resolved_pack = int(pack_bytes) if pack_bytes is not None else parse_byte_size(_env(ENV_PP_PACK_BYTES, "16MB"))
         except Exception as exc:  # noqa: BLE001
             return f"invalid one-shot P2P size limit: {exc}", None

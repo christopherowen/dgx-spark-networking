@@ -111,22 +111,37 @@ communicator.
 
 Each rank owns one pinned host region with independent per-peer 4-slot rings
 (`ROCE_P2P_SLOTS = 4`, proxy ABI `ROCE_P2P_ABI_VERSION = 1`). Single-chunk
-decode transfers (`<= slot_bytes`, default 4 MiB) stage into the send slot,
-ring the proxy doorbell, and return immediately whenever credit is available;
-larger prefill tensors stream in pipelined chunks inside one kernel launch with
-up to four slots in flight. Receivers publish 4-byte inline RDMA ACKs on lane 0
+decode transfers (`<= slot_bytes`, default 1 MiB, 8 MiB pinned per PP=2 rank)
+stage into the send slot, ring the proxy doorbell, and return immediately
+whenever credit is available; larger transfers pipeline up to four 1 MiB slots
+in flight inside one kernel launch, overlapping GPU staging, dual-stripe RDMA
+writes, and remote unpack. Receivers publish 4-byte inline RDMA ACKs on lane 0
 (strict RC QP FIFO order) once each slot is consumed.
 
 | Name | Meaning |
 | --- | --- |
 | `SPARKNET_ROCE_PP_PEER_HCAS` | JSON `{pp_peer_rank: [local HCAs in stripe order]}` for cabled PP pairs (e.g. `oneshot-pp2-ring4`) |
 | `SPARKNET_ROCE_PP_HCA` | explicit HCA list for switched PP fabrics (falls back to `SPARKNET_ROCE_HCA` / discovery) |
-| `SPARKNET_ROCE_PP_SLOT_BYTES` | per-slot byte capacity of the 4-slot P2P ring (default `4MB`) |
+| `SPARKNET_ROCE_PP_SLOT_BYTES` | per-slot byte capacity of the 4-slot P2P ring (default `1MB`) |
 | `SPARKNET_ROCE_PP_PACK_BYTES` | max flat coalesced byte size for `send_tensors`/`recv_tensors` before zero-copy per-tensor streaming (default `16MB`) |
 | `SPARKNET_ROCE_PP_TIMEOUT_MS` | fail-stop wait timeout for P2P credit/flag waits (falls back to `SPARKNET_ROCE_TIMEOUT_MS`, default `30000`) |
 | `SPARKNET_ROCE_PP_PROXY_CPU` | optional CPU placement for the `sparknet-p2p` proxy thread |
 
 The vLLM adapter lives in `sparknet.integration.vllm.SparknetOneShotP2P`.
+
+Measured on a dual-stripe 200 GbE ConnectX-7 cable (`dgx1` to `dgx4`,
+`slot_bytes=1 MiB`, 40 ping-pong iterations, `benchmarks/benchmark_p2p.py`,
+one-way median latency):
+
+| Payload | NCCL `isend`/`irecv` | One-shot P2P (eager) | One-shot P2P (graph) | NCCL GB/s | One-shot P2P GB/s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 KiB | 18.5 to 19.1 us | 19.8 us | 11.1 us | 0.21 | 0.21 | 1.7x |
+| 64 KiB | 26.2 us | 22.7 us | 16.6 us | 2.51 | 2.88 | 1.57x |
+| 300 KiB | 38.9 us | 34.6 us | 28.5 us | 7.91 | 8.87 | 1.36x |
+| 1.2 MiB | 78.6 us | 75.1 us | 69.4 us | 15.63 | 16.37 | 1.13x |
+| 4 MiB | 206.4 us | 201.2 us | 195.2 us | 20.33 | 20.84 | 1.06x |
+| 16 MiB | 742.7 us | 735.4 us | 728.8 us | 22.59 | 22.81 | 1.02x |
+| 64 MiB | 2,880.7 us | 2,808.1 us | n/a | 23.30 | 23.90 | 1.03x |
 
 ## Evidence
 

@@ -44,7 +44,7 @@ def main() -> None:
     )
     parser.add_argument("--iters", type=int, default=40)
     parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--slot-mib", type=int, default=4)
+    parser.add_argument("--slot-mib", type=int, default=1)
     args = parser.parse_args()
 
     dist.init_process_group("nccl", timeout=timedelta(seconds=60))

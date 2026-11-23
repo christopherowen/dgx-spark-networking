@@ -64,7 +64,7 @@ from .runtime import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_P2P_SLOT_BYTES = 4 * 1024 * 1024
+DEFAULT_P2P_SLOT_BYTES = 1 * 1024 * 1024
 DEFAULT_P2P_PACK_BYTES = 16 * 1024 * 1024
 DEFAULT_P2P_TIMEOUT_MS = 30_000
 CTRL_ERROR_KIND_WORD = 9
