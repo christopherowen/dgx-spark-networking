@@ -53,6 +53,30 @@ class Launch:
     copy_self: int = 0  # exchange / all-to-all: copy this rank's own block into output
 
 
+@dataclass(frozen=True)
+class P2PLaunch:
+    """One point-to-point send or recv launch."""
+
+    tensor: Any
+    total_packs: int
+    chunk_packs: int
+    num_chunks: int
+    peer_slot: int
+    peer_rank: int
+    region: Any
+    data_off: int
+    signal_off: int
+    doorbell_off: int
+    ctrl_off: int
+    slot_bytes: int
+    counters: Any
+    epoch_index: int
+    barrier_index: int
+    ready_index: int
+    done_index: int
+    grid_x: int
+
+
 def kernel_setting_problems(environ: Mapping[str, str]) -> list[str]:
     """The family switch is gone: one message when it is still set."""
     if environ.get(REMOVED_KERNEL_SETTING):
@@ -89,13 +113,30 @@ def exchange_launcher(*key) -> Callable[..., None]:
     return get_launcher(*key)
 
 
+def p2p_send_launcher(*key) -> Callable[..., None]:
+    """The compiled P2P send launcher for ``key`` (world, rank, geometry)."""
+    from ._p2p_tilelang import get_send_launcher
+
+    return get_send_launcher(*key)
+
+
+def p2p_recv_launcher(*key) -> Callable[..., None]:
+    """The compiled P2P recv launcher for ``key`` (world, rank, geometry)."""
+    from ._p2p_tilelang import get_recv_launcher
+
+    return get_recv_launcher(*key)
+
+
 __all__ = [
     "Launch",
+    "P2PLaunch",
     "PACK_BYTES",
     "REMOVED_KERNEL_SETTING",
     "exchange_launcher",
     "gather_launcher",
     "kernel_setting_problems",
+    "p2p_recv_launcher",
+    "p2p_send_launcher",
     "reduce_launcher",
     "reducescatter_launcher",
 ]

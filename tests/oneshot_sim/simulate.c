@@ -16,9 +16,10 @@ struct transfer {
 };
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static roce_ctx_t *ranks[4];
+static roce_p2p_ctx_t *p2p_ranks[4];
 static uint32_t rng = 1;
 static unsigned random_u32(void) { rng ^= rng << 13; rng ^= rng >> 17; return rng ^= rng << 5; }
-static int world, ring4, stripes, rotate, exchange_mode;
+static int world, ring4, stripes, rotate, exchange_mode, p2p_mode;
 static uint64_t messages;
 static unsigned posted_in_round[4];
 static uint32_t posted_seq[4];
@@ -29,6 +30,38 @@ static unsigned char written_valid[4][4][4096 / 16];
 int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *wr, struct ibv_send_wr **bad) {
     (void)bad;
     assert(qp && qp->source != qp->dest);
+    if (p2p_mode) {
+        pthread_mutex_lock(&lock);
+        for (; wr; wr = wr->next) {
+            assert(wr->num_sge == 1 && wr->opcode == IBV_WR_RDMA_WRITE);
+            struct transfer *t = calloc(1, sizeof(*t));
+            t->source = (uint8_t *)(uintptr_t)wr->sg_list->addr;
+            t->dest = (uint8_t *)(uintptr_t)wr->wr.rdma.remote_addr;
+            t->bytes = wr->sg_list->length;
+            roce_p2p_ctx_t *c = p2p_ranks[qp->source], *d = p2p_ranks[qp->dest];
+            assert(t->dest >= d->region && t->dest + t->bytes <= d->region + d->region_bytes);
+            t->inline_data = !!(wr->send_flags & IBV_SEND_INLINE);
+            t->signaled = !!(wr->send_flags & IBV_SEND_SIGNALED);
+            if (t->inline_data) {
+                assert(t->bytes == 4);
+                memcpy(&t->inline_value, t->source, 4);
+            } else {
+                assert(t->source >= c->region && t->source + t->bytes <= c->region + c->region_bytes);
+                assert(wr->sg_list->lkey == c->hca[qp->hca].mr->lkey);
+            }
+            int path = -1;
+            for (int i = 0; i < c->n_stripes; i++)
+                if (c->route_hca[qp->dest][i] == qp->hca) path = i;
+            assert(path >= 0);
+            assert(wr->wr.rdma.rkey == c->peer_rkey[path][qp->dest]);
+            t->id = wr->wr_id;
+            if (qp->tail) qp->tail->next = t; else qp->head = t;
+            qp->tail = t;
+            messages++;
+        }
+        pthread_mutex_unlock(&lock);
+        return 0;
+    }
     if (ring4 == 1) assert((qp->source + 2) % 4 != qp->dest);
     if (rotate) {
         struct ibv_send_wr *last = wr;
@@ -458,6 +491,199 @@ static void placement(void) {
 #endif
 }
 
+static void p2p_progress(void) {
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < 12; i++) {
+        int r = random_u32() % world, h = random_u32() % p2p_ranks[r]->n_hca, p = random_u32() % world;
+        deliver(p2p_ranks[r]->hca[h].qp[p]);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+static uint32_t *p2p_flag(roce_p2p_ctx_t *c, int src, uint32_t seq, int lane) {
+    int pi = p2p_peer_slot(c->rank, src);
+    uint32_t slot = seq & (ROCE_P2P_SLOTS - 1u);
+    return (uint32_t *)(c->region + c->flag_off +
+                        (((size_t)pi * ROCE_P2P_SLOTS + slot) * (size_t)c->n_stripes + (size_t)lane) * ROCE_FLAG_STRIDE);
+}
+
+static uint32_t *p2p_tx_ctrl(roce_p2p_ctx_t *c, int dst) {
+    int pi = p2p_peer_slot(c->rank, dst);
+    return (uint32_t *)(c->region + c->tx_ctrl_off + (size_t)pi * ROCE_FLAG_STRIDE);
+}
+
+static uint32_t *p2p_ack_ctrl(roce_p2p_ctx_t *c, int src) {
+    int pi = p2p_peer_slot(c->rank, src);
+    return (uint32_t *)(c->region + c->ack_ctrl_off + (size_t)pi * ROCE_FLAG_STRIDE);
+}
+
+static uint32_t *p2p_tx_ack(roce_p2p_ctx_t *c, int dst) {
+    int pi = p2p_peer_slot(c->rank, dst);
+    return (uint32_t *)(c->region + c->tx_ack_off + (size_t)pi * ROCE_FLAG_STRIDE);
+}
+
+static void p2p_setup(uint32_t seed) {
+    p2p_mode = 1;
+    uint64_t layout[10];
+    assert(!roce_p2p_layout(world, 4096, layout));
+    assert(layout[9] == ROCE_P2P_SLOTS);
+    for (int r = 0; r < world; r++) {
+        roce_p2p_ctx_t *c = p2p_ranks[r] = calloc(1, sizeof(*c));
+        c->world = world; c->rank = r; c->n_stripes = stripes; c->n_hca = stripes;
+        c->slot_bytes = 4096; c->region_bytes = layout[7]; c->region = calloc(1, layout[7]);
+        c->recv_off = layout[0]; c->flag_off = layout[1]; c->send_off = layout[2];
+        c->tx_ctrl_off = layout[3]; c->ack_ctrl_off = layout[4]; c->tx_ack_off = layout[5];
+        c->ctrl_off = layout[6];
+        memset(c->route_hca, 255, sizeof(c->route_hca));
+        for (int h = 0; h < c->n_hca; h++) {
+            c->hca[h].cq = calloc(1, sizeof(struct ibv_cq));
+            c->hca[h].mr = calloc(1, sizeof(struct ibv_mr));
+            c->hca[h].mr->lkey = c->hca[h].mr->rkey = 200 + r * 4 + h;
+            c->hca[h].gid_index = (r + h) % 6 + 2;
+        }
+        for (int p = 0; p < world; p++) {
+            if (p == r) continue;
+            for (int lane = 0; lane < stripes; lane++) {
+                c->route_hca[p][lane] = (uint8_t)lane;
+                struct ibv_qp *q = c->hca[lane].qp[p] = calloc(1, sizeof(*q));
+                q->source = r; q->dest = p; q->hca = lane; q->cq = c->hca[lane].cq;
+                q->qp_num = 100 + r * 16 + lane * 4 + p;
+                for (uint32_t slot = 0; slot < ROCE_P2P_SLOTS; slot++) {
+                    *p2p_flag(c, p, slot, lane) = seed;
+                }
+            }
+            p2p_tx_ctrl(c, p)[0] = seed;
+            p2p_ack_ctrl(c, p)[0] = seed;
+            p2p_tx_ack(c, p)[0] = seed;
+        }
+        ((uint32_t *)(c->region + c->ctrl_off))[ROCE_CTRL_TIMEOUT_WORD] = 10000000;
+    }
+    roce_p2p_blob_t blobs[4];
+    for (int r = 0; r < world; r++) {
+        assert(!roce_p2p_local_blob(p2p_ranks[r], &blobs[r], sizeof(blobs[r])));
+    }
+    blobs[world - 1].abi--;
+    assert(roce_p2p_connect(p2p_ranks[0], blobs, sizeof(roce_p2p_blob_t) * (size_t)world) == -1);
+    blobs[world - 1].abi++;
+    blobs[world - 1].slot_bytes += 4096;
+    assert(roce_p2p_connect(p2p_ranks[0], blobs, sizeof(roce_p2p_blob_t) * (size_t)world) == -1);
+    blobs[world - 1].slot_bytes -= 4096;
+    for (int r = 0; r < world; r++) {
+        assert(!roce_p2p_connect(p2p_ranks[r], blobs, sizeof(roce_p2p_blob_t) * (size_t)world));
+    }
+}
+
+static void p2p_cleanup(void) {
+    for (int r = 0; r < world; r++) roce_p2p_stop(p2p_ranks[r]);
+    for (int r = 0; r < world; r++) {
+        roce_p2p_ctx_t *c = p2p_ranks[r]; uint8_t *region = c->region;
+        for (int h = 0; h < c->n_hca; h++) for (int p = 0; p < world; p++) {
+            struct ibv_qp *q = c->hca[h].qp[p];
+            if (q) while (q->head) { struct transfer *t = q->head; q->head = t->next; free(t); }
+        }
+        roce_p2p_destroy(c); free(region);
+        p2p_ranks[r] = NULL;
+    }
+    p2p_mode = 0;
+}
+
+static void p2p_run(unsigned count, uint32_t seed) {
+    p2p_setup(seed);
+    uint32_t tx_next[4][4], rx_next[4][4];
+    unsigned tx_done[4][4] = {{0}}, rx_done[4][4] = {{0}};
+    for (int r = 0; r < world; r++) {
+        for (int p = 0; p < world; p++) {
+            tx_next[r][p] = seed + 1;
+            rx_next[r][p] = seed + 1;
+        }
+        assert(!roce_p2p_start(p2p_ranks[r]));
+    }
+    // Pause rank 0's proxy until its GPU has rung all 4 slots (catches up 4 pending sends).
+    roce_p2p_stop(p2p_ranks[0]);
+    int resumed = 0;
+    unsigned remaining = count * (unsigned)world * (unsigned)(world - 1);
+    while (remaining) {
+        p2p_progress();
+        if (!resumed && __atomic_load_n(&p2p_tx_ctrl(p2p_ranks[0], 1)[0], __ATOMIC_ACQUIRE) == seed + ROCE_P2P_SLOTS) {
+            assert(!roce_p2p_start(p2p_ranks[0]));
+            resumed = 1;
+        }
+        for (int r = 0; r < world; r++) {
+            roce_p2p_ctx_t *c = p2p_ranks[r];
+            assert(!roce_p2p_failed(c));
+            for (int p = 0; p < world; p++) {
+                if (p == r) continue;
+                // Asynchronous sender: may run up to ROCE_P2P_SLOTS ahead of receiver ACK.
+                if (tx_done[r][p] < count && random_u32() % 3 == 0) {
+                    uint32_t seq = tx_next[r][p];
+                    uint32_t seen_ack = __atomic_load_n(p2p_tx_ack(c, p), __ATOMIC_ACQUIRE);
+                    if ((int32_t)(seen_ack - (seq - ROCE_P2P_SLOTS)) >= 0) {
+                        unsigned bytes = size_at(seq + (uint32_t)p);
+                        int pi = p2p_peer_slot(r, p);
+                        uint32_t slot = seq & (ROCE_P2P_SLOTS - 1u);
+                        uint8_t *send = c->region + c->send_off + ((size_t)pi * ROCE_P2P_SLOTS + slot) * c->slot_bytes;
+                        for (unsigned i = 0; i < bytes; i++) send[i] = pattern(r * 4 + p, seq, i);
+                        uint32_t *ctrl = p2p_tx_ctrl(c, p);
+                        __atomic_store_n(&ctrl[4 + slot], bytes, __ATOMIC_RELEASE);
+                        __atomic_store_n(&ctrl[0], seq, __ATOMIC_RELEASE);
+                        tx_next[r][p]++;
+                        tx_done[r][p]++;
+                    }
+                }
+                // Asynchronous receiver: polls stripe flags, verifies payload, rings ACK doorbell.
+                if (rx_done[r][p] < count && random_u32() % 3 == 0) {
+                    uint32_t seq = rx_next[r][p];
+                    int ready = 1;
+                    for (int lane = 0; lane < stripes; lane++) {
+                        ready &= __atomic_load_n(p2p_flag(c, p, seq, lane), __ATOMIC_ACQUIRE) == seq;
+                    }
+                    if (ready) {
+                        unsigned bytes = size_at(seq + (uint32_t)r);
+                        int pi = p2p_peer_slot(r, p);
+                        uint32_t slot = seq & (ROCE_P2P_SLOTS - 1u);
+                        uint8_t *recv = c->region + c->recv_off + ((size_t)pi * ROCE_P2P_SLOTS + slot) * c->slot_bytes;
+                        for (unsigned i = 0; i < bytes; i++) {
+                            assert(recv[i] == pattern(p * 4 + r, seq, i));
+                        }
+                        __atomic_store_n(&p2p_ack_ctrl(c, p)[0], seq, __ATOMIC_RELEASE);
+                        rx_next[r][p]++;
+                        rx_done[r][p]++;
+                        remaining--;
+                    }
+                }
+            }
+        }
+    }
+    // Drain final ACKs and completions.
+    for (int i = 0; i < 1000; i++) p2p_progress();
+    if (stripes == 2) {
+        for (int r = 0; r < world; r++) {
+            uint64_t a = p2p_ranks[r]->hca[0].bytes_posted;
+            uint64_t b = p2p_ranks[r]->hca[1].bytes_posted;
+            assert((a > b ? a - b : b - a) <= (uint64_t)(world - 1) * 32);
+        }
+    }
+    p2p_cleanup();
+}
+
+static void p2p_failures(void) {
+    world = 2; stripes = 2;
+    p2p_setup(0);
+    roce_p2p_ctx_t *c = p2p_ranks[0];
+    atomic_store(&c->running, 1);
+    assert(p2p_post_send(c, 1, 1, 0) == -1);
+    assert(p2p_post_send(c, 1, 1, 17) == -1);
+    assert(p2p_post_send(c, 1, 1, 4096 + 16) == -1);
+    atomic_store(&c->running, 0);
+    // Skipping more than ROCE_P2P_SLOTS doorbells fails-stop.
+    assert(!roce_p2p_start(c));
+    __atomic_store_n(&p2p_tx_ctrl(c, 1)[0], ROCE_P2P_SLOTS + 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < 10000 && !roce_p2p_failed(c); i++) usleep(100);
+    assert(roce_p2p_failed(c));
+    assert(strstr(roce_p2p_error(c), "p2p doorbell skipped"));
+    p2p_cleanup();
+}
+
 int main(void) {
     for(stripes=1;stripes<=2;stripes++) {
         world=3;ring4=0;run(1000,0);
@@ -472,9 +698,14 @@ int main(void) {
     exchange_mode=1;run(500,0);exchange_mode=0;
     rotate=1;run(3000,0);run(1000,UINT32_MAX-100);
     exchange_mode=1;run(500,0);exchange_mode=0;rotate=0;
+    for(stripes=1;stripes<=2;stripes++) {
+        world=2;p2p_run(500,0);p2p_run(200,UINT32_MAX-100);
+        world=4;p2p_run(200,0);p2p_run(100,UINT32_MAX-100);
+    }
+    p2p_failures();
     placement();
     gid_selection();
-    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 31000 collectives, broadcast+exchange, bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement, GID selection by address (%llu writes)\n", (unsigned long long)messages);
+    printf("PASS: direct3/ring4/mesh4, 1/2/4 paths, 31000 collectives, broadcast+exchange, p2p credit ring (w2/w4/wrap), bidirectional byte balance, independent directions, no duplicate packs, wrap, delayed DMA, stop/errors, thread placement, GID selection by address (%llu writes)\n", (unsigned long long)messages);
 }
 
 /* Setup/teardown stubs. Contexts are supplied by setup; no fake successful NIC discovery. */
@@ -494,8 +725,7 @@ struct ibv_pd *ibv_alloc_pd(struct ibv_context *c) {(void)c;return NULL;}
 struct ibv_mr *ibv_reg_mr(struct ibv_pd *p,void *a,size_t n,int f) {(void)p;(void)a;(void)n;(void)f;return NULL;}
 struct ibv_cq *ibv_create_cq(struct ibv_context *c,int n,void *a,void *b,int v) {(void)c;(void)n;(void)a;(void)b;(void)v;return NULL;}
 struct ibv_qp *ibv_create_qp(struct ibv_pd *p,struct ibv_qp_init_attr *a) {(void)p;(void)a;return NULL;}
-int ibv_modify_qp(struct ibv_qp *q,struct ibv_qp_attr *a,int f) {(void)f;assert(q); if(a->qp_state==IBV_QPS_RTR) {assert(a->dest_qp_num); assert(a->ah_attr.grh.flow_label == ((ring4 == 2 && q->dest == (q->source+2)%4) ? 16383 : 0));
-    assert(a->ah_attr.grh.sgid_index == ranks[q->source]->hca[q->hca].gid_index);} return 0;}
+int ibv_modify_qp(struct ibv_qp *q,struct ibv_qp_attr *a,int f) {(void)f;assert(q); if(a->qp_state==IBV_QPS_RTR) {assert(a->dest_qp_num); if (p2p_mode) { assert(a->ah_attr.grh.flow_label == 0); assert(a->ah_attr.grh.sgid_index == p2p_ranks[q->source]->hca[q->hca].gid_index); } else { assert(a->ah_attr.grh.flow_label == ((ring4 == 2 && q->dest == (q->source+2)%4) ? 16383 : 0)); assert(a->ah_attr.grh.sgid_index == ranks[q->source]->hca[q->hca].gid_index); }} return 0;}
 int ibv_destroy_qp(struct ibv_qp *p) {free(p);return 0;}
 int ibv_destroy_cq(struct ibv_cq *p) {free(p);return 0;}
 int ibv_dereg_mr(struct ibv_mr *p) {free(p);return 0;}

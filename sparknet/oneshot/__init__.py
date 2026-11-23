@@ -25,6 +25,12 @@ from ._freeze import (
     kernel_resolution_frozen,
     thaw_kernel_resolution,
 )
+from .p2p import (
+    DEFAULT_P2P_PACK_BYTES,
+    DEFAULT_P2P_SLOT_BYTES,
+    DEFAULT_P2P_TIMEOUT_MS,
+    RoceOneshotP2P as P2P,
+)
 from .runtime import (
     API_VERSION,
     DEFAULT_MAX_GATHER_BYTES,
@@ -42,7 +48,11 @@ __all__ = [
     "AllReduce",
     "DEFAULT_MAX_GATHER_BYTES",
     "DEFAULT_MAX_SIZE",
+    "DEFAULT_P2P_PACK_BYTES",
+    "DEFAULT_P2P_SLOT_BYTES",
+    "DEFAULT_P2P_TIMEOUT_MS",
     "KernelResolutionFrozenError",
+    "P2P",
     "SUPPORTED_DTYPES",
     "SUPPORTED_WORLD_SIZES",
     "TOPOLOGIES",

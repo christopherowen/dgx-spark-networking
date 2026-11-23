@@ -57,6 +57,15 @@ FUNCTIONS = (
     "roce_trace_record_if",
     "roce_trace_begin",
     "roce_trace_stamp",
+    "roce_wait_until_ge_acquire_sys",
+    "roce_copy_pack_from_sys",
+    "roce_copy_pack_at",
+    "roce_copy_pack_from_sys_at",
+    "roce_p2p_record_timeout",
+    "roce_p2p_wait_credit",
+    "roce_p2p_tx_doorbell",
+    "roce_p2p_wait_rx_flags",
+    "roce_p2p_ack_doorbell",
 )
 
 _HEADER = r"""
@@ -589,6 +598,139 @@ __device__ __forceinline__ void roce_exchange_pack(const void *recv, long long s
             if (first + k < ROCE_WORLD - 1) {
                 roce_st_global_pack((roce_byte *)output + ((long long)peer * dst_peer_packs + copy_index) * ROCE_PACK_BYTES, p[k]);
             }
+        }
+    }
+}
+
+// ============================================================================
+// One-shot RoCE point-to-point (PP P2P) helpers
+// ============================================================================
+
+// Wait until (int)(*p - target) >= 0 (system scope), bounded by the timeout
+// word at ctrl + ROCE_CTRL_TIMEOUT_US. Returns 0 on match, else waited us >= 1.
+__device__ __forceinline__ roce_u32 roce_wait_until_ge_acquire_sys(const void *p, roce_u32 target,
+                                                                   const roce_byte *ctrl) {
+    unsigned long long start = 0ull, limit = 0ull;
+    for (roce_u32 polls = 1u;; polls++) {
+        roce_u32 seen;
+        asm volatile("ld.acquire.sys.global.u32 %0, [%1];" : "=r"(seen) : "l"(p) : "memory");
+        if ((int)(seen - target) >= 0) {
+            return 0u;
+        }
+        if ((polls & 63u) == 0u) {
+            unsigned long long now = roce_globaltimer();
+            if (start == 0ull) {
+                start = now;
+                limit = 1000ull * (unsigned long long)roce_ld_relaxed_sys_u32(ctrl + ROCE_CTRL_TIMEOUT_US);
+            } else if (now - start >= limit) {
+                roce_u32 waited = (roce_u32)((now - start) / 1000ull);
+                return waited == 0u ? 1u : waited;
+            }
+        }
+    }
+}
+
+__device__ __forceinline__ void roce_copy_pack_from_sys(const void *src, void *dst) {
+    roce_st_global_pack(dst, roce_ld_relaxed_sys_pack(src));
+}
+
+__device__ __forceinline__ void roce_copy_pack_at(const void *src_base, long long src_pack,
+                                                  void *dst_base, long long dst_pack) {
+    roce_copy_pack((const roce_byte *)src_base + src_pack * ROCE_PACK_BYTES,
+                   (roce_byte *)dst_base + dst_pack * ROCE_PACK_BYTES);
+}
+
+__device__ __forceinline__ void roce_copy_pack_from_sys_at(const void *src_base, long long src_pack,
+                                                           void *dst_base, long long dst_pack) {
+    roce_copy_pack_from_sys((const roce_byte *)src_base + src_pack * ROCE_PACK_BYTES,
+                            (roce_byte *)dst_base + dst_pack * ROCE_PACK_BYTES);
+}
+
+// Fail-stop timeout record in the P2P ctrl block (word 2=seq, 3=peer, 6=lane,
+// 8=waited_us, 9=kind where 1=send credit, 2=recv flag).
+__device__ __forceinline__ void roce_p2p_record_timeout(roce_byte *ctrl, roce_u32 seq, roce_u32 peer,
+                                                        roce_u32 lane, roce_u32 kind, roce_u32 waited) {
+    roce_st_relaxed_sys_u32(ctrl + 12, peer);
+    roce_st_relaxed_sys_u32(ctrl + 24, lane);
+    roce_st_relaxed_sys_u32(ctrl + ROCE_CTRL_WAITED_US, waited);
+    roce_st_relaxed_sys_u32(ctrl + 36, kind);
+    roce_fence_sc_sys();
+    roce_st_relaxed_sys_u32(ctrl + 8, seq);
+    roce_fence_sc_sys();
+    roce_trap();
+}
+
+// Sender credit gate: block 0 thread 0 waits until the receiver has ACKed
+// seq - ROCE_SLOTS so send[slot] and remote recv[slot] are free; other blocks
+// wait in device memory on credit_ready.
+__device__ __forceinline__ void roce_p2p_wait_credit(int block, int tidx, const roce_byte *tx_ack,
+                                                     roce_u32 seq, int dst_rank, roce_byte *ctrl,
+                                                     void *credit_ready) {
+    if (block == 0) {
+        if (tidx == 0) {
+            roce_u32 target = seq - (roce_u32)ROCE_SLOTS;
+            roce_u32 waited = roce_wait_until_ge_acquire_sys(tx_ack, target, ctrl);
+            if (waited != 0u) {
+                roce_p2p_record_timeout(ctrl, seq, (roce_u32)dst_rank, 0xffffffffu, 1u, waited);
+            }
+            roce_st_release_gpu_u32(credit_ready, seq);
+        }
+    } else if (tidx == 0) {
+        roce_wait_device_eq(credit_ready, seq, ctrl);
+    }
+}
+
+// Sender doorbell: last arriving block publishes per-slot nbytes, rings tx_seq
+// for the P2P proxy, releases stage_done, and advances epoch on the final chunk.
+__device__ __forceinline__ void roce_p2p_tx_doorbell(void *stage_counter, roce_u32 grid,
+                                                     roce_byte *tx_ctrl, roce_u32 nbytes, roce_u32 seq,
+                                                     void *stage_done, void *epoch_ptr, int is_last) {
+    roce_fence_sc_sys();
+    roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(stage_counter, 1u);
+    if ((prior + 1u) % grid == 0u) {
+        long long slot = (long long)(seq & (roce_u32)(ROCE_SLOTS - 1));
+        roce_st_relaxed_sys_u32(tx_ctrl + 16 + slot * 4, nbytes);
+        roce_fence_sc_sys();
+        roce_st_relaxed_sys_u32(tx_ctrl, seq);
+        roce_st_release_gpu_u32(stage_done, seq);
+        if (is_last != 0) {
+            roce_st_release_gpu_u32(epoch_ptr, seq);
+        }
+    }
+}
+
+// Receiver wait: block 0 polls one stripe flag per thread (0..ROCE_HCA_COUNT-1)
+// for the source peer; other blocks wait in device memory for arrival.
+__device__ __forceinline__ void roce_p2p_wait_rx_flags(int block, int tidx, const roce_byte *peer_flags,
+                                                       roce_u32 seq, int src_rank, roce_byte *ctrl,
+                                                       const void *arrival) {
+    if (block == 0) {
+        if (tidx < ROCE_HCA_COUNT) {
+            long long slot = (long long)(seq & (roce_u32)(ROCE_SLOTS - 1));
+            const roce_byte *flag = peer_flags + (slot * ROCE_HCA_COUNT + tidx) * ROCE_FLAG_STRIDE;
+            roce_u32 waited = roce_wait_until_eq_acquire_sys(flag, seq, ctrl);
+            if (waited != 0u) {
+                roce_p2p_record_timeout(ctrl, seq, (roce_u32)src_rank, (roce_u32)tidx, 2u, waited);
+            }
+        }
+    } else if (tidx == 0) {
+        roce_wait_device_eq(arrival, seq, ctrl);
+    }
+}
+
+// Receiver ACK doorbell: last arriving block fences reads from recv[slot],
+// publishes rx_ack_seq for the P2P proxy, releases chunk_done, and advances
+// epoch on the final chunk.
+__device__ __forceinline__ void roce_p2p_ack_doorbell(void *ack_counter, roce_u32 grid,
+                                                      roce_byte *ack_ctrl, roce_u32 seq,
+                                                      void *chunk_done, void *epoch_ptr, int is_last) {
+    roce_fence_sc_sys();
+    roce_u32 prior = roce_atomic_add_relaxed_gpu_u32(ack_counter, 1u);
+    if ((prior + 1u) % grid == 0u) {
+        roce_st_relaxed_sys_u32(ack_ctrl, seq);
+        roce_st_release_gpu_u32(chunk_done, seq);
+        if (is_last != 0) {
+            roce_st_release_gpu_u32(epoch_ptr, seq);
         }
     }
 }

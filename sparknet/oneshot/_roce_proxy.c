@@ -328,9 +328,9 @@ static int adjacent(int world, int rank, int peer, int ring4) {
 // names the device. The kernel files a re-added address in the lowest free
 // slot, so a link flap while RDMA resources still hold the old entry moves the
 // GID (3 to 4 on the Spark ring); the scan finds it wherever it is.
-static int select_gid(roce_ctx_t *c, int h, const char *name, int slots,
-                      uint32_t network, int prefix) {
-    roce_hca_t *hca = &c->hca[h];
+static int select_gid_into(roce_hca_t *hca, char *err, size_t err_len,
+                           const char *name, int slots,
+                           uint32_t network, int prefix) {
     uint32_t mask = prefix == 0 ? 0 : 0xffffffffu << (32 - prefix);
     char subnet[24];
     snprintf(subnet, sizeof(subnet), "%u.%u.%u.%u/%d", network >> 24, (network >> 16) & 255u,
@@ -344,7 +344,7 @@ static int select_gid(roce_ctx_t *c, int h, const char *name, int slots,
             continue;  // an empty slot
         }
         if (rc != 0) {
-            snprintf(c->err, sizeof(c->err), "ibv_query_gid_ex(%s, index %d): %s", name, i, strerror(rc));
+            snprintf(err, err_len, "ibv_query_gid_ex(%s, index %d): %s", name, i, strerror(rc));
             return -1;
         }
         const uint8_t *raw = entry.gid.raw;
@@ -367,14 +367,19 @@ static int select_gid(roce_ctx_t *c, int h, const char *name, int slots,
         return 0;
     }
     if (count == 0) {
-        snprintf(c->err, sizeof(c->err), "RDMA device %s has no IPv4 RoCE v2 GID in %s (%d slots scanned)",
+        snprintf(err, err_len, "RDMA device %s has no IPv4 RoCE v2 GID in %s (%d slots scanned)",
                  name, subnet, slots);
     } else {
-        snprintf(c->err, sizeof(c->err),
+        snprintf(err, err_len,
                  "RDMA device %s has %d IPv4 RoCE v2 GIDs in %s (indices %s); its port needs one address there",
                  name, count, subnet, found);
     }
     return -1;
+}
+
+static int select_gid(roce_ctx_t *c, int h, const char *name, int slots,
+                      uint32_t network, int prefix) {
+    return select_gid_into(&c->hca[h], c->err, sizeof(c->err), name, slots, network, prefix);
 }
 
 static int open_hca(roce_ctx_t *c, int h, const char *name, uint32_t gid_network, int gid_prefix) {
@@ -1197,6 +1202,823 @@ void roce_destroy(roce_ctx_t *c) {
     if (c->trace != NULL) {
         munmap(c->trace, c->trace_bytes);
     }
+    for (int h = 0; h < ROCE_MAX_LOCAL_HCAS; h++) {
+        roce_hca_t *hca = &c->hca[h];
+        for (int p = 0; p < ROCE_MAX_PEERS; p++) {
+            if (hca->qp[p] != NULL) {
+                ibv_destroy_qp(hca->qp[p]);
+            }
+        }
+        if (hca->cq != NULL) {
+            ibv_destroy_cq(hca->cq);
+        }
+        if (hca->mr != NULL) {
+            ibv_dereg_mr(hca->mr);
+        }
+        if (hca->pd != NULL) {
+            ibv_dealloc_pd(hca->pd);
+        }
+        if (hca->ctx != NULL) {
+            ibv_close_device(hca->ctx);
+        }
+    }
+    free(c);
+}
+
+// ============================================================================
+// One-shot RoCE point-to-point (PP P2P) proxy
+// ============================================================================
+//
+// Independent per-peer directional channels with credit flow control so sender
+// and receiver can run asynchronously (multi-microbatch pipeline parallelism
+// and multi-chunk streaming of arbitrarily large tensors).
+//
+// For a process group of size `world` (2..ROCE_MAX_PEERS), each rank indexes
+// its `world - 1` remote peers by `pi = peer < rank ? peer : peer - 1`.
+// One pinned host region is laid out as:
+//
+//   recv[pi][slot]        ((world - 1) * P2P_SLOTS * slot_bytes)
+//   flag[pi][slot][lane]  ((world - 1) * P2P_SLOTS * ROCE_MAX_STRIPES * FLAG_STRIDE)
+//   send[pi][slot]        ((world - 1) * P2P_SLOTS * slot_bytes)
+//   tx_ctrl[pi]           ((world - 1) * FLAG_STRIDE)
+//                         word 0: tx_seq doorbell; words 4..7: slot_nbytes[0..3]
+//   ack_ctrl[pi]          ((world - 1) * FLAG_STRIDE)
+//                         word 0: rx_ack_seq doorbell (written by receiver GPU)
+//   tx_ack[pi]            ((world - 1) * FLAG_STRIDE)
+//                         word 0: peer's latest consumed seq (RDMA-written by peer proxy)
+//   ctrl                  (FLAG_STRIDE)
+//                         shared error/timeout record matching collective offsets:
+//                         word 2: error_seq, word 3: error_peer, word 6: error_lane,
+//                         word 7: timeout_us, word 8: waited_us, word 9: error_kind
+
+#define ROCE_P2P_SLOTS 4
+#define ROCE_P2P_ABI_VERSION 1
+
+typedef struct {
+    uint32_t abi, world, rank;
+    uint64_t slot_bytes;
+    uint64_t region_addr;
+    uint32_t rkey[ROCE_MAX_LOCAL_HCAS];
+    uint16_t lid[ROCE_MAX_LOCAL_HCAS];
+    uint8_t gid[ROCE_MAX_LOCAL_HCAS][16];
+    uint32_t mtu[ROCE_MAX_LOCAL_HCAS];
+    uint32_t qp_num[ROCE_MAX_LOCAL_HCAS][ROCE_MAX_PEERS];
+    uint8_t n_hca;
+    uint8_t n_stripes;
+    uint8_t route_hca[ROCE_MAX_PEERS][ROCE_MAX_STRIPES];
+} roce_p2p_blob_t;
+
+typedef struct {
+    int world;
+    int rank;
+    int n_hca;
+    int n_stripes;
+    int traffic_class;
+    roce_hca_t hca[ROCE_MAX_LOCAL_HCAS];
+    uint8_t route_hca[ROCE_MAX_PEERS][ROCE_MAX_STRIPES];
+    uint8_t *region;
+    size_t region_bytes;
+    size_t slot_bytes;
+    size_t recv_off;
+    size_t flag_off;
+    size_t send_off;
+    size_t tx_ctrl_off;
+    size_t ack_ctrl_off;
+    size_t tx_ack_off;
+    size_t ctrl_off;
+    int started;
+    uint64_t peer_addr[ROCE_MAX_PEERS];
+    uint32_t peer_rkey[ROCE_MAX_STRIPES][ROCE_MAX_PEERS];
+    pthread_t thread;
+    atomic_int running;
+    atomic_int failed;
+    uint32_t last_tx_seq[ROCE_MAX_PEERS];
+    uint32_t last_ack_seq[ROCE_MAX_PEERS];
+    uint64_t sends_posted;
+    uint64_t acks_posted;
+    uint64_t writes_completed;
+    uint64_t proxy_cpu_mask[ROCE_CPU_WORDS];
+    int proxy_cpu_count;
+    int proxy_cpu_observed_plus1;
+    char err[512];
+} roce_p2p_ctx_t;
+
+void roce_p2p_destroy(roce_p2p_ctx_t *c);
+
+static inline int p2p_peer_slot(int rank, int peer) {
+    return peer < rank ? peer : peer - 1;
+}
+
+static void p2p_set_err(roce_p2p_ctx_t *c, const char *what, int e) {
+    snprintf(c->err, sizeof(c->err), "%s: %s", what, e ? strerror(e) : "failed");
+}
+
+int roce_p2p_abi_version(void) { return ROCE_P2P_ABI_VERSION; }
+
+uint64_t roce_p2p_blob_bytes(void) { return sizeof(roce_p2p_blob_t); }
+
+int roce_p2p_layout(int world, uint64_t slot_bytes, uint64_t *out) {
+    // out = {recv_off, flag_off, send_off, tx_ctrl_off, ack_ctrl_off, tx_ack_off,
+    //        ctrl_off, total_bytes, flag_stride, slots}
+    if (world < 2 || world > ROCE_MAX_PEERS || slot_bytes == 0 || (slot_bytes % 4096) != 0) {
+        return -1;
+    }
+    uint64_t peers = (uint64_t)(world - 1);
+    uint64_t recv_bytes, flag_bytes, send_bytes, per_peer_ctrl;
+    uint64_t flag_off, send_off, tx_ctrl_off, ack_ctrl_off, tx_ack_off, ctrl_off, total;
+    if (slot_bytes > ((uint64_t)1 << 40) ||
+        __builtin_mul_overflow(peers * ROCE_P2P_SLOTS, slot_bytes, &recv_bytes) ||
+        __builtin_mul_overflow(peers * ROCE_P2P_SLOTS * ROCE_MAX_STRIPES,
+                               (uint64_t)ROCE_FLAG_STRIDE, &flag_bytes) ||
+        __builtin_mul_overflow(peers * ROCE_P2P_SLOTS, slot_bytes, &send_bytes) ||
+        __builtin_mul_overflow(peers, (uint64_t)ROCE_FLAG_STRIDE, &per_peer_ctrl) ||
+        __builtin_add_overflow(0, recv_bytes, &flag_off) ||
+        __builtin_add_overflow(flag_off, flag_bytes, &send_off) ||
+        __builtin_add_overflow(send_off, send_bytes, &tx_ctrl_off) ||
+        __builtin_add_overflow(tx_ctrl_off, per_peer_ctrl, &ack_ctrl_off) ||
+        __builtin_add_overflow(ack_ctrl_off, per_peer_ctrl, &tx_ack_off) ||
+        __builtin_add_overflow(tx_ack_off, per_peer_ctrl, &ctrl_off) ||
+        __builtin_add_overflow(ctrl_off, (uint64_t)ROCE_FLAG_STRIDE, &total)) {
+        return -1;
+    }
+    out[0] = 0;
+    out[1] = flag_off;
+    out[2] = send_off;
+    out[3] = tx_ctrl_off;
+    out[4] = ack_ctrl_off;
+    out[5] = tx_ack_off;
+    out[6] = ctrl_off;
+    out[7] = total;
+    out[8] = ROCE_FLAG_STRIDE;
+    out[9] = ROCE_P2P_SLOTS;
+    return 0;
+}
+
+static int p2p_open_hca(roce_p2p_ctx_t *c, int h, const char *name,
+                        uint32_t gid_network, int gid_prefix) {
+    int num = 0;
+    struct ibv_device **list = ibv_get_device_list(&num);
+    if (list == NULL) {
+        p2p_set_err(c, "ibv_get_device_list", errno);
+        return -1;
+    }
+    struct ibv_device *dev = NULL;
+    for (int i = 0; i < num; i++) {
+        if (strcmp(ibv_get_device_name(list[i]), name) == 0) {
+            dev = list[i];
+            break;
+        }
+    }
+    if (dev == NULL) {
+        ibv_free_device_list(list);
+        snprintf(c->err, sizeof(c->err), "RDMA device %s not found", name);
+        return -1;
+    }
+    roce_hca_t *hca = &c->hca[h];
+    hca->ctx = ibv_open_device(dev);
+    ibv_free_device_list(list);
+    if (hca->ctx == NULL) {
+        p2p_set_err(c, "ibv_open_device", errno);
+        return -1;
+    }
+    struct ibv_port_attr port;
+    if (ibv_query_port(hca->ctx, ROCE_PORT, &port) != 0) {
+        p2p_set_err(c, "ibv_query_port", errno);
+        return -1;
+    }
+    if (port.state != IBV_PORT_ACTIVE) {
+        snprintf(c->err, sizeof(c->err), "RDMA device %s port %d is not active", name, ROCE_PORT);
+        return -1;
+    }
+    hca->lid = port.lid;
+    hca->mtu = port.active_mtu;
+    if (select_gid_into(hca, c->err, sizeof(c->err), name, port.gid_tbl_len,
+                        gid_network, gid_prefix) != 0) {
+        return -1;
+    }
+    hca->pd = ibv_alloc_pd(hca->ctx);
+    if (hca->pd == NULL) {
+        p2p_set_err(c, "ibv_alloc_pd", errno);
+        return -1;
+    }
+    hca->mr = ibv_reg_mr(hca->pd, c->region, c->region_bytes,
+                         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    if (hca->mr == NULL) {
+        p2p_set_err(c, "ibv_reg_mr(pinned p2p region)", errno);
+        return -1;
+    }
+    hca->cq = ibv_create_cq(hca->ctx, ROCE_SEND_DEPTH * ROCE_MAX_PEERS, NULL, NULL, 0);
+    if (hca->cq == NULL) {
+        p2p_set_err(c, "ibv_create_cq", errno);
+        return -1;
+    }
+    for (int p = 0; p < c->world; p++) {
+        if (p == c->rank) {
+            continue;
+        }
+        int used = 0;
+        for (int lane = 0; lane < c->n_stripes; lane++) {
+            if (c->route_hca[p][lane] == (uint8_t)h) {
+                used = 1;
+                break;
+            }
+        }
+        if (!used) {
+            continue;
+        }
+        struct ibv_qp_init_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.send_cq = hca->cq;
+        attr.recv_cq = hca->cq;
+        attr.qp_type = IBV_QPT_RC;
+        attr.cap.max_send_wr = ROCE_SEND_DEPTH;
+        attr.cap.max_recv_wr = 1;
+        attr.cap.max_send_sge = 1;
+        attr.cap.max_recv_sge = 1;
+        attr.cap.max_inline_data = 16;
+        hca->qp[p] = ibv_create_qp(hca->pd, &attr);
+        if (hca->qp[p] == NULL) {
+            p2p_set_err(c, "ibv_create_qp", errno);
+            return -1;
+        }
+        struct ibv_qp_attr init;
+        memset(&init, 0, sizeof(init));
+        init.qp_state = IBV_QPS_INIT;
+        init.pkey_index = 0;
+        init.port_num = ROCE_PORT;
+        init.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
+        int rc = ibv_modify_qp(hca->qp[p], &init,
+                               IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+        if (rc != 0) {
+            p2p_set_err(c, "ibv_modify_qp(INIT)", rc);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+roce_p2p_ctx_t *roce_p2p_create(int world, int rank, const char *const *hca_names, int n_hca,
+                                const int *route_hca, int n_stripes,
+                                const uint32_t *gid_network, const int *gid_prefix,
+                                int traffic_class,
+                                void *region, uint64_t region_bytes,
+                                uint64_t slot_bytes, char *err, uint64_t err_len) {
+    uint64_t layout[10];
+    if (roce_p2p_layout(world, slot_bytes, layout) != 0 || layout[7] > region_bytes ||
+        rank < 0 || rank >= world || n_hca < 1 || n_hca > ROCE_MAX_LOCAL_HCAS ||
+        n_stripes < 1 || n_stripes > 2 || route_hca == NULL ||
+        gid_network == NULL || gid_prefix == NULL ||
+        traffic_class < 0 || traffic_class > 255) {
+        snprintf(err, err_len, "invalid roce p2p runtime geometry");
+        return NULL;
+    }
+    for (int h = 0; h < n_hca; h++) {
+        if (gid_prefix[h] < 0 || gid_prefix[h] > 32) {
+            snprintf(err, err_len, "invalid GID subnet prefix for HCA %d: %d", h, gid_prefix[h]);
+            return NULL;
+        }
+    }
+    for (int p = 0; p < world; p++) {
+        if (p == rank) {
+            for (int lane = 0; lane < n_stripes; lane++) {
+                if (route_hca[p * n_stripes + lane] != -1) {
+                    snprintf(err, err_len, "self rank %d has a route", p);
+                    return NULL;
+                }
+            }
+            continue;
+        }
+        for (int lane = 0; lane < n_stripes; lane++) {
+            int h = route_hca[p * n_stripes + lane];
+            if (h < 0 || h >= n_hca) {
+                snprintf(err, err_len, "invalid HCA route for peer %d lane %d: %d", p, lane, h);
+                return NULL;
+            }
+            for (int prior = 0; prior < lane; prior++) {
+                if (h == route_hca[p * n_stripes + prior]) {
+                    snprintf(err, err_len, "duplicate HCA route for peer %d: %d", p, h);
+                    return NULL;
+                }
+            }
+        }
+    }
+    roce_p2p_ctx_t *c = calloc(1, sizeof(*c));
+    if (c == NULL) {
+        snprintf(err, err_len, "out of memory");
+        return NULL;
+    }
+    c->proxy_cpu_count = resolve_proxy_cpus(getenv("SPARKNET_ROCE_PP_PROXY_CPU"),
+                                            c->proxy_cpu_mask, err, err_len);
+    if (c->proxy_cpu_count < 0) {
+        free(c);
+        return NULL;
+    }
+#ifndef __linux__
+    if (c->proxy_cpu_count > 0) {
+        snprintf(err, err_len, "SPARKNET_ROCE_PP_PROXY_CPU: thread pinning is only supported on Linux");
+        free(c);
+        return NULL;
+    }
+#endif
+    c->world = world;
+    c->rank = rank;
+    c->n_hca = n_hca;
+    c->n_stripes = n_stripes;
+    c->traffic_class = traffic_class;
+    c->region = region;
+    c->region_bytes = region_bytes;
+    c->slot_bytes = slot_bytes;
+    c->recv_off = layout[0];
+    c->flag_off = layout[1];
+    c->send_off = layout[2];
+    c->tx_ctrl_off = layout[3];
+    c->ack_ctrl_off = layout[4];
+    c->tx_ack_off = layout[5];
+    c->ctrl_off = layout[6];
+    memset(c->route_hca, 255, sizeof(c->route_hca));
+    for (int p = 0; p < world; p++) {
+        for (int lane = 0; lane < n_stripes; lane++) {
+            c->route_hca[p][lane] = (uint8_t)route_hca[p * n_stripes + lane];
+        }
+    }
+    for (int h = 0; h < n_hca; h++) {
+        if (p2p_open_hca(c, h, hca_names[h], gid_network[h], gid_prefix[h]) != 0) {
+            snprintf(err, err_len, "%s", c->err);
+            roce_p2p_destroy(c);
+            return NULL;
+        }
+    }
+    return c;
+}
+
+int roce_p2p_local_blob(roce_p2p_ctx_t *c, void *out, uint64_t out_len) {
+    if (out_len < sizeof(roce_p2p_blob_t)) {
+        return -1;
+    }
+    roce_p2p_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.abi = ROCE_P2P_ABI_VERSION;
+    blob.world = (uint32_t)c->world;
+    blob.rank = (uint32_t)c->rank;
+    blob.slot_bytes = c->slot_bytes;
+    blob.region_addr = (uint64_t)(uintptr_t)c->region;
+    blob.n_hca = (uint8_t)c->n_hca;
+    blob.n_stripes = (uint8_t)c->n_stripes;
+    memcpy(blob.route_hca, c->route_hca, sizeof(blob.route_hca));
+    for (int h = 0; h < c->n_hca; h++) {
+        blob.rkey[h] = c->hca[h].mr->rkey;
+        blob.lid[h] = c->hca[h].lid;
+        blob.mtu[h] = (uint32_t)c->hca[h].mtu;
+        memcpy(blob.gid[h], c->hca[h].gid.raw, 16);
+        for (int p = 0; p < c->world; p++) {
+            blob.qp_num[h][p] = c->hca[h].qp[p] ? c->hca[h].qp[p]->qp_num : 0;
+        }
+    }
+    memcpy(out, &blob, sizeof(blob));
+    return 0;
+}
+
+static int p2p_connect_qp(roce_p2p_ctx_t *c, int local_h, int remote_h, int p,
+                          const roce_p2p_blob_t *peer) {
+    roce_hca_t *hca = &c->hca[local_h];
+    struct ibv_qp_attr rtr;
+    memset(&rtr, 0, sizeof(rtr));
+    rtr.qp_state = IBV_QPS_RTR;
+    rtr.path_mtu = (enum ibv_mtu)(peer->mtu[remote_h] < (uint32_t)hca->mtu
+                                      ? peer->mtu[remote_h]
+                                      : (uint32_t)hca->mtu);
+    rtr.dest_qp_num = peer->qp_num[remote_h][c->rank];
+    rtr.rq_psn = 0;
+    rtr.max_dest_rd_atomic = 1;
+    rtr.min_rnr_timer = 12;
+    rtr.ah_attr.is_global = 1;
+    rtr.ah_attr.dlid = peer->lid[remote_h];
+    rtr.ah_attr.sl = 0;
+    rtr.ah_attr.src_path_bits = 0;
+    rtr.ah_attr.port_num = ROCE_PORT;
+    memcpy(rtr.ah_attr.grh.dgid.raw, peer->gid[remote_h], 16);
+    rtr.ah_attr.grh.sgid_index = (uint8_t)hca->gid_index;
+    rtr.ah_attr.grh.hop_limit = 64;
+    rtr.ah_attr.grh.traffic_class = (uint8_t)c->traffic_class;
+    rtr.ah_attr.grh.flow_label = 0;
+    int rc = ibv_modify_qp(hca->qp[p], &rtr,
+                           IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+                               IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
+    if (rc != 0) {
+        p2p_set_err(c, "ibv_modify_qp(RTR)", rc);
+        return -1;
+    }
+    struct ibv_qp_attr rts;
+    memset(&rts, 0, sizeof(rts));
+    rts.qp_state = IBV_QPS_RTS;
+    rts.timeout = 14;
+    rts.retry_cnt = 7;
+    rts.rnr_retry = 7;
+    rts.sq_psn = 0;
+    rts.max_rd_atomic = 1;
+    rc = ibv_modify_qp(hca->qp[p], &rts,
+                       IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+                           IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
+    if (rc != 0) {
+        p2p_set_err(c, "ibv_modify_qp(RTS)", rc);
+        return -1;
+    }
+    return 0;
+}
+
+int roce_p2p_connect(roce_p2p_ctx_t *c, const void *blobs, uint64_t blobs_len) {
+    if (blobs_len < sizeof(roce_p2p_blob_t) * (uint64_t)c->world) {
+        snprintf(c->err, sizeof(c->err), "p2p peer blob buffer too small");
+        return -1;
+    }
+    const roce_p2p_blob_t *all = (const roce_p2p_blob_t *)blobs;
+    for (int p = 0; p < c->world; p++) {
+        if (all[p].abi != ROCE_P2P_ABI_VERSION || all[p].world != (uint32_t)c->world ||
+            all[p].rank != (uint32_t)p || all[p].slot_bytes != c->slot_bytes ||
+            all[p].n_hca < 1 || all[p].n_hca > ROCE_MAX_LOCAL_HCAS ||
+            all[p].n_stripes != (uint8_t)c->n_stripes) {
+            snprintf(c->err, sizeof(c->err), "rank %d published incompatible p2p transport geometry", p);
+            return -1;
+        }
+        for (int q = 0; q < c->world; q++) {
+            for (int lane = 0; lane < c->n_stripes; lane++) {
+                unsigned h = all[p].route_hca[q][lane];
+                if (q != p ? (h >= all[p].n_hca || !all[p].qp_num[h][q]) : h != UINT8_MAX) {
+                    snprintf(c->err, sizeof(c->err), "rank %d published invalid p2p route to %d", p, q);
+                    return -1;
+                }
+            }
+        }
+    }
+    for (int p = 0; p < c->world; p++) {
+        if (p == c->rank) {
+            continue;
+        }
+        c->peer_addr[p] = all[p].region_addr;
+        for (int lane = 0; lane < c->n_stripes; lane++) {
+            int local_h = c->route_hca[p][lane];
+            int remote_h = all[p].route_hca[c->rank][lane];
+            if (remote_h < 0 || remote_h >= all[p].n_hca) {
+                snprintf(c->err, sizeof(c->err),
+                         "rank %d published invalid p2p HCA route for lane %d", p, lane);
+                return -1;
+            }
+            c->peer_rkey[lane][p] = all[p].rkey[remote_h];
+            if (p2p_connect_qp(c, local_h, remote_h, p, &all[p]) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int p2p_drain_cq(roce_p2p_ctx_t *c, int h) {
+    struct ibv_wc wc[32];
+    int n = ibv_poll_cq(c->hca[h].cq, 32, wc);
+    if (n < 0) {
+        p2p_set_err(c, "ibv_poll_cq", errno);
+        return -1;
+    }
+    for (int i = 0; i < n; i++) {
+        if (wc[i].status != IBV_WC_SUCCESS) {
+            snprintf(c->err, sizeof(c->err),
+                     "P2P RDMA write to rank %u failed: %s (vendor_err 0x%x)",
+                     (unsigned)wc[i].wr_id, ibv_wc_status_str(wc[i].status), wc[i].vendor_err);
+            return -1;
+        }
+        c->hca[h].outstanding[wc[i].wr_id] -= 1;
+        c->hca[h].writes_completed += 1;
+        c->writes_completed += 1;
+    }
+    return 0;
+}
+
+static int p2p_wait_send_room(roce_p2p_ctx_t *c, int h, int p) {
+    roce_hca_t *hca = &c->hca[h];
+    while (hca->outstanding[p] >= ROCE_SEND_DEPTH / 4) {
+        if (p2p_drain_cq(c, h) != 0) {
+            return -1;
+        }
+        if (!atomic_load_explicit(&c->running, memory_order_relaxed)) {
+            snprintf(c->err, sizeof(c->err),
+                     "RoCE P2P proxy stopped with %u writes outstanding to rank %d",
+                     hca->outstanding[p], p);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int p2p_post_stripe(roce_p2p_ctx_t *c, uint32_t seq, int p, uint8_t *send,
+                           int lane, uint64_t byte_offset, uint32_t stripe_bytes) {
+    uint32_t slot = seq & (ROCE_P2P_SLOTS - 1u);
+    uint32_t seq_copy = seq;
+    int remote_pi = p2p_peer_slot(p, c->rank);
+    int h = c->route_hca[p][lane];
+    roce_hca_t *hca = &c->hca[h];
+    if (p2p_wait_send_room(c, h, p) != 0) {
+        return -1;
+    }
+    uint64_t remote = c->peer_addr[p];
+    struct ibv_sge flag_sge = {
+        .addr = (uint64_t)(uintptr_t)&seq_copy,
+        .length = 4,
+        .lkey = 0,
+    };
+    struct ibv_send_wr flag_wr;
+    memset(&flag_wr, 0, sizeof(flag_wr));
+    flag_wr.wr_id = (uint64_t)p;
+    flag_wr.sg_list = &flag_sge;
+    flag_wr.num_sge = 1;
+    flag_wr.opcode = IBV_WR_RDMA_WRITE;
+    flag_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+    flag_wr.wr.rdma.remote_addr =
+        remote + c->flag_off +
+        (((uint64_t)remote_pi * ROCE_P2P_SLOTS + slot) * (uint64_t)c->n_stripes +
+         (uint64_t)lane) * ROCE_FLAG_STRIDE;
+    flag_wr.wr.rdma.rkey = c->peer_rkey[lane][p];
+
+    struct ibv_send_wr data_wr;
+    struct ibv_sge data_sge;
+    struct ibv_send_wr *first_wr = &flag_wr;
+    if (stripe_bytes != 0) {
+        data_sge = (struct ibv_sge){
+            .addr = (uint64_t)(uintptr_t)(send + byte_offset),
+            .length = stripe_bytes,
+            .lkey = hca->mr->lkey,
+        };
+        memset(&data_wr, 0, sizeof(data_wr));
+        data_wr.wr_id = (uint64_t)p;
+        data_wr.next = &flag_wr;
+        data_wr.sg_list = &data_sge;
+        data_wr.num_sge = 1;
+        data_wr.opcode = IBV_WR_RDMA_WRITE;
+        data_wr.wr.rdma.remote_addr =
+            remote + c->recv_off +
+            ((uint64_t)remote_pi * ROCE_P2P_SLOTS + slot) * c->slot_bytes +
+            byte_offset;
+        data_wr.wr.rdma.rkey = c->peer_rkey[lane][p];
+        first_wr = &data_wr;
+    }
+    struct ibv_send_wr *bad = NULL;
+    int rc = ibv_post_send(hca->qp[p], first_wr, &bad);
+    if (rc != 0) {
+        p2p_set_err(c, "ibv_post_send", rc);
+        return -1;
+    }
+    hca->outstanding[p] += 1;
+    hca->bytes_posted += stripe_bytes;
+    return 0;
+}
+
+static int p2p_post_send(roce_p2p_ctx_t *c, int p, uint32_t seq, uint32_t nbytes) {
+    if (nbytes == 0 || nbytes % 16 != 0 || nbytes > c->slot_bytes) {
+        snprintf(c->err, sizeof(c->err), "invalid P2P payload size %u (slot %zu)", nbytes, c->slot_bytes);
+        return -1;
+    }
+    int pi = p2p_peer_slot(c->rank, p);
+    uint32_t slot = seq & (ROCE_P2P_SLOTS - 1u);
+    uint8_t *send = c->region + c->send_off +
+                    ((size_t)pi * ROCE_P2P_SLOTS + slot) * c->slot_bytes;
+    for (int i = 0; i < c->n_stripes; i++) {
+        int lane = (int)(((uint32_t)i + seq + (uint32_t)c->rank + (uint32_t)p) % (uint32_t)c->n_stripes);
+        int slice = (int)(((uint32_t)lane + seq + (uint32_t)c->rank + (uint32_t)p) % (uint32_t)c->n_stripes);
+        uint32_t offset, packs;
+        stripe_range(nbytes, c->n_stripes, slice, &offset, &packs);
+        if (p2p_post_stripe(c, seq, p, send, lane, (uint64_t)offset * 16, packs * 16) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Always post ACKs for a peer on lane 0 so the RC QP preserves strict FIFO
+// order and tx_ack on the sender never moves backwards.
+static int p2p_post_ack(roce_p2p_ctx_t *c, int p, uint32_t ack_seq) {
+    uint32_t ack_copy = ack_seq;
+    int remote_pi = p2p_peer_slot(p, c->rank);
+    int h = c->route_hca[p][0];
+    roce_hca_t *hca = &c->hca[h];
+    if (p2p_wait_send_room(c, h, p) != 0) {
+        return -1;
+    }
+    struct ibv_sge ack_sge = {
+        .addr = (uint64_t)(uintptr_t)&ack_copy,
+        .length = 4,
+        .lkey = 0,
+    };
+    struct ibv_send_wr ack_wr;
+    memset(&ack_wr, 0, sizeof(ack_wr));
+    ack_wr.wr_id = (uint64_t)p;
+    ack_wr.sg_list = &ack_sge;
+    ack_wr.num_sge = 1;
+    ack_wr.opcode = IBV_WR_RDMA_WRITE;
+    ack_wr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
+    ack_wr.wr.rdma.remote_addr =
+        c->peer_addr[p] + c->tx_ack_off + (uint64_t)remote_pi * ROCE_FLAG_STRIDE;
+    ack_wr.wr.rdma.rkey = c->peer_rkey[0][p];
+    struct ibv_send_wr *bad = NULL;
+    int rc = ibv_post_send(hca->qp[p], &ack_wr, &bad);
+    if (rc != 0) {
+        p2p_set_err(c, "ibv_post_send(ack)", rc);
+        return -1;
+    }
+    hca->outstanding[p] += 1;
+    return 0;
+}
+
+static int p2p_place_proxy_thread(roce_p2p_ctx_t *c) {
+#ifdef __linux__
+    pthread_setname_np(pthread_self(), "sparknet-p2p");
+    if (c->proxy_cpu_count > 0) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (long cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+            if (mask_test(c->proxy_cpu_mask, cpu)) {
+                CPU_SET(cpu, &set);
+            }
+        }
+        int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+        if (rc != 0) {
+            p2p_set_err(c, "pthread_setaffinity_np", rc);
+            return -1;
+        }
+    }
+    int cpu = sched_getcpu();
+    c->proxy_cpu_observed_plus1 = cpu >= 0 ? cpu + 1 : 0;
+#else
+    (void)c;
+#endif
+    return 0;
+}
+
+static void *p2p_proxy_main(void *arg) {
+    roce_p2p_ctx_t *c = (roce_p2p_ctx_t *)arg;
+    if (p2p_place_proxy_thread(c) != 0) {
+        atomic_store(&c->failed, 1);
+        return NULL;
+    }
+    uint64_t idle = 0;
+    const struct timespec nap = {0, 20000};
+    while (atomic_load_explicit(&c->running, memory_order_relaxed)) {
+        int did_work = 0;
+        for (int p = 0; p < c->world; p++) {
+            if (p == c->rank) {
+                continue;
+            }
+            int pi = p2p_peer_slot(c->rank, p);
+            volatile uint32_t *ack_ctrl =
+                (volatile uint32_t *)(c->region + c->ack_ctrl_off + (size_t)pi * ROCE_FLAG_STRIDE);
+            uint32_t ack_seq = __atomic_load_n(&ack_ctrl[0], __ATOMIC_ACQUIRE);
+            if (ack_seq != c->last_ack_seq[pi]) {
+                if (p2p_post_ack(c, p, ack_seq) != 0) {
+                    atomic_store(&c->failed, 1);
+                    return NULL;
+                }
+                c->last_ack_seq[pi] = ack_seq;
+                c->acks_posted += 1;
+                did_work = 1;
+            }
+            volatile uint32_t *tx_ctrl =
+                (volatile uint32_t *)(c->region + c->tx_ctrl_off + (size_t)pi * ROCE_FLAG_STRIDE);
+            uint32_t tx_seq = __atomic_load_n(&tx_ctrl[0], __ATOMIC_ACQUIRE);
+            if (tx_seq != c->last_tx_seq[pi]) {
+                uint32_t pending = tx_seq - c->last_tx_seq[pi];
+                if (pending > ROCE_P2P_SLOTS) {
+                    snprintf(c->err, sizeof(c->err),
+                             "p2p doorbell skipped %u ops to rank %d (last %u, now %u)",
+                             pending, p, c->last_tx_seq[pi], tx_seq);
+                    atomic_store(&c->failed, 1);
+                    return NULL;
+                }
+                for (uint32_t s = c->last_tx_seq[pi] + 1; pending > 0; s++, pending--) {
+                    uint32_t nbytes = tx_ctrl[4 + (s & (ROCE_P2P_SLOTS - 1u))];
+                    if (p2p_post_send(c, p, s, nbytes) != 0) {
+                        atomic_store(&c->failed, 1);
+                        return NULL;
+                    }
+                    c->last_tx_seq[pi] = s;
+                    c->sends_posted += 1;
+                }
+                did_work = 1;
+            }
+        }
+        if (did_work) {
+            idle = 0;
+            for (int h = 0; h < c->n_hca; h++) {
+                if (p2p_drain_cq(c, h) != 0) {
+                    atomic_store(&c->failed, 1);
+                    return NULL;
+                }
+            }
+        } else {
+            idle++;
+            if (idle % 64 == 0) {
+                for (int h = 0; h < c->n_hca; h++) {
+                    if (p2p_drain_cq(c, h) != 0) {
+                        atomic_store(&c->failed, 1);
+                        return NULL;
+                    }
+                }
+            }
+            if (idle >= ROCE_IDLE_SPINS) {
+                nanosleep(&nap, NULL);
+            }
+        }
+    }
+    return NULL;
+}
+
+int roce_p2p_start(roce_p2p_ctx_t *c) {
+    if (atomic_load(&c->running)) {
+        return 0;
+    }
+    if (!c->started) {
+        for (int p = 0; p < c->world; p++) {
+            if (p == c->rank) {
+                continue;
+            }
+            int pi = p2p_peer_slot(c->rank, p);
+            volatile uint32_t *tx_ctrl =
+                (volatile uint32_t *)(c->region + c->tx_ctrl_off + (size_t)pi * ROCE_FLAG_STRIDE);
+            volatile uint32_t *ack_ctrl =
+                (volatile uint32_t *)(c->region + c->ack_ctrl_off + (size_t)pi * ROCE_FLAG_STRIDE);
+            c->last_tx_seq[pi] = tx_ctrl[0];
+            c->last_ack_seq[pi] = ack_ctrl[0];
+        }
+        c->started = 1;
+    }
+    atomic_store(&c->failed, 0);
+    atomic_store(&c->running, 1);
+    int rc = pthread_create(&c->thread, NULL, p2p_proxy_main, c);
+    if (rc != 0) {
+        atomic_store(&c->running, 0);
+        p2p_set_err(c, "pthread_create", rc);
+        return -1;
+    }
+    return 0;
+}
+
+void roce_p2p_stop(roce_p2p_ctx_t *c) {
+    if (atomic_exchange(&c->running, 0)) {
+        pthread_join(c->thread, NULL);
+    }
+}
+
+int roce_p2p_failed(roce_p2p_ctx_t *c) { return atomic_load(&c->failed); }
+
+const char *roce_p2p_error(roce_p2p_ctx_t *c) { return c->err; }
+
+uint64_t roce_p2p_stat(roce_p2p_ctx_t *c, int which) {
+    switch (which) {
+    case 0:
+        return c->sends_posted;
+    case 1:
+        return c->acks_posted;
+    case 2:
+        return c->writes_completed;
+    case 3:
+        return (uint64_t)c->n_stripes;
+    case 4:
+        return (uint64_t)c->proxy_cpu_count;
+    case 5:
+        return (uint64_t)c->proxy_cpu_observed_plus1;
+    default:
+        return 0;
+    }
+}
+
+int roce_p2p_proxy_cpus(roce_p2p_ctx_t *c, int *out, int max) {
+    int n = 0;
+    for (long cpu = 0; cpu < CPU_SETSIZE && n < max; cpu++) {
+        if (mask_test(c->proxy_cpu_mask, cpu)) {
+            out[n++] = (int)cpu;
+        }
+    }
+    return n;
+}
+
+uint64_t roce_p2p_hca_stat(roce_p2p_ctx_t *c, int hca, int which) {
+    if (hca < 0 || hca >= c->n_hca) {
+        return (uint64_t)-1;
+    }
+    switch (which) {
+    case 0:
+        return c->hca[hca].writes_completed;
+    case 1:
+        return c->hca[hca].bytes_posted;
+    case 2:
+        return (uint64_t)c->hca[hca].gid_index;
+    default:
+        return 0;
+    }
+}
+
+void roce_p2p_destroy(roce_p2p_ctx_t *c) {
+    if (c == NULL) {
+        return;
+    }
+    roce_p2p_stop(c);
     for (int h = 0; h < ROCE_MAX_LOCAL_HCAS; h++) {
         roce_hca_t *hca = &c->hca[h];
         for (int p = 0; p < ROCE_MAX_PEERS; p++) {

@@ -101,6 +101,33 @@ adapter reads `SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES` and
 `SPARKNET_ROCE_ALLGATHER_MAX_BYTES`. One-shot is always on where it is
 constructed; there is no switch.
 
+## Point-to-point (`sparknet.oneshot.P2P`)
+
+`sparknet.oneshot.P2P` (`RoceOneshotP2P`) provides asynchronous,
+credit-flow-controlled GPU-to-GPU point-to-point transfers (`send`, `recv`,
+`broadcast`, `send_tensors`, `recv_tensors`) for pipeline parallelism over the
+same ConnectX-7 RoCEv2 fabric without Gloo metadata round-trips or a PyNCCL
+communicator.
+
+Each rank owns one pinned host region with independent per-peer 4-slot rings
+(`ROCE_P2P_SLOTS = 4`, proxy ABI `ROCE_P2P_ABI_VERSION = 1`). Single-chunk
+decode transfers (`<= slot_bytes`, default 4 MiB) stage into the send slot,
+ring the proxy doorbell, and return immediately whenever credit is available;
+larger prefill tensors stream in pipelined chunks inside one kernel launch with
+up to four slots in flight. Receivers publish 4-byte inline RDMA ACKs on lane 0
+(strict RC QP FIFO order) once each slot is consumed.
+
+| Name | Meaning |
+| --- | --- |
+| `SPARKNET_ROCE_PP_PEER_HCAS` | JSON `{pp_peer_rank: [local HCAs in stripe order]}` for cabled PP pairs (e.g. `oneshot-pp2-ring4`) |
+| `SPARKNET_ROCE_PP_HCA` | explicit HCA list for switched PP fabrics (falls back to `SPARKNET_ROCE_HCA` / discovery) |
+| `SPARKNET_ROCE_PP_SLOT_BYTES` | per-slot byte capacity of the 4-slot P2P ring (default `4MB`) |
+| `SPARKNET_ROCE_PP_PACK_BYTES` | max flat coalesced byte size for `send_tensors`/`recv_tensors` before zero-copy per-tensor streaming (default `16MB`) |
+| `SPARKNET_ROCE_PP_TIMEOUT_MS` | fail-stop wait timeout for P2P credit/flag waits (falls back to `SPARKNET_ROCE_TIMEOUT_MS`, default `30000`) |
+| `SPARKNET_ROCE_PP_PROXY_CPU` | optional CPU placement for the `sparknet-p2p` proxy thread |
+
+The vLLM adapter lives in `sparknet.integration.vllm.SparknetOneShotP2P`.
+
 ## Evidence
 
 Measured in spark-ds41f on the four Sparks (GB10, driver 580.178.04,

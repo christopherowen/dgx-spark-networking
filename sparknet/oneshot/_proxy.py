@@ -155,8 +155,53 @@ def load() -> ctypes.CDLL:
         lib.roce_trace_open.argtypes = [p, ctypes.c_char_p, u64, u64, u64, u64]
         lib.roce_destroy.restype = None
         lib.roce_destroy.argtypes = [p]
+        lib.roce_p2p_abi_version.restype = ctypes.c_int
+        lib.roce_p2p_abi_version.argtypes = []
+        lib.roce_p2p_layout.restype = ctypes.c_int
+        lib.roce_p2p_layout.argtypes = [ctypes.c_int, u64, ctypes.POINTER(u64)]
+        lib.roce_p2p_blob_bytes.restype = u64
+        lib.roce_p2p_blob_bytes.argtypes = []
+        lib.roce_p2p_create.restype = p
+        lib.roce_p2p_create.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            p,
+            u64,
+            u64,
+            ctypes.c_char_p,
+            u64,
+        ]
+        lib.roce_p2p_local_blob.restype = ctypes.c_int
+        lib.roce_p2p_local_blob.argtypes = [p, p, u64]
+        lib.roce_p2p_connect.restype = ctypes.c_int
+        lib.roce_p2p_connect.argtypes = [p, p, u64]
+        lib.roce_p2p_start.restype = ctypes.c_int
+        lib.roce_p2p_start.argtypes = [p]
+        lib.roce_p2p_stop.restype = None
+        lib.roce_p2p_stop.argtypes = [p]
+        lib.roce_p2p_failed.restype = ctypes.c_int
+        lib.roce_p2p_failed.argtypes = [p]
+        lib.roce_p2p_error.restype = ctypes.c_char_p
+        lib.roce_p2p_error.argtypes = [p]
+        lib.roce_p2p_stat.restype = u64
+        lib.roce_p2p_stat.argtypes = [p, ctypes.c_int]
+        lib.roce_p2p_hca_stat.restype = u64
+        lib.roce_p2p_hca_stat.argtypes = [p, ctypes.c_int, ctypes.c_int]
+        lib.roce_p2p_proxy_cpus.restype = ctypes.c_int
+        lib.roce_p2p_proxy_cpus.argtypes = [p, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+        lib.roce_p2p_destroy.restype = None
+        lib.roce_p2p_destroy.argtypes = [p]
         if lib.roce_abi_version() != 10:
             raise RuntimeError("unexpected one-shot proxy ABI version")
+        if lib.roce_p2p_abi_version() != 1:
+            raise RuntimeError("unexpected one-shot P2P proxy ABI version")
         _LIB = lib
         return lib
 
@@ -348,4 +393,171 @@ class Proxy:
             self.close()
 
 
-__all__ = ["Layout", "Proxy", "load"]
+class P2PLayout:
+    """Byte offsets of the pinned region shared by the P2P kernels and proxy."""
+
+    __slots__ = (
+        "recv_off",
+        "flag_off",
+        "send_off",
+        "tx_ctrl_off",
+        "ack_ctrl_off",
+        "tx_ack_off",
+        "ctrl_off",
+        "total_bytes",
+        "flag_stride",
+        "slots",
+    )
+
+    def __init__(self, world_size: int, slot_bytes: int) -> None:
+        out = (ctypes.c_uint64 * 10)()
+        if load().roce_p2p_layout(int(world_size), int(slot_bytes), out) != 0:
+            raise ValueError(
+                f"unsupported RoCE P2P geometry: world_size={world_size} slot_bytes={slot_bytes} "
+                "(2..16 ranks, slot_bytes a positive multiple of 4096)"
+            )
+        (
+            self.recv_off,
+            self.flag_off,
+            self.send_off,
+            self.tx_ctrl_off,
+            self.ack_ctrl_off,
+            self.tx_ack_off,
+            self.ctrl_off,
+            self.total_bytes,
+            self.flag_stride,
+            self.slots,
+        ) = (int(v) for v in out)
+
+
+class P2PProxy:
+    """Owns one RDMA P2P proxy context for one rank."""
+
+    def __init__(
+        self,
+        *,
+        world_size: int,
+        rank: int,
+        hca_names: tuple[str, ...],
+        peer_hca_indices: tuple[tuple[int, ...], ...],
+        stripe_count: int,
+        gid_networks: tuple[ipaddress.IPv4Network, ...],
+        region_ptr: int,
+        region_bytes: int,
+        slot_bytes: int,
+    ) -> None:
+        self.traffic_class = _traffic_class()
+        self._lib = load()
+        names = (ctypes.c_char_p * len(hca_names))(*[n.encode() for n in hca_names])
+        if len(peer_hca_indices) != int(world_size):
+            raise ValueError("peer HCA routes must cover the entire process group")
+        flat_routes = [
+            -1 if lane >= len(peer_hca_indices[peer]) else int(peer_hca_indices[peer][lane])
+            for peer in range(int(world_size))
+            for lane in range(int(stripe_count))
+        ]
+        routes = (ctypes.c_int * len(flat_routes))(*flat_routes)
+        if len(gid_networks) != len(hca_names):
+            raise ValueError("one GID subnet per HCA")
+        networks = (ctypes.c_uint32 * len(hca_names))(*[int(n.network_address) for n in gid_networks])
+        prefixes = (ctypes.c_int * len(hca_names))(*[n.prefixlen for n in gid_networks])
+        err = ctypes.create_string_buffer(512)
+        self._ctx = self._lib.roce_p2p_create(
+            int(world_size),
+            int(rank),
+            names,
+            len(hca_names),
+            routes,
+            int(stripe_count),
+            networks,
+            prefixes,
+            self.traffic_class,
+            ctypes.c_void_p(int(region_ptr)),
+            int(region_bytes),
+            int(slot_bytes),
+            err,
+            len(err),
+        )
+        if not self._ctx:
+            raise RuntimeError(
+                f"RoCE P2P proxy setup failed: {err.value.decode(errors='replace')}"
+            )
+        self.world_size = int(world_size)
+        self.rank = int(rank)
+        self.hca_names = tuple(hca_names)
+        self.peer_hca_indices = tuple(tuple(route) for route in peer_hca_indices)
+        self.stripe_count = int(stripe_count)
+        self.gid_indices = tuple(
+            int(self._lib.roce_p2p_hca_stat(self._ctx, h, 2)) for h in range(len(hca_names))
+        )
+
+    def local_blob(self) -> bytes:
+        n = int(self._lib.roce_p2p_blob_bytes())
+        buf = ctypes.create_string_buffer(n)
+        if self._lib.roce_p2p_local_blob(self._ctx, buf, n) != 0:
+            raise RuntimeError(BLOB_STRUCT_ERR)
+        return buf.raw
+
+    def connect(self, blobs: list[bytes]) -> None:
+        n = int(self._lib.roce_p2p_blob_bytes())
+        if len(blobs) != self.world_size or any(len(b) != n for b in blobs):
+            raise RuntimeError(BLOB_STRUCT_ERR)
+        joined = b"".join(blobs)
+        buf = ctypes.create_string_buffer(joined, len(joined))
+        if self._lib.roce_p2p_connect(self._ctx, buf, len(joined)) != 0:
+            raise RuntimeError(f"RoCE P2P queue-pair connect failed: {self.error()}")
+
+    def start(self) -> None:
+        if self._lib.roce_p2p_start(self._ctx) != 0:
+            raise RuntimeError(f"RoCE P2P proxy thread failed to start: {self.error()}")
+
+    def stop(self) -> None:
+        self._lib.roce_p2p_stop(self._ctx)
+
+    def failed(self) -> bool:
+        return bool(self._lib.roce_p2p_failed(self._ctx))
+
+    def error(self) -> str:
+        raw = self._lib.roce_p2p_error(self._ctx)
+        return raw.decode(errors="replace") if raw else ""
+
+    def stats(self) -> dict[str, int | list[int] | None]:
+        return {
+            "sends_posted": int(self._lib.roce_p2p_stat(self._ctx, 0)),
+            "acks_posted": int(self._lib.roce_p2p_stat(self._ctx, 1)),
+            "writes_completed": int(self._lib.roce_p2p_stat(self._ctx, 2)),
+            "path_slots": int(self._lib.roce_p2p_stat(self._ctx, 3)),
+            "proxy_cpus": self._proxy_cpus(),
+            "proxy_cpu_observed": (
+                int(self._lib.roce_p2p_stat(self._ctx, 5)) - 1
+                if self._lib.roce_p2p_stat(self._ctx, 5)
+                else None
+            ),
+            "writes_completed_per_hca": [
+                int(self._lib.roce_p2p_hca_stat(self._ctx, hca, 0))
+                for hca in range(len(self.hca_names))
+            ],
+            "bytes_posted_per_hca": [
+                int(self._lib.roce_p2p_hca_stat(self._ctx, hca, 1))
+                for hca in range(len(self.hca_names))
+            ],
+        }
+
+    def _proxy_cpus(self) -> list[int]:
+        count = int(self._lib.roce_p2p_stat(self._ctx, 4))
+        if count <= 0:
+            return []
+        out = (ctypes.c_int * count)()
+        return [int(v) for v in out[: self._lib.roce_p2p_proxy_cpus(self._ctx, out, count)]]
+
+    def close(self) -> None:
+        ctx, self._ctx = self._ctx, None
+        if ctx:
+            self._lib.roce_p2p_destroy(ctx)
+
+    def __del__(self) -> None:  # pragma: no cover - defensive teardown
+        with contextlib.suppress(Exception):
+            self.close()
+
+
+__all__ = ["Layout", "P2PLayout", "P2PProxy", "Proxy", "load"]

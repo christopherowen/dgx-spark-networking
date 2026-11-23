@@ -44,19 +44,24 @@ class ProxySimulatorTest(unittest.TestCase):
             run = subprocess.run([binary], capture_output=True, text=True, timeout=300)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("PASS: direct3/ring4/mesh4", run.stdout)
+            self.assertIn("p2p credit ring", run.stdout)
             self.assertIn("thread placement", run.stdout)
             self.assertIn("GID selection by address", run.stdout)
 
     def test_proxy_abi_is_the_qualified_one(self):
         source = (ROCE / "_roce_proxy.c").read_text()
         self.assertIn("#define ROCE_ABI_VERSION 10", source)
+        self.assertIn("#define ROCE_P2P_ABI_VERSION 1", source)
         # Each HCA's source GID comes from the table scan; no slot is taken as given.
         self.assertIn("ibv_query_gid_ex(hca->ctx", source)
         self.assertNotIn("ibv_query_gid(", source)
         self.assertIn("rtr.ah_attr.grh.sgid_index = (uint8_t)hca->gid_index;", source)
-        self.assertIn("lib.roce_abi_version() != 10", (ROCE / "_proxy.py").read_text())
+        proxy_py = (ROCE / "_proxy.py").read_text()
+        self.assertIn("lib.roce_abi_version() != 10", proxy_py)
+        self.assertIn("lib.roce_p2p_abi_version() != 1", proxy_py)
         self.assertIn('getenv("SPARKNET_ROCE_MESH_ROTATE")', source)
         self.assertIn('getenv("SPARKNET_ROCE_PROXY_CPU")', source)
+        self.assertIn('getenv("SPARKNET_ROCE_PP_PROXY_CPU")', source)
         self.assertNotIn("b12x.", (ROCE / "runtime.py").read_text())
 
 
@@ -100,7 +105,7 @@ class KernelFamilyTest(unittest.TestCase):
                     "cvt.f32.bf16", "cvt.f32.f16", "cvt.rn.bf16.f32", "cvt.rn.f16x2.f32"):
             self.assertIn(ptx, source, ptx)
         # Every extern the TileLang kernels name exists in the header.
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py", "_p2p_tilelang.py"):
             text = (ROCE / module_name).read_text()
             for name in sorted(set(re.findall(r'T\.call_extern\("(roce_[a-z0-9_]+)"', text))):
                 self.assertIn(name, device.FUNCTIONS, (module_name, name))
@@ -108,7 +113,7 @@ class KernelFamilyTest(unittest.TestCase):
                 self.assertIn(name, device.FUNCTIONS, (module_name, name))
 
     def test_tilelang_modules_import_without_a_gpu_stack(self):
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py", "_kernels.py", "_device.py", "_freeze.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py", "_p2p_tilelang.py", "_kernels.py", "_device.py", "_freeze.py"):
             tree = ast.parse((ROCE / module_name).read_text())
             top_level = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
             top_level |= {(node.module or "").split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom) and node.level == 0}
@@ -123,7 +128,7 @@ class KernelFamilyTest(unittest.TestCase):
     def test_tilelang_kernels_declare_full_residency(self):
         # Without a minimum blocks-per-SM bound nvcc spends 54 to 56 registers and the
         # all-reduce loses ~15 us per launch in a decode step (2026-10-05 profiles).
-        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
+        for module_name in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py", "_p2p_tilelang.py"):
             text = (ROCE / module_name).read_text()
             self.assertIn("T.annotate_min_blocks_per_sm(resident)", text, module_name)
             self.assertIn("_resident_blocks(threads)", text, module_name)
@@ -427,10 +432,62 @@ class FailStopTest(unittest.TestCase):
                  "roce_fence_sc_sys()", "roce_trap()"]
         positions = [branch.index(step, branch.index(order[i - 1]) + 1 if i else 0) for i, step in enumerate(order)]
         self.assertEqual(positions, sorted(positions))
-        for module in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py"):
+        for module in ("_oneshot_tilelang.py", "_allgather_tilelang.py", "_reducescatter_tilelang.py", "_exchange_tilelang.py", "_p2p_tilelang.py"):
             source = (ROCE / module).read_text()
             self.assertNotIn("poison", source, module)
             self.assertNotIn("spin_limit", source, module)
+
+
+class P2PTopologyResolverTest(unittest.TestCase):
+    def setUp(self):
+        namespace = dict(
+            vars(typing),
+            os=os,
+            json=json,
+            MAX_STRIPES=2,
+            MAX_LOCAL_HCAS=4,
+            ENV_PP_HCA="SPARKNET_ROCE_PP_HCA",
+            ENV_PP_PEER_HCAS=("SPARKNET_ROCE_PP_PEER_HCAS",),
+            _hca_names=lambda name: tuple(os.getenv(name, "").split(",")) if os.getenv(name) else (),
+            discover_hcas=lambda: ("rocep1s0f0", "roceP2p1s0f0"),
+        )
+        _functions(ROCE / "p2p.py", {"_pp_peer_hca_names_from_env", "_resolve_pp_hca_topology", "_peer_slot"}, namespace)
+        self.resolve = namespace["_resolve_pp_hca_topology"]
+        self.peer_slot = namespace["_peer_slot"]
+        self.saved = {k: os.environ.pop(k, None) for k in ("SPARKNET_ROCE_PP_PEER_HCAS", "SPARKNET_ROCE_PP_HCA")}
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+    def test_explicit_pp_peer_routes_and_switched_fallback(self):
+        os.environ["SPARKNET_ROCE_PP_PEER_HCAS"] = json.dumps({"1": ["rocep1s0f1", "roceP2p1s0f1"]})
+        names, routes, stripes = self.resolve(world_size=2, rank=0, hca_names=None, peer_hca_names=None)
+        self.assertEqual((names, stripes), (("rocep1s0f1", "roceP2p1s0f1"), 2))
+        self.assertEqual(routes, ((), ("rocep1s0f1", "roceP2p1s0f1")))
+
+        os.environ.pop("SPARKNET_ROCE_PP_PEER_HCAS")
+        names, routes, stripes = self.resolve(world_size=2, rank=1, hca_names=None, peer_hca_names=None)
+        self.assertEqual((names, stripes), (("rocep1s0f0", "roceP2p1s0f0"), 2))
+        self.assertEqual(routes, (("rocep1s0f0", "roceP2p1s0f0"), ()))
+
+        os.environ["SPARKNET_ROCE_PP_HCA"] = "rocep1s0f1"
+        names, routes, stripes = self.resolve(world_size=3, rank=1, hca_names=None, peer_hca_names=None)
+        self.assertEqual((names, stripes), (("rocep1s0f1",), 1))
+        self.assertEqual(routes, (("rocep1s0f1",), (), ("rocep1s0f1",)))
+
+    def test_peer_slot_indexing(self):
+        self.assertEqual(self.peer_slot(0, 1), 0)
+        self.assertEqual(self.peer_slot(1, 0), 0)
+        self.assertEqual([self.peer_slot(2, p) for p in (0, 1, 3)], [0, 1, 2])
+
+    def test_invalid_pp_routes_rejected(self):
+        with self.assertRaises(ValueError):
+            self.resolve(world_size=2, rank=0, hca_names=None, peer_hca_names={0: ("a",), 1: ("b",)})
+        with self.assertRaises(ValueError):
+            self.resolve(world_size=3, rank=0, hca_names=None, peer_hca_names={1: ("a",), 2: ("b", "c")})
 
 
 if __name__ == "__main__":
