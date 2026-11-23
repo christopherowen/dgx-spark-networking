@@ -211,7 +211,12 @@ class RoceOneshotP2P:
                 f"threads, room for {resident}"
             )
 
-        removed = _removed_setting_problems(os.environ) + kernel_setting_problems(os.environ)
+        env_check = (
+            {k: v for k, v in os.environ.items() if k != "SPARKNET_ROCE_GID_INDEX"}
+            if "SPARKNET_ROCE_GID_INDEX" in os.environ and "SPARKNET_ROCE_SUBNETS" not in os.environ
+            else os.environ
+        )
+        removed = _removed_setting_problems(env_check) + kernel_setting_problems(os.environ)
         if removed:
             raise ValueError("; ".join(removed))
 
