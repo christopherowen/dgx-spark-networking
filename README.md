@@ -151,7 +151,7 @@ the TileLang port is the kernel it will be written into.
 ## Install
 
 ```sh
-pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.5.0
+pip install git+https://github.com/christopherowen/dgx-spark-networking@v0.6.0
 ```
 
 The package has no dependencies: the CLI and the topology, profile, policy
